@@ -37,3 +37,11 @@ The adapter responds with its identity and exact capabilities:
 - Core applies per-call deadlines and treats process exit as an adapter failure.
 
 The canonical JSON Schemas live under [`schemas/`](../schemas/).
+
+## Markdown reference tracker
+
+The bundled Markdown adapter is the credential-free reference implementation for tracker
+conformance. Its human-readable map index and fenced `wayfinder-tracker` JSON state block live in
+one file. Guarded mutations use a monotonically increasing version, adjacent exclusive lock, and
+atomic replacement. It supports maps, blockers, frontier reads, the claim lifecycle, preserved
+audit comments, artifacts, resolution, and exactly one closeout context pointer per ticket.

@@ -26,8 +26,23 @@ export function builtInAdapters(): AdapterDescriptor[] {
     name,
     kind: "tracker",
     bundled: true,
-    available: false,
-    capabilities: {},
+    available: name === "markdown",
+    capabilities:
+      name === "markdown"
+        ? capabilities(
+            "native_maps",
+            "native_dependencies",
+            "cross_map_dependencies",
+            "atomic_assignment",
+            "workflow_transition",
+            "conditional_update",
+            "native_properties",
+            "claim_comments",
+            "lease_metadata",
+            "resolution_comments",
+            "artifact_links",
+          )
+        : {},
   }));
 
   const harnesses = Object.entries(harnessExecutables).map<AdapterDescriptor>(
