@@ -41,7 +41,12 @@ The canonical JSON Schemas live under [`schemas/`](../schemas/).
 ## Markdown reference tracker
 
 The bundled Markdown adapter is the credential-free reference implementation for tracker
-conformance. Its human-readable map index and fenced `wayfinder-tracker` JSON state block live in
-one file. Guarded mutations use a monotonically increasing version, adjacent exclusive lock, and
-atomic replacement. It supports maps, blockers, frontier reads, the claim lifecycle, preserved
-audit comments, artifacts, resolution, and exactly one closeout context pointer per ticket.
+conformance. Its fenced, line-anchored `wayfinder-tracker` JSON state block is the authoritative
+hand-editable state. A tagged rendered index is generated from that state; prose outside both
+tagged regions is preserved. Guarded mutations validate the complete document, use a monotonically
+increasing version and adjacent exclusive lock, then validate again before atomic replacement.
+
+Lock recovery is explicit: inspection reports absent, live, orphaned, or unknown ownership. Only a
+same-host owner proven absent may be reclaimed, using the observed lock token; live, remote, and
+malformed owners are never stolen. This reference adapter is not marked available in the registry
+until a CLI construction and path-configuration boundary exists.

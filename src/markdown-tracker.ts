@@ -1,4 +1,5 @@
 import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
 import type {
   ClaimRequest,
@@ -10,6 +11,7 @@ import type {
 } from "./contracts.ts";
 import { AmbiguousTrackerResultError, ClaimCollisionError } from "./contracts.ts";
 import {
+  type ActorRef,
   type ClaimRef,
   capabilities,
   type MapRef,
@@ -19,8 +21,15 @@ import {
 } from "./domain.ts";
 import { evaluateFrontier, type FrontierScope } from "./frontier.ts";
 
-const BLOCK_START = "```wayfinder-tracker";
-const BLOCK_END = "```";
+const FENCE = "wayfinder-tracker";
+const RENDERED_START = "<!-- wayfinder-rendered:start -->";
+const RENDERED_END = "<!-- wayfinder-rendered:end -->";
+const OPEN_FENCE = /^[ \t]{0,3}```wayfinder-tracker[ \t]*$/m;
+const CLOSE_FENCE = /^[ \t]{0,3}```[ \t]*$/m;
+
+export interface MarkdownTrackerClock {
+  now(): Date;
+}
 
 export interface MarkdownMapRecord {
   ref: MapRef;
@@ -28,6 +37,7 @@ export interface MarkdownMapRecord {
   order: number;
   context: string[];
 }
+
 export interface MarkdownClaimRecord {
   ref: ClaimRef;
   run: ClaimRequest["run"];
@@ -38,28 +48,75 @@ export interface MarkdownClaimRecord {
   supersedes?: ClaimRef;
   supersededBy?: ClaimRef;
 }
+
 export interface MarkdownTicketRecord extends Ticket {
   title: string;
   claim?: MarkdownClaimRecord;
   comments: string[];
   artifacts: string[];
 }
+
 export interface MarkdownTrackerDocument {
   format: "wayfinder-markdown-tracker";
   version: number;
   maps: MarkdownMapRecord[];
   tickets: MarkdownTicketRecord[];
 }
+
+export interface MarkdownResolveRequest {
+  ticket: TicketRef;
+  expectedVersion: string;
+  resolution: string;
+  owner?: ActorRef;
+  claim?: ClaimRef;
+  artifacts?: readonly string[];
+}
+
+export interface MarkdownLockOwner {
+  token: string;
+  pid: number;
+  host: string;
+  createdAt: string;
+}
+
+export type MarkdownLockInspection =
+  | { state: "absent" }
+  | { state: "live" | "orphaned" | "unknown"; owner?: MarkdownLockOwner; reason?: string };
+
 interface ClaimPayload {
   assignee?: Ticket["assignee"];
   status: string;
   claim?: MarkdownClaimRecord;
 }
 
+export class MarkdownTrackerValidationError extends Error {
+  readonly code = "invalid_markdown_tracker";
+
+  constructor(
+    readonly path: string,
+    message: string,
+  ) {
+    super(`Invalid Wayfinder Markdown tracker at ${path}: ${message}`);
+    this.name = "MarkdownTrackerValidationError";
+  }
+}
+
+export class MarkdownTrackerLockError extends Error {
+  readonly code = "tracker_lock_held";
+
+  constructor(readonly inspection: MarkdownLockInspection) {
+    super(`Markdown tracker lock is ${inspection.state}`);
+    this.name = "MarkdownTrackerLockError";
+  }
+}
+
 export class MarkdownTrackerAdapter implements TrackerAdapter {
   readonly path: string;
-  constructor(path: string) {
+  readonly #clock: MarkdownTrackerClock;
+
+  constructor(path: string, clock: MarkdownTrackerClock = { now: () => new Date() }) {
     this.path = resolve(path);
+    this.#clock = clock;
   }
 
   async describe() {
@@ -70,28 +127,32 @@ export class MarkdownTrackerAdapter implements TrackerAdapter {
       "atomic_assignment",
       "workflow_transition",
       "conditional_update",
-      "native_properties",
       "claim_comments",
       "lease_metadata",
       "resolution_comments",
       "artifact_links",
     );
   }
+
   async preflight(ticket: TicketRef): Promise<void> {
     await this.getTicket(ticket);
     await this.#withLock(async () => undefined);
   }
+
   async getTicket(ticket: TicketRef): Promise<Ticket> {
     return structuredClone(this.#ticket(await this.read(), ticket));
   }
+
   async listTickets(): Promise<Ticket[]> {
     return structuredClone((await this.read()).tickets);
   }
+
   async frontier(scope: FrontierScope = {}): Promise<Ticket[]> {
     return evaluateFrontier(await this.listTickets(), scope, {
       availableStatuses: new Set(["To Do"]),
     });
   }
+
   async snapshotClaimState(ticket: TicketRef): Promise<TrackerSnapshot> {
     const document = await this.read();
     return {
@@ -99,24 +160,30 @@ export class MarkdownTrackerAdapter implements TrackerAdapter {
       payload: this.#claimPayload(this.#ticket(document, ticket)),
     };
   }
+
   async claim(request: ClaimRequest): Promise<void> {
+    const now = this.#clock.now();
+    this.#requireFutureLease(request.leaseExpiresAt, now);
     await this.#mutate(request.expectedVersion, (document) => {
       const ticket = this.#ticket(document, request.ticket);
-      if (ticket.state !== "open" || ticket.assignee !== undefined || ticket.claim !== undefined)
+      if (ticket.state !== "open" || ticket.assignee !== undefined || ticket.claim !== undefined) {
         throw new ClaimCollisionError("Ticket is already claimed or closed");
+      }
       ticket.assignee = request.owner;
       ticket.status = "In Progress";
       ticket.claim = {
         ref: request.claim,
         run: request.run,
         owner: request.owner,
-        claimedAt: new Date().toISOString(),
+        claimedAt: now.toISOString(),
         leaseExpiresAt: request.leaseExpiresAt,
         status: "active",
       };
       ticket.comments.push(`Claimed by ${request.owner} as ${request.claim} for ${request.run}.`);
+      return undefined;
     });
   }
+
   async verifyClaim(request: ClaimRequest): Promise<void> {
     const ticket = this.#ticket(await this.read(), request.ticket);
     if (
@@ -125,50 +192,70 @@ export class MarkdownTrackerAdapter implements TrackerAdapter {
       ticket.claim.run !== request.run ||
       ticket.claim.leaseExpiresAt !== request.leaseExpiresAt ||
       ticket.status !== "In Progress"
-    )
+    ) {
       throw new AmbiguousTrackerResultError("Claim could not be verified");
+    }
   }
+
   async restoreClaimState(request: RestoreClaimRequest): Promise<void> {
     await this.#mutate(undefined, (document) => {
       const ticket = this.#ticket(document, request.ticket);
+      const original = this.#snapshotPayload(request.originalSnapshot);
+      if (this.#payloadsEqual(this.#claimPayload(ticket), original)) return false;
       if (ticket.claim?.ref !== request.claim) throw new ClaimCollisionError();
-      this.#restorePayload(ticket, request.originalSnapshot);
+      this.#restorePayload(ticket, original);
       ticket.comments.push(`Restored claim state after ${request.claim}.`);
+      return undefined;
     });
   }
+
   async verifyRestored(request: RestoreClaimRequest): Promise<void> {
     const ticket = this.#ticket(await this.read(), request.ticket);
     if (
-      JSON.stringify(this.#claimPayload(ticket)) !==
-      JSON.stringify(this.#snapshotPayload(request.originalSnapshot))
-    )
+      !this.#payloadsEqual(
+        this.#claimPayload(ticket),
+        this.#snapshotPayload(request.originalSnapshot),
+      )
+    ) {
       throw new AmbiguousTrackerResultError("Restored claim state could not be verified");
+    }
   }
+
   async renewLease(request: RenewLeaseRequest): Promise<void> {
+    this.#requireFutureLease(request.leaseExpiresAt, this.#clock.now());
     await this.#mutate(request.expectedVersion, (document) => {
       this.#matchingClaim(document, request.ticket, request.claim).leaseExpiresAt =
         request.leaseExpiresAt;
+      return undefined;
     });
   }
+
   async verifyLease(request: RenewLeaseRequest): Promise<void> {
-    if (
-      this.#matchingClaim(await this.read(), request.ticket, request.claim).leaseExpiresAt !==
-      request.leaseExpiresAt
-    )
+    const claim = this.#matchingClaim(await this.read(), request.ticket, request.claim);
+    if (claim.leaseExpiresAt !== request.leaseExpiresAt) {
       throw new AmbiguousTrackerResultError("Lease renewal could not be verified");
+    }
   }
+
   async releaseClaim(request: ReleaseClaimRequest): Promise<void> {
     await this.#mutate(request.expectedVersion, (document) => {
       const ticket = this.#ticket(document, request.ticket);
-      if (ticket.claim?.ref !== request.claim) throw new ClaimCollisionError();
-      this.#restorePayload(ticket, request.originalSnapshot);
+      if (ticket.claim?.ref !== request.claim || ticket.claim.owner !== request.authorizedBy) {
+        throw new ClaimCollisionError("Claim or authorized owner no longer matches");
+      }
+      this.#restorePayload(ticket, this.#snapshotPayload(request.originalSnapshot));
       ticket.comments.push(`Released ${request.claim}; authorized by ${request.authorizedBy}.`);
+      return undefined;
     });
   }
+
   async verifyReleased(request: ReleaseClaimRequest): Promise<void> {
     await this.verifyRestored(request);
   }
+
   async reclaim(request: ReclaimRequest): Promise<void> {
+    const now = this.#clock.now();
+    this.#requireFutureLease(request.leaseExpiresAt, now);
     await this.#mutate(request.expectedVersion, (document) => {
       const ticket = this.#ticket(document, request.ticket);
       const prior = ticket.claim;
@@ -176,9 +263,10 @@ export class MarkdownTrackerAdapter implements TrackerAdapter {
         !prior ||
         prior.ref !== request.staleClaim ||
         prior.status !== "active" ||
-        Date.parse(prior.leaseExpiresAt) > Date.now()
-      )
+        Date.parse(prior.leaseExpiresAt) > now.getTime()
+      ) {
         throw new ClaimCollisionError("Claim is not stale or no longer matches");
+      }
       prior.status = "superseded";
       prior.supersededBy = request.claim;
       ticket.assignee = request.owner;
@@ -186,7 +274,7 @@ export class MarkdownTrackerAdapter implements TrackerAdapter {
         ref: request.claim,
         run: request.run,
         owner: request.owner,
-        claimedAt: new Date().toISOString(),
+        claimedAt: now.toISOString(),
         leaseExpiresAt: request.leaseExpiresAt,
         status: "active",
         supersedes: request.staleClaim,
@@ -194,8 +282,10 @@ export class MarkdownTrackerAdapter implements TrackerAdapter {
       ticket.comments.push(
         `Reclaimed ${request.staleClaim} as ${request.claim}; authorized by ${request.authorizedBy}.`,
       );
+      return undefined;
     });
   }
+
   async verifyReclaimed(request: ReclaimRequest): Promise<void> {
     const ticket = this.#ticket(await this.read(), request.ticket);
     if (
@@ -203,90 +293,189 @@ export class MarkdownTrackerAdapter implements TrackerAdapter {
       ticket.claim?.ref !== request.claim ||
       ticket.claim.supersedes !== request.staleClaim ||
       ticket.claim.leaseExpiresAt !== request.leaseExpiresAt
-    )
+    ) {
       throw new AmbiguousTrackerResultError("Reclaim could not be verified");
+    }
   }
-  async comment(ticketRef: TicketRef, body: string): Promise<void> {
-    await this.#mutate(undefined, (document) => {
+
+  async comment(ticketRef: TicketRef, body: string, expectedVersion: string): Promise<void> {
+    await this.#mutate(expectedVersion, (document) => {
       this.#ticket(document, ticketRef).comments.push(body);
+      return undefined;
     });
   }
-  async resolve(
-    ticketRef: TicketRef,
-    resolution: string,
-    artifacts: readonly string[] = [],
-  ): Promise<void> {
-    if (!resolution.trim()) throw new Error("A resolution comment is required before close");
-    await this.#mutate(undefined, (document) => {
-      const ticket = this.#ticket(document, ticketRef);
+
+  async resolve(request: MarkdownResolveRequest): Promise<void> {
+    if (!request.resolution.trim())
+      throw new Error("A resolution comment is required before close");
+    await this.#mutate(request.expectedVersion, (document) => {
+      const ticket = this.#ticket(document, request.ticket);
       if (ticket.state === "closed") throw new ClaimCollisionError("Ticket is already closed");
-      ticket.comments.push(`Resolution: ${resolution}`);
-      ticket.artifacts.push(...artifacts);
+      if (ticket.claim) {
+        if (ticket.claim.ref !== request.claim || ticket.claim.owner !== request.owner) {
+          throw new ClaimCollisionError("Active claim belongs to another owner or run");
+        }
+      } else if (ticket.assignee !== undefined && ticket.assignee !== request.owner) {
+        throw new ClaimCollisionError("Ticket is assigned to another owner");
+      }
+      ticket.comments.push(`Resolution: ${request.resolution}`);
+      ticket.artifacts.push(...(request.artifacts ?? []));
       ticket.state = "closed";
       ticket.status = "Done";
       delete ticket.assignee;
       delete ticket.claim;
+      return undefined;
     });
   }
-  async appendMapContext(mapRef: MapRef, ticketRef: TicketRef, gist: string): Promise<void> {
-    await this.#mutate(undefined, (document) => {
+
+  async appendMapContext(
+    mapRef: MapRef,
+    ticketRef: TicketRef,
+    gist: string,
+    expectedVersion: string,
+  ): Promise<void> {
+    await this.#mutate(expectedVersion, (document) => {
       const map = document.maps.find((item) => item.ref === mapRef);
       if (!map) throw new Error(`Unknown map: ${mapRef}`);
       const ticket = this.#ticket(document, ticketRef);
-      if (ticket.map !== mapRef || ticket.state !== "closed")
+      if (ticket.map !== mapRef || ticket.state !== "closed") {
         throw new Error("A map context pointer requires a closed ticket on that map");
+      }
       const marker = `[${ticket.title}](${ticket.ref})`;
-      if (map.context.some((line) => line.includes(marker)))
+      if (map.context.some((line) => line.startsWith(`${marker} —`))) {
         throw new ClaimCollisionError("Map context pointer already exists");
+      }
       map.context.push(`${marker} — ${gist}`);
+      return undefined;
     });
   }
+
   async read(): Promise<MarkdownTrackerDocument> {
     return parseMarkdownTracker(await readFile(this.path, "utf8"));
   }
 
+  async inspectLock(): Promise<MarkdownLockInspection> {
+    let source: string;
+    try {
+      source = await readFile(this.#lockPath(), "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { state: "absent" };
+      throw error;
+    }
+    let owner: MarkdownLockOwner;
+    try {
+      owner = parseLockOwner(JSON.parse(source));
+    } catch (error) {
+      return { state: "unknown", reason: error instanceof Error ? error.message : String(error) };
+    }
+    if (owner.host !== hostname())
+      return { state: "unknown", owner, reason: "lock owner is remote" };
+    try {
+      process.kill(owner.pid, 0);
+      return { state: "live", owner };
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ESRCH") return { state: "orphaned", owner };
+      return { state: "unknown", owner, reason: code ?? "process probe failed" };
+    }
+  }
+
+  async reclaimOrphanedLock(expectedToken: string): Promise<void> {
+    const inspection = await this.inspectLock();
+    if (inspection.state !== "orphaned" || inspection.owner?.token !== expectedToken) {
+      throw new MarkdownTrackerLockError(inspection);
+    }
+    const confirmed = await this.inspectLock();
+    if (confirmed.state !== "orphaned" || confirmed.owner?.token !== expectedToken) {
+      throw new MarkdownTrackerLockError(confirmed);
+    }
+    const quarantine = `${this.#lockPath()}.reclaimed.${crypto.randomUUID()}`;
+    await rename(this.#lockPath(), quarantine);
+    let tokenMatched = false;
+    try {
+      const moved = parseLockOwner(JSON.parse(await readFile(quarantine, "utf8")));
+      if (moved.token !== expectedToken) {
+        throw new MarkdownTrackerLockError({
+          state: "unknown",
+          owner: moved,
+          reason: `lock changed during reclaim; retained at ${quarantine}`,
+        });
+      }
+      tokenMatched = true;
+    } finally {
+      if (tokenMatched) await rm(quarantine, { force: true });
+    }
+  }
+
   async #mutate(
     expectedVersion: string | undefined,
-    update: (document: MarkdownTrackerDocument) => void,
+    update: (document: MarkdownTrackerDocument) => undefined | false,
   ): Promise<void> {
     await this.#withLock(async () => {
       const source = await readFile(this.path, "utf8");
       const document = parseMarkdownTracker(source);
-      if (expectedVersion !== undefined && String(document.version) !== expectedVersion)
+      if (expectedVersion !== undefined && String(document.version) !== expectedVersion) {
         throw new ClaimCollisionError();
-      update(document);
+      }
+      if (update(document) === false) return;
       document.version += 1;
+      const next = replaceTrackerRegions(source, document);
+      parseMarkdownTracker(next);
       const temporary = `${this.path}.${process.pid}.${crypto.randomUUID()}.tmp`;
       try {
-        await writeFile(temporary, formatMarkdownTracker(document), "utf8");
+        await writeFile(temporary, next, "utf8");
         await rename(temporary, this.path);
       } finally {
         await rm(temporary, { force: true });
       }
     });
   }
+
   async #withLock<T>(operation: () => Promise<T>): Promise<T> {
     await mkdir(dirname(this.path), { recursive: true });
-    const lockPath = `${this.path}.lock`;
+    const owner: MarkdownLockOwner = {
+      token: crypto.randomUUID(),
+      pid: process.pid,
+      host: hostname(),
+      createdAt: this.#clock.now().toISOString(),
+    };
     let lock: Awaited<ReturnType<typeof open>>;
     try {
-      lock = await open(lockPath, "wx");
+      lock = await open(this.#lockPath(), "wx");
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new ClaimCollisionError();
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        throw new MarkdownTrackerLockError(await this.inspectLock());
+      }
+      throw error;
+    }
+    try {
+      await lock.writeFile(JSON.stringify(owner));
+    } catch (error) {
+      await lock.close();
+      await rm(this.#lockPath(), { force: true });
       throw error;
     }
     try {
       return await operation();
     } finally {
       await lock.close();
-      await rm(lockPath, { force: true });
+      const current = await this.inspectLock();
+      if (current.state !== "absent" && current.owner?.token === owner.token) {
+        await rm(this.#lockPath(), { force: true });
+      }
     }
   }
+
+  #lockPath(): string {
+    return `${this.path}.lock`;
+  }
+
   #ticket(document: MarkdownTrackerDocument, ref: TicketRef): MarkdownTicketRecord {
     const ticket = document.tickets.find((item) => item.ref === ref);
     if (!ticket) throw new Error(`Unknown ticket: ${ref}`);
     return ticket;
   }
+
   #matchingClaim(
     document: MarkdownTrackerDocument,
     ticketRef: TicketRef,
@@ -297,6 +486,7 @@ export class MarkdownTrackerAdapter implements TrackerAdapter {
       throw new ClaimCollisionError();
     return claim;
   }
+
   #claimPayload(ticket: MarkdownTicketRecord): ClaimPayload {
     return {
       ...(ticket.assignee === undefined ? {} : { assignee: ticket.assignee }),
@@ -304,59 +494,313 @@ export class MarkdownTrackerAdapter implements TrackerAdapter {
       ...(ticket.claim === undefined ? {} : { claim: structuredClone(ticket.claim) }),
     };
   }
+
   #snapshotPayload(snapshot: TrackerSnapshot): ClaimPayload {
-    if (!snapshot.payload || typeof snapshot.payload !== "object")
-      throw new Error("Invalid Markdown tracker snapshot");
-    return structuredClone(snapshot.payload) as ClaimPayload;
+    return validateClaimPayload(snapshot.payload, "snapshot.payload");
   }
-  #restorePayload(ticket: MarkdownTicketRecord, snapshot: TrackerSnapshot): void {
-    const payload = this.#snapshotPayload(snapshot);
+
+  #restorePayload(ticket: MarkdownTicketRecord, payload: ClaimPayload): void {
     ticket.status = payload.status;
     if (payload.assignee === undefined) delete ticket.assignee;
     else ticket.assignee = payload.assignee;
     if (payload.claim === undefined) delete ticket.claim;
-    else ticket.claim = payload.claim;
+    else ticket.claim = structuredClone(payload.claim);
+  }
+
+  #payloadsEqual(left: ClaimPayload, right: ClaimPayload): boolean {
+    return JSON.stringify(left) === JSON.stringify(right);
+  }
+
+  #requireFutureLease(leaseExpiresAt: string, now: Date): void {
+    if (!isDate(leaseExpiresAt) || Date.parse(leaseExpiresAt) <= now.getTime()) {
+      throw new Error("Lease expiration must be a valid future timestamp");
+    }
   }
 }
 
 export function parseMarkdownTracker(source: string): MarkdownTrackerDocument {
-  const start = source.indexOf(BLOCK_START);
-  if (start < 0) throw new Error(`Missing ${BLOCK_START} state block`);
-  const jsonStart = source.indexOf("\n", start);
-  const end = source.indexOf(`\n${BLOCK_END}`, jsonStart);
-  if (jsonStart < 0 || end < 0) throw new Error("Unterminated Wayfinder tracker state block");
-  const value: unknown = JSON.parse(source.slice(jsonStart + 1, end));
-  if (!isDocument(value)) throw new Error("Invalid Wayfinder Markdown tracker document");
-  return value;
+  const block = locateStateBlock(source);
+  let value: unknown;
+  try {
+    value = JSON.parse(source.slice(block.contentStart, block.contentEnd));
+  } catch (error) {
+    throw new MarkdownTrackerValidationError(
+      "state",
+      `invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  return validateDocument(value);
 }
+
 export function formatMarkdownTracker(document: MarkdownTrackerDocument): string {
+  validateDocument(document);
+  return `# Wayfinder tracker\n\n${renderGenerated(document)}\n\n\`\`\`${FENCE}\n${JSON.stringify(document, null, 2)}\n\`\`\`\n`;
+}
+
+function replaceTrackerRegions(source: string, document: MarkdownTrackerDocument): string {
+  validateDocument(document);
+  const block = locateStateBlock(source);
+  let next = `${source.slice(0, block.openStart)}\`\`\`${FENCE}\n${JSON.stringify(document, null, 2)}\n\`\`\`${source.slice(block.closeEnd)}`;
+  const renderedStart = next.indexOf(RENDERED_START);
+  const renderedEnd = next.indexOf(RENDERED_END);
+  if (renderedStart >= 0 && renderedEnd > renderedStart) {
+    next = `${next.slice(0, renderedStart)}${renderGenerated(document)}${next.slice(renderedEnd + RENDERED_END.length)}`;
+  }
+  return next;
+}
+
+function renderGenerated(document: MarkdownTrackerDocument): string {
   const maps = document.maps
-    .toSorted((a, b) => a.order - b.order)
+    .toSorted((left, right) => left.order - right.order)
     .map((map) => {
       const context = map.context.length
-        ? map.context.map((line) => `- ${line}`).join("\n")
+        ? map.context.map((line) => `- ${safeRendered(line)}`).join("\n")
         : "_None yet._";
-      return `## ${map.title}\n\n### Decisions so far\n\n${context}`;
+      return `## ${safeRendered(map.title)}\n\n### Decisions so far\n\n${context}`;
     })
     .join("\n\n");
-  return `# Wayfinder tracker\n\n${maps}\n\n${BLOCK_START}\n${JSON.stringify(document, null, 2)}\n${BLOCK_END}\n`;
+  return `${RENDERED_START}\n${maps}\n${RENDERED_END}`;
 }
-function isDocument(value: unknown): value is MarkdownTrackerDocument {
-  if (!value || typeof value !== "object") return false;
-  const item = value as Partial<MarkdownTrackerDocument>;
-  return (
-    item.format === "wayfinder-markdown-tracker" &&
-    Number.isSafeInteger(item.version) &&
-    Array.isArray(item.maps) &&
-    Array.isArray(item.tickets) &&
-    item.tickets.every(
-      (ticket) =>
-        ticket &&
-        typeof ticket.ref === "string" &&
-        typeof ticket.map === "string" &&
-        Array.isArray(ticket.comments) &&
-        Array.isArray(ticket.artifacts) &&
-        (ticket.dependencies === undefined || Array.isArray(ticket.dependencies)),
-    )
+
+function safeRendered(value: string): string {
+  return value.replace(/^[ \t]{0,3}```wayfinder-tracker[ \t]*$/gm, "\\```wayfinder-tracker");
+}
+
+function locateStateBlock(source: string) {
+  const open = OPEN_FENCE.exec(source);
+  if (!open)
+    throw new MarkdownTrackerValidationError("state", `missing line-anchored ${FENCE} fence`);
+  const contentStart =
+    open.index + open[0].length + (source[open.index + open[0].length] === "\r" ? 2 : 1);
+  const tail = source.slice(contentStart);
+  const close = CLOSE_FENCE.exec(tail);
+  if (!close) throw new MarkdownTrackerValidationError("state", "unterminated state fence");
+  const duplicate = OPEN_FENCE.exec(tail.slice(close.index + close[0].length));
+  if (duplicate)
+    throw new MarkdownTrackerValidationError("state", "multiple tracker fences are not allowed");
+  return {
+    openStart: open.index,
+    contentStart,
+    contentEnd: contentStart + close.index,
+    closeEnd: contentStart + close.index + close[0].length,
+  };
+}
+
+function validateDocument(value: unknown): MarkdownTrackerDocument {
+  const item = object(value, "document");
+  equal(item.format, "wayfinder-markdown-tracker", "document.format");
+  integer(item.version, "document.version", 0);
+  const maps = array(item.maps, "document.maps").map((value, index) => validateMap(value, index));
+  const tickets = array(item.tickets, "document.tickets").map((value, index) =>
+    validateTicket(value, index),
   );
+  unique(
+    maps.map((map) => map.ref),
+    "document.maps[].ref",
+  );
+  unique(
+    tickets.map((ticket) => ticket.ref),
+    "document.tickets[].ref",
+  );
+  const mapRefs = new Set(maps.map((map) => map.ref));
+  const ticketRefs = new Set(tickets.map((ticket) => ticket.ref));
+  for (const [index, ticket] of tickets.entries()) {
+    if (!mapRefs.has(ticket.map))
+      invalid(`document.tickets[${index}].map`, "references unknown map");
+    for (const [dependencyIndex, dependency] of (ticket.dependencies ?? []).entries()) {
+      if (dependency.blocked !== ticket.ref)
+        invalid(
+          `document.tickets[${index}].dependencies[${dependencyIndex}].blocked`,
+          "must equal containing ticket ref",
+        );
+      if (!ticketRefs.has(dependency.blocking))
+        invalid(
+          `document.tickets[${index}].dependencies[${dependencyIndex}].blocking`,
+          "references unknown ticket",
+        );
+    }
+  }
+  return { format: "wayfinder-markdown-tracker", version: item.version as number, maps, tickets };
+}
+
+function validateMap(value: unknown, index: number): MarkdownMapRecord {
+  const path = `document.maps[${index}]`;
+  const item = object(value, path);
+  exactKeys(item, ["ref", "title", "order", "context"], path);
+  return {
+    ref: string(item.ref, `${path}.ref`) as MapRef,
+    title: string(item.title, `${path}.title`),
+    order: integer(item.order, `${path}.order`, 0),
+    context: stringArray(item.context, `${path}.context`),
+  };
+}
+
+function validateTicket(value: unknown, index: number): MarkdownTicketRecord {
+  const path = `document.tickets[${index}]`;
+  const item = object(value, path);
+  exactKeys(
+    item,
+    [
+      "ref",
+      "map",
+      "group",
+      "kind",
+      "state",
+      "status",
+      "assignee",
+      "dependencies",
+      "order",
+      "priority",
+      "metadata",
+      "title",
+      "claim",
+      "comments",
+      "artifacts",
+    ],
+    path,
+  );
+  const kind = oneOf(
+    item.kind,
+    ["task", "research", "prototype", "decision"] as const,
+    `${path}.kind`,
+  );
+  const state = oneOf(item.state, ["open", "closed"] as const, `${path}.state`);
+  const dependencies =
+    item.dependencies === undefined
+      ? undefined
+      : array(item.dependencies, `${path}.dependencies`).map((entry, dependencyIndex) => {
+          const dependencyPath = `${path}.dependencies[${dependencyIndex}]`;
+          const dependency = object(entry, dependencyPath);
+          exactKeys(dependency, ["blocking", "blocked", "kind"], dependencyPath);
+          equal(dependency.kind, "blocks", `${dependencyPath}.kind`);
+          return {
+            blocking: string(dependency.blocking, `${dependencyPath}.blocking`) as TicketRef,
+            blocked: string(dependency.blocked, `${dependencyPath}.blocked`) as TicketRef,
+            kind: "blocks" as const,
+          };
+        });
+  const claim = item.claim === undefined ? undefined : validateClaim(item.claim, `${path}.claim`);
+  return {
+    ref: string(item.ref, `${path}.ref`) as TicketRef,
+    map: string(item.map, `${path}.map`) as MapRef,
+    ...(item.group === undefined
+      ? {}
+      : { group: string(item.group, `${path}.group`) as NonNullable<Ticket["group"]> }),
+    kind,
+    state,
+    status: string(item.status, `${path}.status`),
+    ...(item.assignee === undefined
+      ? {}
+      : { assignee: string(item.assignee, `${path}.assignee`) as ActorRef }),
+    ...(dependencies ? { dependencies } : {}),
+    order: integer(item.order, `${path}.order`, 0),
+    ...(item.priority === undefined
+      ? {}
+      : { priority: integer(item.priority, `${path}.priority`) }),
+    ...(item.metadata === undefined ? {} : { metadata: object(item.metadata, `${path}.metadata`) }),
+    title: string(item.title, `${path}.title`),
+    ...(claim ? { claim } : {}),
+    comments: stringArray(item.comments, `${path}.comments`),
+    artifacts: stringArray(item.artifacts, `${path}.artifacts`),
+  };
+}
+
+function validateClaim(value: unknown, path: string): MarkdownClaimRecord {
+  const item = object(value, path);
+  exactKeys(
+    item,
+    ["ref", "run", "owner", "claimedAt", "leaseExpiresAt", "status", "supersedes", "supersededBy"],
+    path,
+  );
+  const claimedAt = date(item.claimedAt, `${path}.claimedAt`);
+  const leaseExpiresAt = date(item.leaseExpiresAt, `${path}.leaseExpiresAt`);
+  return {
+    ref: string(item.ref, `${path}.ref`) as ClaimRef,
+    run: string(item.run, `${path}.run`) as MarkdownClaimRecord["run"],
+    owner: string(item.owner, `${path}.owner`) as ActorRef,
+    claimedAt,
+    leaseExpiresAt,
+    status: oneOf(item.status, ["active", "superseded"] as const, `${path}.status`),
+    ...(item.supersedes === undefined
+      ? {}
+      : { supersedes: string(item.supersedes, `${path}.supersedes`) as ClaimRef }),
+    ...(item.supersededBy === undefined
+      ? {}
+      : { supersededBy: string(item.supersededBy, `${path}.supersededBy`) as ClaimRef }),
+  };
+}
+
+function validateClaimPayload(value: unknown, path: string): ClaimPayload {
+  const item = object(value, path);
+  exactKeys(item, ["assignee", "status", "claim"], path);
+  return {
+    ...(item.assignee === undefined
+      ? {}
+      : { assignee: string(item.assignee, `${path}.assignee`) as ActorRef }),
+    status: string(item.status, `${path}.status`),
+    ...(item.claim === undefined ? {} : { claim: validateClaim(item.claim, `${path}.claim`) }),
+  };
+}
+
+function parseLockOwner(value: unknown): MarkdownLockOwner {
+  const item = object(value, "lock");
+  exactKeys(item, ["token", "pid", "host", "createdAt"], "lock");
+  return {
+    token: string(item.token, "lock.token"),
+    pid: integer(item.pid, "lock.pid", 1),
+    host: string(item.host, "lock.host"),
+    createdAt: date(item.createdAt, "lock.createdAt"),
+  };
+}
+
+function object(value: unknown, path: string): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    invalid(path, "must be an object");
+  return value as Record<string, unknown>;
+}
+function array(value: unknown, path: string): unknown[] {
+  if (!Array.isArray(value)) invalid(path, "must be an array");
+  return value;
+}
+function string(value: unknown, path: string): string {
+  if (typeof value !== "string") invalid(path, "must be a string");
+  return value;
+}
+function stringArray(value: unknown, path: string): string[] {
+  return array(value, path).map((item, index) => string(item, `${path}[${index}]`));
+}
+function integer(value: unknown, path: string, minimum?: number): number {
+  if (!Number.isSafeInteger(value) || (minimum !== undefined && (value as number) < minimum))
+    invalid(path, `must be an integer${minimum === undefined ? "" : ` >= ${minimum}`}`);
+  return value as number;
+}
+function date(value: unknown, path: string): string {
+  const result = string(value, path);
+  if (!isDate(result)) invalid(path, "must be an ISO-8601 timestamp");
+  return result;
+}
+function isDate(value: string): boolean {
+  return Number.isFinite(Date.parse(value));
+}
+function equal(value: unknown, expected: string, path: string): void {
+  if (value !== expected) invalid(path, `must equal ${JSON.stringify(expected)}`);
+}
+function oneOf<const T extends readonly string[]>(
+  value: unknown,
+  choices: T,
+  path: string,
+): T[number] {
+  if (typeof value !== "string" || !choices.includes(value))
+    invalid(path, `must be one of ${choices.join(", ")}`);
+  return value as T[number];
+}
+function exactKeys(value: Record<string, unknown>, allowed: readonly string[], path: string): void {
+  const unexpected = Object.keys(value).find((key) => !allowed.includes(key));
+  if (unexpected) invalid(`${path}.${unexpected}`, "is not supported");
+}
+function unique(values: readonly string[], path: string): void {
+  if (new Set(values).size !== values.length) invalid(path, "must be unique");
+}
+function invalid(path: string, message: string): never {
+  throw new MarkdownTrackerValidationError(path, message);
 }

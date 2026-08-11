@@ -1,33 +1,44 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
+import { findAdapter } from "../src/adapters.ts";
 import { ClaimCollisionError } from "../src/contracts.ts";
 import type { ActorRef, MapRef, TicketRef } from "../src/domain.ts";
 import {
   formatMarkdownTracker,
   MarkdownTrackerAdapter,
+  type MarkdownTrackerClock,
   type MarkdownTrackerDocument,
+  MarkdownTrackerLockError,
+  type MarkdownTrackerValidationError,
+  parseMarkdownTracker,
 } from "../src/markdown-tracker.ts";
 
 const map = "markdown:local:fixtures:map:map-1" as MapRef;
+const otherMap = "markdown:local:fixtures:map:map-2" as MapRef;
 const blocker = "markdown:local:fixtures:ticket:a" as TicketRef;
 const ticket = "markdown:local:fixtures:ticket:b" as TicketRef;
 const owner = "jaren" as ActorRef;
+const foreignOwner = "other-human" as ActorRef;
 const directories: string[] = [];
+const now = new Date("2026-08-11T12:00:00.000Z");
+const clock: MarkdownTrackerClock = { now: () => new Date(now) };
+
 afterEach(async () => {
   await Promise.all(
     directories.splice(0).map((path) => rm(path, { recursive: true, force: true })),
   );
 });
-async function fixture() {
-  const directory = await mkdtemp(join(tmpdir(), "wayfinder-markdown-"));
-  directories.push(directory);
-  const path = join(directory, "tracker.md");
-  const document: MarkdownTrackerDocument = {
+
+function document(): MarkdownTrackerDocument {
+  return {
     format: "wayfinder-markdown-tracker",
     version: 1,
-    maps: [{ ref: map, title: "Reference map", order: 0, context: [] }],
+    maps: [
+      { ref: map, title: "Reference map", order: 0, context: [] },
+      { ref: otherMap, title: "Other map", order: 1, context: [] },
+    ],
     tickets: [
       {
         ref: blocker,
@@ -42,7 +53,7 @@ async function fixture() {
       },
       {
         ref: ticket,
-        map,
+        map: otherMap,
         title: "Second",
         kind: "task",
         state: "open",
@@ -54,118 +65,236 @@ async function fixture() {
       },
     ],
   };
-  await writeFile(path, formatMarkdownTracker(document));
-  return new MarkdownTrackerAdapter(path);
 }
-const claimRequest = (expectedVersion: string, target = blocker) => ({
+
+async function fixture(prose = "Human preface.\n\n", fixtureClock = clock) {
+  const directory = await mkdtemp(join(tmpdir(), "wayfinder-markdown-"));
+  directories.push(directory);
+  const path = join(directory, "tracker.md");
+  await writeFile(path, `${prose}${formatMarkdownTracker(document())}`);
+  return new MarkdownTrackerAdapter(path, fixtureClock);
+}
+
+const claimRequest = (expectedVersion: string, claimant = owner) => ({
   claim: "wayfinder-claim:first" as const,
   run: "wayfinder-run:first" as const,
-  ticket: target,
-  owner,
-  leaseExpiresAt: "2099-01-01T00:15:00.000Z",
+  ticket: blocker,
+  owner: claimant,
+  leaseExpiresAt: "2026-08-11T12:15:00.000Z",
   expectedVersion,
 });
+
 describe("MarkdownTrackerAdapter", () => {
-  test("advertises capabilities and derives dependency frontier", async () => {
-    const adapter = await fixture();
-    expect(await adapter.describe()).toMatchObject({
-      native_maps: true,
-      conditional_update: true,
-      resolution_comments: true,
-    });
-    expect((await adapter.frontier({ map })).map((item) => item.ref)).toEqual([blocker]);
+  test("line-anchored fence discovery and escaped rendered values resist fence injection", async () => {
+    const value = document();
+    const firstMap = value.maps[0];
+    if (!firstMap) throw new Error("fixture map missing");
+    firstMap.title = "Map with `ticks`\n```wayfinder-tracker";
+    firstMap.context = ["gist\n```wayfinder-tracker\nmore"];
+    const source = `Prose mentions x \`\`\`wayfinder-tracker inline.\n\n${formatMarkdownTracker(value)}`;
+    expect(parseMarkdownTracker(source)).toEqual(value);
+    expect(source).toContain("\\```wayfinder-tracker");
   });
-  test("claims, renews without a comment, and rejects stale versions", async () => {
-    const adapter = await fixture();
-    const before = await adapter.snapshotClaimState(blocker);
-    const request = claimRequest(before.version);
-    await adapter.claim(request);
-    await adapter.verifyClaim(request);
-    expect((await adapter.read()).tickets[0]?.comments).toHaveLength(1);
+
+  test("preserves human prose while validating the final replacement", async () => {
+    const adapter = await fixture("# Hand-authored notes\n\nKeep this paragraph.\n\n");
     const snapshot = await adapter.snapshotClaimState(blocker);
-    const renewal = {
-      claim: request.claim,
-      ticket: blocker,
-      expectedVersion: snapshot.version,
-      leaseExpiresAt: "2099-01-01T00:20:00.000Z",
-    };
-    await adapter.renewLease(renewal);
-    await adapter.verifyLease(renewal);
-    expect((await adapter.read()).tickets[0]?.comments).toHaveLength(1);
-    await expect(adapter.claim(claimRequest(before.version, ticket))).rejects.toBeInstanceOf(
-      ClaimCollisionError,
+    await adapter.comment(blocker, "audit", snapshot.version);
+    const source = await readFile(adapter.path, "utf8");
+    expect(source).toStartWith("# Hand-authored notes\n\nKeep this paragraph.\n\n");
+    expect(parseMarkdownTracker(source).tickets[0]?.comments).toEqual(["audit"]);
+  });
+
+  test("validates nested hand edits with an explicit path", () => {
+    const value = document() as unknown as { tickets: Array<Record<string, unknown>> };
+    const firstTicket = value.tickets[0];
+    if (!firstTicket) throw new Error("fixture ticket missing");
+    firstTicket.comments = [42];
+    const source = `\`\`\`wayfinder-tracker\n${JSON.stringify(value)}\n\`\`\``;
+    expect(() => parseMarkdownTracker(source)).toThrow(
+      expect.objectContaining({
+        name: "MarkdownTrackerValidationError",
+        code: "invalid_markdown_tracker",
+        path: "document.tickets[0].comments[0]",
+      }) as MarkdownTrackerValidationError,
     );
   });
-  test("restores exact claim fields while preserving audit history", async () => {
-    const adapter = await fixture();
+
+  test("uses the injected clock for claim, renewal, and stale reclaim", async () => {
+    let current = new Date(now);
+    const adapter = await fixture("Human preface.\n\n", { now: () => new Date(current) });
     const before = await adapter.snapshotClaimState(blocker);
     const request = claimRequest(before.version);
     await adapter.claim(request);
-    const restore = { ticket: blocker, claim: request.claim, originalSnapshot: before };
-    await adapter.restoreClaimState(restore);
-    await adapter.verifyRestored(restore);
-    const restored = (await adapter.read()).tickets[0];
-    expect(restored?.assignee).toBeUndefined();
-    expect(restored?.claim).toBeUndefined();
-    expect(restored?.comments).toHaveLength(2);
-  });
-  test("release and stale reclaim obey matching ownership", async () => {
-    const adapter = await fixture();
-    const before = await adapter.snapshotClaimState(blocker);
-    const first = { ...claimRequest(before.version), leaseExpiresAt: "2000-01-01T00:00:00.000Z" };
-    await adapter.claim(first);
-    const claimed = await adapter.snapshotClaimState(blocker);
+    expect((await adapter.read()).tickets[0]?.claim?.claimedAt).toBe(now.toISOString());
+    const claimedSnapshot = await adapter.snapshotClaimState(blocker);
+    await expect(
+      adapter.renewLease({
+        claim: request.claim,
+        ticket: blocker,
+        expectedVersion: claimedSnapshot.version,
+        leaseExpiresAt: "2026-08-11T11:59:59.000Z",
+      }),
+    ).rejects.toThrow("future timestamp");
+    current = new Date("2026-08-11T12:16:00.000Z");
+    const staleSnapshot = await adapter.snapshotClaimState(blocker);
     const reclaim = {
-      staleClaim: first.claim,
+      staleClaim: request.claim,
       claim: "wayfinder-claim:second" as const,
       run: "wayfinder-run:second" as const,
       ticket: blocker,
       owner,
       authorizedBy: owner,
-      leaseExpiresAt: "2099-01-01T00:30:00.000Z",
-      expectedVersion: claimed.version,
+      leaseExpiresAt: "2026-08-11T12:30:00.000Z",
+      expectedVersion: staleSnapshot.version,
       originalSnapshot: before,
     };
     await adapter.reclaim(reclaim);
     await adapter.verifyReclaimed(reclaim);
-    expect((await adapter.read()).tickets[0]?.comments.at(-1)).toContain("Reclaimed");
-    const current = await adapter.snapshotClaimState(blocker);
-    await adapter.releaseClaim({
-      claim: reclaim.claim,
+    expect((await adapter.read()).tickets[0]?.claim?.claimedAt).toBe(current.toISOString());
+  });
+
+  test("restore is retry-safe, including compensation before the claim write lands", async () => {
+    const adapter = await fixture();
+    const before = await adapter.snapshotClaimState(blocker);
+    const restore = {
       ticket: blocker,
+      claim: "wayfinder-claim:first" as const,
       originalSnapshot: before,
-      expectedVersion: current.version,
-      authorizedBy: owner,
-    });
+    };
+    await adapter.restoreClaimState(restore);
+    await adapter.verifyRestored(restore);
+    expect((await adapter.snapshotClaimState(blocker)).version).toBe(before.version);
+    const request = claimRequest(before.version);
+    await adapter.claim(request);
+    await adapter.restoreClaimState(restore);
+    await adapter.restoreClaimState(restore);
+    await adapter.verifyRestored(restore);
+  });
+
+  test("resolve rejects stale versions and foreign active claims without mutation", async () => {
+    const adapter = await fixture();
+    const before = await adapter.snapshotClaimState(blocker);
+    await adapter.claim(claimRequest(before.version, foreignOwner));
+    const claimed = await adapter.snapshotClaimState(blocker);
+    const baseline = await adapter.read();
     await expect(
-      adapter.restoreClaimState({
+      adapter.resolve({ ticket: blocker, expectedVersion: before.version, resolution: "stale" }),
+    ).rejects.toBeInstanceOf(ClaimCollisionError);
+    await expect(
+      adapter.resolve({
         ticket: blocker,
-        claim: reclaim.claim,
-        originalSnapshot: before,
+        expectedVersion: claimed.version,
+        owner,
+        claim: "wayfinder-claim:first",
+        resolution: "foreign",
       }),
     ).rejects.toBeInstanceOf(ClaimCollisionError);
+    expect(await adapter.read()).toEqual(baseline);
   });
-  test("resolution closes, unblocks, and permits exactly one map pointer", async () => {
+
+  test("resolve with matching ownership closes and preserves resolution evidence", async () => {
     const adapter = await fixture();
-    await expect(adapter.resolve(blocker, "")).rejects.toThrow("resolution comment");
-    await adapter.resolve(blocker, "Evidence passed.", ["https://example.test/pr/1"]);
-    expect((await adapter.frontier({ map })).map((item) => item.ref)).toEqual([ticket]);
-    await adapter.appendMapContext(map, blocker, "Verified.");
-    await expect(adapter.appendMapContext(map, blocker, "duplicate")).rejects.toBeInstanceOf(
-      ClaimCollisionError,
-    );
-    const document = await adapter.read();
-    expect(document.tickets[0]).toMatchObject({
-      state: "closed",
+    const before = await adapter.snapshotClaimState(blocker);
+    const claim = claimRequest(before.version);
+    await adapter.claim(claim);
+    const current = await adapter.snapshotClaimState(blocker);
+    await adapter.resolve({
+      ticket: blocker,
+      expectedVersion: current.version,
+      owner,
+      claim: claim.claim,
+      resolution: "Evidence passed.",
       artifacts: ["https://example.test/pr/1"],
     });
-    expect(document.maps[0]?.context).toHaveLength(1);
-    expect(await readFile(adapter.path, "utf8")).toContain("### Decisions so far");
+    expect((await adapter.frontier({ map: otherMap })).map((item) => item.ref)).toEqual([ticket]);
   });
-  test("lock collision is explicit and leaves state untouched", async () => {
+
+  test("orphan lock has explicit token-guarded recovery; live and unknown locks are retained", async () => {
     const adapter = await fixture();
-    await writeFile(`${adapter.path}.lock`, "busy");
-    await expect(adapter.comment(blocker, "no write")).rejects.toBeInstanceOf(ClaimCollisionError);
-    expect((await adapter.read()).tickets[0]?.comments).toEqual([]);
+    const lockPath = `${adapter.path}.lock`;
+    const createdAt = now.toISOString();
+    await writeFile(
+      lockPath,
+      JSON.stringify({ token: "live", pid: process.pid, host: hostname(), createdAt }),
+    );
+    expect(await adapter.inspectLock()).toMatchObject({ state: "live", owner: { token: "live" } });
+    await expect(adapter.reclaimOrphanedLock("live")).rejects.toBeInstanceOf(
+      MarkdownTrackerLockError,
+    );
+    expect(await readFile(lockPath, "utf8")).toContain("live");
+    await writeFile(
+      lockPath,
+      JSON.stringify({ token: "remote", pid: 1, host: "another-host", createdAt }),
+    );
+    expect(await adapter.inspectLock()).toMatchObject({ state: "unknown" });
+    await expect(adapter.reclaimOrphanedLock("remote")).rejects.toBeInstanceOf(
+      MarkdownTrackerLockError,
+    );
+    await writeFile(
+      lockPath,
+      JSON.stringify({ token: "orphan", pid: 2_147_483_647, host: hostname(), createdAt }),
+    );
+    expect(await adapter.inspectLock()).toMatchObject({ state: "orphaned" });
+    await adapter.reclaimOrphanedLock("orphan");
+    expect(await adapter.inspectLock()).toEqual({ state: "absent" });
+  });
+
+  test("every advertised capability has behavioral conformance evidence", async () => {
+    const adapter = await fixture();
+    expect(findAdapter("markdown").available).toBeFalse();
+    const advertised = Object.keys(await adapter.describe()).toSorted();
+    const proven = [
+      "artifact_links",
+      "atomic_assignment",
+      "claim_comments",
+      "conditional_update",
+      "cross_map_dependencies",
+      "lease_metadata",
+      "native_dependencies",
+      "native_maps",
+      "resolution_comments",
+      "workflow_transition",
+    ].toSorted();
+    expect(advertised).toEqual(proven);
+    expect((await adapter.frontier()).map((item) => item.ref)).toEqual([blocker]);
+    const before = await adapter.snapshotClaimState(blocker);
+    const claim = claimRequest(before.version);
+    await adapter.claim(claim);
+    await adapter.verifyClaim(claim);
+    const claimed = await adapter.read();
+    expect(claimed.tickets[0]).toMatchObject({
+      status: "In Progress",
+      comments: [expect.stringContaining("Claimed")],
+    });
+    const snapshot = await adapter.snapshotClaimState(blocker);
+    const renewal = {
+      claim: claim.claim,
+      ticket: blocker,
+      expectedVersion: snapshot.version,
+      leaseExpiresAt: "2026-08-11T12:20:00.000Z",
+    };
+    await adapter.renewLease(renewal);
+    await adapter.verifyLease(renewal);
+    const renewed = await adapter.snapshotClaimState(blocker);
+    await adapter.resolve({
+      ticket: blocker,
+      expectedVersion: renewed.version,
+      owner,
+      claim: claim.claim,
+      resolution: "done",
+      artifacts: ["artifact"],
+    });
+    const resolved = await adapter.read();
+    expect(resolved.tickets[0]).toMatchObject({
+      state: "closed",
+      status: "Done",
+      artifacts: ["artifact"],
+      comments: [expect.any(String), "Resolution: done"],
+    });
+    const mapVersion = String(resolved.version);
+    await adapter.appendMapContext(map, blocker, "gist", mapVersion);
+    expect((await adapter.read()).maps[0]?.context).toHaveLength(1);
+    expect((await adapter.frontier({ map: otherMap })).map((item) => item.ref)).toEqual([ticket]);
   });
 });
