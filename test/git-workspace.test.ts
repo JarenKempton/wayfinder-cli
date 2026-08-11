@@ -45,6 +45,8 @@ const repository: RepositorySpec = {
   worktreeRoot: "/worktrees",
   baseBranch: "origin/main",
 };
+const repositoryPath = resolve(repository.path);
+const worktreePath = resolve(repository.worktreeRoot, "ABC-123");
 const ticket: Ticket = {
   ref: "jira:example:TEAM:ticket:ABC-123" as TicketRef,
   map: "jira:example:TEAM:map:ABC-1" as Ticket["map"],
@@ -69,7 +71,7 @@ describe("Git workspace adapter", () => {
     const { workspace } = subject();
     expect(await workspace.plan(ticket)).toEqual({
       ticket: ticket.ref,
-      path: "/worktrees/ABC-123",
+      path: worktreePath,
       branch: "task/ABC-123",
     });
   });
@@ -86,9 +88,9 @@ describe("Git workspace adapter", () => {
 
   test("resumes an exact registered worktree without mutating dirty work", async () => {
     const { workspace, git } = subject();
-    git.worktrees = "worktree /worktrees/ABC-123\nbranch refs/heads/task/ABC-123\n";
+    git.worktrees = `worktree ${worktreePath}\nbranch refs/heads/task/ABC-123\n`;
     expect(await workspace.prepare(await workspace.plan(ticket))).toEqual({
-      path: "/worktrees/ABC-123",
+      path: worktreePath,
       branch: "task/ABC-123",
     });
     expect(git.calls).toHaveLength(1);
@@ -96,13 +98,13 @@ describe("Git workspace adapter", () => {
 
   test("fails closed on path or branch collisions", async () => {
     const first = subject();
-    first.git.worktrees = "worktree /worktrees/ABC-123\nbranch refs/heads/task/OTHER\n";
+    first.git.worktrees = `worktree ${worktreePath}\nbranch refs/heads/task/OTHER\n`;
     await expect(
       first.workspace.prepare(await first.workspace.plan(ticket)),
     ).rejects.toBeInstanceOf(WorkspaceConflictError);
 
     const second = subject();
-    second.git.worktrees = "worktree /somewhere/else\nbranch refs/heads/task/ABC-123\n";
+    second.git.worktrees = `worktree ${resolve("/somewhere/else")}\nbranch refs/heads/task/ABC-123\n`;
     await expect(
       second.workspace.prepare(await second.workspace.plan(ticket)),
     ).rejects.toBeInstanceOf(WorkspaceConflictError);
@@ -111,7 +113,7 @@ describe("Git workspace adapter", () => {
   test("creates and verifies a deterministic worktree", async () => {
     const { workspace, git } = subject();
     expect(await workspace.prepare(await workspace.plan(ticket))).toEqual({
-      path: "/worktrees/ABC-123",
+      path: worktreePath,
       branch: "task/ABC-123",
     });
     expect(git.calls.some((call) => call.argv[2] === "add" && call.argv[3] === "-b")).toBeTrue();
@@ -122,26 +124,24 @@ describe("Git workspace adapter", () => {
     git.branchExists = true;
     await workspace.prepare(await workspace.plan(ticket));
     expect(git.calls).toContainEqual({
-      argv: ["git", "worktree", "add", "/worktrees/ABC-123", "task/ABC-123"],
-      cwd: "/source/repo",
+      argv: ["git", "worktree", "add", worktreePath, "task/ABC-123"],
+      cwd: repositoryPath,
     });
   });
 
   test("explicit deletion refuses dirty work", async () => {
     const { workspace, git } = subject();
-    git.worktrees = "worktree /worktrees/ABC-123\nbranch refs/heads/task/ABC-123\n";
+    git.worktrees = `worktree ${worktreePath}\nbranch refs/heads/task/ABC-123\n`;
     git.dirty = true;
-    await expect(workspace.delete("/worktrees/ABC-123")).rejects.toBeInstanceOf(
-      DirtyWorkspaceError,
-    );
+    await expect(workspace.delete(worktreePath)).rejects.toBeInstanceOf(DirtyWorkspaceError);
     expect(git.calls.some((call) => call.argv[2] === "remove")).toBeFalse();
   });
 
   test("explicit deletion removes a verified clean worktree", async () => {
     const { workspace, git } = subject();
-    git.worktrees = "worktree /worktrees/ABC-123\nbranch refs/heads/task/ABC-123\n";
-    await workspace.delete("/worktrees/ABC-123");
-    expect(git.calls.at(-1)?.argv).toEqual(["git", "worktree", "remove", "/worktrees/ABC-123"]);
+    git.worktrees = `worktree ${worktreePath}\nbranch refs/heads/task/ABC-123\n`;
+    await workspace.delete(worktreePath);
+    expect(git.calls.at(-1)?.argv).toEqual(["git", "worktree", "remove", worktreePath]);
   });
 
   test("parses CRLF porcelain output and preserves paths containing spaces", () => {
@@ -155,6 +155,8 @@ describe("Git workspace adapter", () => {
     const git = new FakeGit();
     const workspace = new GitWorkspaceAdapter({ ...repository, worktreeRoot: "/work trees" }, git);
     await workspace.prepare(await workspace.plan(ticket));
-    expect(git.calls.some((call) => call.argv.includes("/work trees/ABC-123"))).toBeTrue();
+    expect(
+      git.calls.some((call) => call.argv.includes(resolve("/work trees", "ABC-123"))),
+    ).toBeTrue();
   });
 });
