@@ -21,17 +21,17 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
-          bun build src/cli.ts --compile --target=bun-darwin-arm64 --outfile=dist/nav-darwin-arm64
-          bun build src/cli.ts --compile --target=bun-darwin-x64 --outfile=dist/nav-darwin-x64
-          bun build src/cli.ts --compile --target=bun-linux-arm64 --outfile=dist/nav-linux-arm64
-          bun build src/cli.ts --compile --target=bun-linux-x64-baseline --outfile=dist/nav-linux-x64
-          bun build src/cli.ts --compile --target=bun-windows-arm64 --outfile=dist/nav-windows-arm64.exe
-          bun build src/cli.ts --compile --target=bun-windows-x64-baseline --outfile=dist/nav-windows-x64.exe
+          bun build src/cli.ts --compile --target=bun-darwin-arm64 --outfile=dist/wayfinder-darwin-arm64
+          bun build src/cli.ts --compile --target=bun-darwin-x64 --outfile=dist/wayfinder-darwin-x64
+          bun build src/cli.ts --compile --target=bun-linux-arm64 --outfile=dist/wayfinder-linux-arm64
+          bun build src/cli.ts --compile --target=bun-linux-x64-baseline --outfile=dist/wayfinder-linux-x64
+          bun build src/cli.ts --compile --target=bun-windows-arm64 --outfile=dist/wayfinder-windows-arm64.exe
+          bun build src/cli.ts --compile --target=bun-windows-x64-baseline --outfile=dist/wayfinder-windows-x64.exe
           cd dist
           sha256sum * > checksums.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: nav-release
+          name: wayfinder-cli-release
           path: dist/
       - uses: softprops/action-gh-release@v2
         with:

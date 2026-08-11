@@ -1,6 +1,6 @@
 # Architecture
 
-Nav separates policy from vendor mechanics.
+Wayfinder CLI separates policy from vendor mechanics.
 
 ```text
 CLI
@@ -22,8 +22,8 @@ workspace <tracker-ref>:<workspace-id>
 group     <workspace-ref>:group:<native-id>
 map       <workspace-ref>:map:<native-id>
 ticket    <workspace-ref>:ticket:<native-id>
-run       nav-run:<uuid>
-claim     nav-claim:<uuid>
+run       wayfinder-run:<uuid>
+claim     wayfinder-claim:<uuid>
 ```
 
 References are globally qualified now so a later protocol can represent

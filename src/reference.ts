@@ -11,11 +11,11 @@ export interface ParsedRef {
 
 export function parseRef(input: string): ParsedRef {
   const raw = input.trim();
-  if (raw.startsWith("nav-run:")) {
-    return terminalRef(raw, "nav-run:", "run");
+  if (raw.startsWith("wayfinder-run:")) {
+    return terminalRef(raw, "wayfinder-run:", "run");
   }
-  if (raw.startsWith("nav-claim:")) {
-    return terminalRef(raw, "nav-claim:", "claim");
+  if (raw.startsWith("wayfinder-claim:")) {
+    return terminalRef(raw, "wayfinder-claim:", "claim");
   }
 
   const parts = raw.split(":");

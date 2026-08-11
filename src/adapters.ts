@@ -66,7 +66,7 @@ export function builtInAdapters(): AdapterDescriptor[] {
 export function findAdapter(name: string): AdapterDescriptor {
   const builtIn = builtInAdapters().find((adapter) => adapter.name === name);
   if (builtIn) return builtIn;
-  const executable = Bun.which(`nav-adapter-${name}`);
+  const executable = Bun.which(`wayfinder-adapter-${name}`);
   if (!executable) throw new Error(`Adapter not found: ${JSON.stringify(name)}`);
   return {
     name,

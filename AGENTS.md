@@ -2,7 +2,7 @@
 
 ## Project intent
 
-Nav is a portable orchestration CLI for Wayfinder-style maps. Preserve tracker,
+Wayfinder CLI is a portable orchestration CLI for Wayfinder maps. Preserve tracker,
 harness, model, and workspace independence in all core packages.
 
 The implementation language is TypeScript and the build/runtime tool is Bun.

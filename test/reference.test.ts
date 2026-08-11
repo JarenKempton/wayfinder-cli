@@ -10,11 +10,11 @@ describe("parseRef", () => {
     ["jira:responsibid:JWB:group:JWB-150", "group"],
     ["jira:responsibid:JWB:map:JWB-239", "map"],
     ["jira:responsibid:JWB:ticket:JWB-245", "ticket"],
-    ["nav-run:018f", "run"],
-    ["nav-claim:018f", "claim"],
+    ["wayfinder-run:018f", "run"],
+    ["wayfinder-claim:018f", "claim"],
   ] as const)("parses %s", (raw, kind) => expect(parseRef(raw).kind).toBe(kind as RefKind));
 
-  test.each(["JWB-245", "jira:", "jira:x:y:map", "jira:x:y:other:z", "nav-run:"])(
+  test.each(["JWB-245", "jira:", "jira:x:y:map", "jira:x:y:other:z", "wayfinder-run:"])(
     "rejects %s",
     (raw) => expect(() => parseRef(raw)).toThrow(),
   );

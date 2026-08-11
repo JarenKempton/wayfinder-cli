@@ -6,11 +6,11 @@ import { capabilities, type Run } from "../src/domain.ts";
 import { StateStore } from "../src/state.ts";
 
 test("SQLite store round-trips runs", () => {
-  const directory = mkdtempSync(join(tmpdir(), "nav-test-"));
-  const store = new StateStore(join(directory, "nav.db"));
+  const directory = mkdtempSync(join(tmpdir(), "wayfinder-test-"));
+  const store = new StateStore(join(directory, "wayfinder.db"));
   const now = new Date().toISOString();
   const run: Run = {
-    ref: "nav-run:test",
+    ref: "wayfinder-run:test",
     ticket: "jira:x:W:ticket:A" as Run["ticket"],
     harness: "codex" as Run["harness"],
     model: "gpt",

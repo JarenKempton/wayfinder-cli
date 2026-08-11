@@ -174,7 +174,7 @@ export class PickupCoordinator {
     } catch (restorationError) {
       if (restorationError instanceof PickupResultError) throw restorationError;
       receipt.state = "recovery_required";
-      receipt.recoveryCommand = `nav recover ${receipt.run}`;
+      receipt.recoveryCommand = `wayfinder recover ${receipt.run}`;
       const combined = new AggregateError(
         [cause, restorationError],
         "Pickup and restoration failed",

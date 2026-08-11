@@ -107,7 +107,10 @@ function coordinator(
       workspace,
       harness,
       ledger: new FakeLedger(),
-      ids: { run: () => "nav-run:test" as RunRef, claim: () => "nav-claim:test" as ClaimRef },
+      ids: {
+        run: () => "wayfinder-run:test" as RunRef,
+        claim: () => "wayfinder-claim:test" as ClaimRef,
+      },
       clock: { now: () => new Date("2026-08-10T12:00:00Z") },
     }),
   };
@@ -145,7 +148,7 @@ describe("pickup coordinator", () => {
     } catch (error) {
       const result = error as PickupResultError;
       expect(result.receipt.state).toBe("recovery_required");
-      expect(result.receipt.recoveryCommand).toBe("nav recover nav-run:test");
+      expect(result.receipt.recoveryCommand).toBe("wayfinder recover wayfinder-run:test");
     }
   });
 

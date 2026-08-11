@@ -1,16 +1,17 @@
-# Nav
+# Wayfinder CLI
 
-Nav is portable work orchestration for agents. It discovers unblocked work from
+Wayfinder CLI is portable work orchestration for agents. It discovers unblocked work from
 Wayfinder maps, lets a person select one ticket, and coordinates a deterministic
 claim, workspace, and harness launch without making the tracker, model, or
 harness part of the core domain.
 
-Nav is designed to integrate with the map-based Wayfinder workflow popularized
-by Matt Pocock. See [NOTICE.md](NOTICE.md) for attribution and project lineage.
+It implements the map-based Wayfinder workflow created by Matt Pocock while
+remaining an independent project. See [NOTICE.md](NOTICE.md) for exact upstream
+attribution and project lineage.
 
 ## Status
 
-Nav is a TypeScript/Bun pre-release. This repository currently defines and implements the stable
+Wayfinder CLI is a TypeScript/Bun pre-release. This repository currently defines and implements the stable
 foundation: qualified references, portable ticket and capability types, frontier
 evaluation, adapter protocol discovery, layered execution routing, SQLite run
 state, and the initial CLI. Hosted tracker mutations and product-specific
@@ -27,14 +28,14 @@ bun run src/cli.ts doctor
 ## Commands
 
 ```text
-nav doctor
-nav resolve <reference>
-nav frontier --input tickets.json [--scope <reference>] [--json]
-nav adapter list
-nav adapter describe <name>
-nav runs list
-nav runs show <run-id>
-nav runs export <run-id>
+wayfinder doctor
+wayfinder resolve <reference>
+wayfinder frontier --input tickets.json [--scope <reference>] [--json]
+wayfinder adapter list
+wayfinder adapter describe <name>
+wayfinder runs list
+wayfinder runs show <run-id>
+wayfinder runs export <run-id>
 ```
 
 The planned pickup, claim, supervisor, workspace, and recovery commands are
@@ -45,7 +46,7 @@ are implemented and tested.
 ## Principles
 
 - The tracker is the durable source of execution truth.
-- A human owns a claim; a Nav run identifies the executing session.
+- A human owns a claim; a Wayfinder run identifies the executing session.
 - Frontier discovery is read-only and stable.
 - Claims happen only after every local and remote preflight succeeds.
 - Unsupported capabilities fail explicitly.
@@ -62,4 +63,4 @@ bun run check
 bun run build
 ```
 
-Nav is licensed under the [MIT License](LICENSE).
+Wayfinder CLI is licensed under the [MIT License](LICENSE).
