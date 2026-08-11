@@ -1,0 +1,76 @@
+{
+  "invocations": {
+    "ticket": ["wf", "pickup", "JWB-2", "--t3", "--json"],
+    "mapFrontier": ["wf", "pickup", "JWB-1", "--frontier", "--t3", "--json"],
+    "planOnly": ["wf", "pickup", "JWB-2", "--t3", "--dry-run", "--json"],
+    "resumeOnly": ["wf", "pickup", "JWB-2", "--resume", "--t3", "--json"]
+  },
+  "input": {
+    "ticket": {
+      "key": "JWB-2",
+      "title": "Compatibility task",
+      "role": "task"
+    },
+    "map": {
+      "key": "JWB-1",
+      "title": "Compatibility map"
+    },
+    "repository": {
+      "github": "Acme/widgets",
+      "baseBranch": "main",
+      "baseCommit": "0123456789abcdef0123456789abcdef01234567"
+    },
+    "worktreeRoot": "/worktrees/widgets"
+  },
+  "expectedPlan": {
+    "ok": true,
+    "action": "created",
+    "state": "planned",
+    "transactionId": "00000000-0000-4000-8000-000000000001",
+    "ticket": {
+      "key": "JWB-2",
+      "title": "Compatibility task",
+      "role": "task"
+    },
+    "map": {
+      "key": "JWB-1",
+      "title": "Compatibility map"
+    },
+    "repository": {
+      "github": "Acme/widgets",
+      "baseBranch": "main",
+      "baseCommit": "0123456789abcdef0123456789abcdef01234567"
+    },
+    "workspace": {
+      "path": "/worktrees/widgets/JWB-2",
+      "branch": "task/JWB-2",
+      "policy": "ticket-key-v1"
+    },
+    "claim": null,
+    "t3": {
+      "threadId": null,
+      "title": "JWB-2 — Compatibility task",
+      "worktreePath": "/worktrees/widgets/JWB-2"
+    }
+  },
+  "expectedReady": {
+    "action": "created",
+    "state": "ready",
+    "claim": {
+      "priorStatus": "To Do",
+      "status": "In Progress",
+      "commentId": "101"
+    },
+    "t3ThreadId": "thread-1"
+  },
+  "expectedResume": {
+    "action": "resumed",
+    "state": "ready",
+    "sameTransaction": true,
+    "sameWorkspace": true,
+    "sameThread": true,
+    "additionalClaims": 0,
+    "additionalWorktrees": 0,
+    "additionalThreads": 0
+  }
+}
