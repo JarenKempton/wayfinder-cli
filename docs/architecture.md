@@ -15,6 +15,7 @@ CLI
  └── adapter registry
       ├── tracker adapters
       ├── workspace adapters
+      ├── environment adapters
       └── harness adapters
 ```
 
@@ -67,6 +68,9 @@ Portable entities, frontier rules, routing, and transaction coordination are
 ordinary TypeScript. Bun-specific filesystem, subprocess, SQLite, executable
 build, and update behavior remains isolated in platform-facing modules. Release
 binaries embed Bun, so consumers install a single executable without a runtime.
+
+Application development lifecycle behavior crosses the separate environment
+adapter boundary defined in [Development environment boundary](environment-boundary.md).
 
 ## Capability honesty
 

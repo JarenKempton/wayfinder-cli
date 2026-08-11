@@ -56,6 +56,7 @@ renamed or repurposed within the major version.
 | Harness lifecycle | `session_resume`, `session_status`, `session_interrupt`, `session_close` |
 | Harness controls | `model_selection`, `reasoning_selection`, `tool_configuration`, `visible_multi_session` |
 | Workspace | `workspace_prepare` |
+| Development environment | `environment_plan`, `environment_start`, `environment_readiness`, `environment_logs`, `environment_resume`, `environment_stop` |
 
 Presentation tiers such as `prepare`, `launch`, `managed`, and `lifecycle` are
 derived summaries, not capabilities. Core authorizes each operation against

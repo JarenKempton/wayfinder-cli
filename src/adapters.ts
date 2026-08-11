@@ -1,6 +1,6 @@
 import { type CapabilitySet, capabilities } from "./domain.ts";
 
-export type AdapterKind = "tracker" | "harness" | "workspace";
+export type AdapterKind = "tracker" | "harness" | "workspace" | "environment";
 
 export interface AdapterDescriptor {
   name: string;

@@ -35,6 +35,12 @@ export const CAPABILITIES = [
   "tool_configuration",
   "visible_multi_session",
   "workspace_prepare",
+  "environment_plan",
+  "environment_start",
+  "environment_readiness",
+  "environment_logs",
+  "environment_resume",
+  "environment_stop",
 ] as const;
 
 export type Capability = (typeof CAPABILITIES)[number];
@@ -177,6 +183,28 @@ export type RunStatus =
 export interface PreparedWorkspace {
   path: string;
   branch?: string;
+}
+
+export type EnvironmentProfileRef = string & { readonly __kind: "EnvironmentProfileRef" };
+
+export interface EnvironmentPlan {
+  id: string;
+  profile: EnvironmentProfileRef;
+  summary: string;
+  warnings: string[];
+  credentialHandles: string[];
+}
+
+export interface EnvironmentStartAuthorization {
+  kind: "human" | "policy";
+  policy?: string;
+}
+
+export interface PreparedEnvironment {
+  id: string;
+  profile: EnvironmentProfileRef;
+  readiness: Record<string, "ready" | "not_ready" | "external">;
+  logReferences: string[];
 }
 
 export interface Run {
