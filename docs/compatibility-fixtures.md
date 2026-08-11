@@ -1,39 +1,33 @@
 # Compatibility fixtures
 
-JWB-293 records durable behavior for frontier discovery and deterministic
-pickup. The machine-readable scenarios live in `test/fixtures/compatibility/`
-and cover:
+JWB-293 records repository-owned scenarios for two production behaviors:
 
-- ordered, read-only frontier selection;
-- direct-ticket, first-frontier, plan-only, and resume pickup modes;
-- map-to-repository configuration lookup;
-- `<role>/<ticket-key>` branches, `<worktree-root>/<ticket-key>` worktrees, and
-  the `ticket-key-v1` policy marker;
-- stable result/error facts and idempotent resume behavior.
+- `evaluateFrontier` filters and orders open, unassigned, unblocked tickets;
+- `PickupCoordinator` claims for a human owner, prepares a workspace, launches
+  through a harness, and compensates the exact tracker snapshot after failure.
 
-The fixtures belong entirely to this repository. They contain no executable,
-filesystem, package, configuration, or runtime dependency on another system.
-They specify capabilities and safety properties rather than another tool's
-command spelling or implementation-specific wire format.
+The machine-readable inputs and expected outcomes live in
+`test/fixtures/compatibility/`. Tests feed those inputs through the production
+frontier evaluator and pickup coordinator. The fixtures contain no dependency
+on a particular tracker, workspace provider, harness, command-line client, or
+session product.
 
-Dynamic identifiers use deterministic scenario values. Implementations must
-preserve identity across resume, not reproduce the literal UUID, commit,
-comment, or session identifiers.
+## Covered contract
 
-## Compatibility rules
+1. Frontier evaluation is read-only, honors map scope, excludes assigned,
+   closed, unavailable, and blocked tickets, and returns stable production
+   ordering.
+2. Pickup records the human owner and tracker version in the claim request and
+   creates the default 15-minute lease.
+3. The workspace adapter owns branch and path planning; the coordinator passes
+   the resulting plan through preparation and launch.
+4. A definite claim collision ends in `collision` without compensation.
+5. An ambiguous claim result, workspace preparation failure, or harness launch
+   failure attempts exact-snapshot compensation. Successful restoration and
+   verification ends in `compensated`.
+6. Ambiguous or unverifiable restoration ends in `recovery_required`.
 
-1. Frontier reads never mutate tracker, Git, manifest, or T3 state and retain
-   native map-child order.
-2. Pickup resolves exactly one ticket. A map requires `--frontier`; a direct
-   ticket must be a child of a configured map.
-3. Dry-run performs resolution and preflight only.
-4. Claim happens before worktree creation and launch. A claim race creates
-   neither local artifact.
-5. Git failure attempts guarded claim rollback. T3 failure retains the claim,
-   worktree, and manifest for deterministic resume.
-6. Resume reuses the transaction, canonical worktree, branch, and T3 thread and
-   does not repeat completed mutations.
-
-These scenarios are a repository-owned acceptance baseline. When the relevant
-public commands are available, conformance tests should exercise those commands
-directly while retaining the same behavioral assertions.
+Lease renewal, explicit release, and human-authorized stale reclaim are outside
+these pickup fixtures because they are separate production contracts. Their
+human ownership, expected-version, original-snapshot, and authorization
+requirements are exercised in `test/claim.test.ts`.

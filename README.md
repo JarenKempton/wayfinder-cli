@@ -9,9 +9,8 @@ Wayfinder CLI is designed to integrate with the map-based Wayfinder workflow pop
 by Matt Pocock. See [NOTICE.md](NOTICE.md) for attribution and project lineage.
 The normative [ownership boundary](docs/ownership-boundary.md) defines what
 stays in the MCP/skill layer and what belongs to this CLI runtime.
-The [compatibility fixtures](docs/compatibility-fixtures.md) record the durable
-frontier, pickup, workspace, resume, and failure behavior that future command
-implementations must preserve.
+The [compatibility fixtures](docs/compatibility-fixtures.md) exercise durable
+frontier ordering and pickup compensation behavior through production code.
 
 ## Status
 

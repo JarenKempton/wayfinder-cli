@@ -1,72 +1,60 @@
 {
-  "operations": ["list_frontier", "pickup_first_eligible"],
-  "map": {
-    "key": "JWB-1",
-    "title": "Compatibility map",
-    "subtasks": ["JWB-2", "JWB-3", "JWB-4", "JWB-5", "JWB-6"]
-  },
-  "configuration": {
-    "availableStatuses": ["To Do", "Open"],
-    "claimStatus": "In Progress"
-  },
-  "children": [
+  "scope": "tracker:fixture:workspace:map:MAP-1",
+  "availableStatuses": ["To Do", "Open"],
+  "tickets": [
     {
-      "key": "JWB-2",
-      "title": "First eligible task",
-      "role": "task",
+      "ref": "tracker:fixture:workspace:ticket:TASK-1",
+      "map": "tracker:fixture:workspace:map:MAP-1",
+      "kind": "task",
+      "state": "open",
       "status": "To Do",
-      "assigned": false,
-      "openBlockers": []
+      "order": 20
     },
     {
-      "key": "JWB-3",
-      "title": "Already claimed",
-      "role": "task",
+      "ref": "tracker:fixture:workspace:ticket:CLAIMED-1",
+      "map": "tracker:fixture:workspace:map:MAP-1",
+      "kind": "task",
+      "state": "open",
       "status": "In Progress",
-      "assigned": true,
-      "openBlockers": []
+      "assignee": "actor:human",
+      "order": 10
     },
     {
-      "key": "JWB-4",
-      "title": "Blocked research",
-      "role": "research",
+      "ref": "tracker:fixture:workspace:ticket:BLOCKED-1",
+      "map": "tracker:fixture:workspace:map:MAP-1",
+      "kind": "research",
+      "state": "open",
       "status": "To Do",
-      "assigned": false,
-      "openBlockers": ["JWB-9"]
+      "order": 30,
+      "blockedBy": "tracker:fixture:workspace:ticket:BLOCKER-1"
     },
     {
-      "key": "JWB-5",
-      "title": "Second eligible prototype",
-      "role": "prototype",
+      "ref": "tracker:fixture:workspace:ticket:PROTOTYPE-1",
+      "map": "tracker:fixture:workspace:map:MAP-1",
+      "kind": "prototype",
+      "state": "open",
       "status": "Open",
-      "assigned": false,
-      "openBlockers": []
+      "order": 40
     },
     {
-      "key": "JWB-6",
-      "title": "Completed decision",
-      "role": "decision",
+      "ref": "tracker:fixture:workspace:ticket:CLOSED-1",
+      "map": "tracker:fixture:workspace:map:MAP-1",
+      "kind": "decision",
+      "state": "closed",
       "status": "Done",
-      "assigned": false,
-      "openBlockers": []
+      "order": 5
+    },
+    {
+      "ref": "tracker:fixture:workspace:ticket:BLOCKER-1",
+      "map": "tracker:fixture:workspace:map:MAP-2",
+      "kind": "task",
+      "state": "open",
+      "status": "To Do",
+      "order": 1
     }
   ],
-  "expected": {
-    "eligibleTickets": [
-      {
-        "key": "JWB-2",
-        "title": "First eligible task",
-        "role": "task",
-        "status": "To Do"
-      },
-      {
-        "key": "JWB-5",
-        "title": "Second eligible prototype",
-        "role": "prototype",
-        "status": "Open"
-      }
-    ],
-    "firstEligibleTicket": "JWB-2",
-    "trackerMutations": 0
-  }
+  "expectedRefs": [
+    "tracker:fixture:workspace:ticket:TASK-1",
+    "tracker:fixture:workspace:ticket:PROTOTYPE-1"
+  ]
 }
