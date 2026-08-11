@@ -16,6 +16,9 @@ CLI
 
 ## Qualified references
 
+The accepted entity and identifier contract is documented in
+[Portable domain model and capability vocabulary](domain-model.md).
+
 ```text
 tracker   <adapter>:<instance>
 workspace <tracker-ref>:<workspace-id>
