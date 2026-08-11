@@ -93,6 +93,23 @@ and are never erased during exact-state restoration; “exact” refers to the
 claim-related fields and metadata captured before mutation, not rewriting the
 tracker's immutable history.
 
+### Jira live-conformance boundary
+
+[JWB-282](https://responsibid.atlassian.net/browse/JWB-282) exercised a verified
+claim and injected post-claim failure against disposable Jira map JWB-300 and
+ticket JWB-301. Compensation restored and reread the original assignment,
+status, and Wayfinder-owned label metadata. Jira's revision timestamp advanced,
+so compensation did not—and cannot claim to—restore the pre-claim revision or
+erase audit history.
+
+The tested Jira CLI surface also required separate assignment/metadata and
+status mutations. Its pre-write reread was a client-side guard, not a
+server-enforced compare-and-swap spanning the whole claim. A Jira adapter must
+therefore advertise verified compensation only after restoring and rereading
+each owned field. It must not advertise exact rollback or conditional
+multi-field claim until a site-specific capability probe proves those stronger
+guarantees.
+
 ## Example
 
 JWB-277 begins unassigned and `To Do`. Pickup captures that snapshot, assigns it
