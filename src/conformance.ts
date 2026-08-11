@@ -18,11 +18,14 @@ const CREDENTIAL_HANDLE = "credential-provider:conformance";
  * PROTOTYPE (JWB-280): exercise the subprocess safety contract against an adapter
  * fixture that selects deliberate failure behavior with WAYFINDER_CONFORMANCE_SCENARIO.
  */
-export async function runAdapterConformance(executable: string): Promise<ConformanceReport> {
+export async function runAdapterConformance(
+  executable: string,
+  coreVersion: string,
+): Promise<ConformanceReport> {
   const checks: ConformanceCheck[] = [];
 
   const normal = client(executable, "normal");
-  const description = await normal.initialize("tracker", "conformance:test", "0.1.0");
+  const description = await normal.initialize("tracker", "conformance:test", coreVersion);
   checks.push({
     name: "protocol negotiation",
     ok: description.protocol_versions.includes("1.0"),
@@ -34,7 +37,7 @@ export async function runAdapterConformance(executable: string): Promise<Conform
       await client(executable, "incompatible").initialize(
         "tracker",
         "conformance:incompatible",
-        "0.1.0",
+        coreVersion,
       );
     }),
     await expectFailure(
@@ -78,7 +81,7 @@ export async function runAdapterConformance(executable: string): Promise<Conform
   const recovered = await client(executable, "normal").initialize(
     "tracker",
     "conformance:recovery",
-    "0.1.0",
+    coreVersion,
   );
   checks.push({
     name: "fresh call survives prior failure",

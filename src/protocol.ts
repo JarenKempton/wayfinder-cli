@@ -114,10 +114,9 @@ export class AdapterClient {
     const child = Bun.spawn(this.#command, {
       stdin: "pipe",
       stdout: "pipe",
-      stderr: "pipe",
+      stderr: "inherit",
       env: { ...processEnvironment(), ...this.#environment },
     });
-    const diagnosticsDrained = child.stderr.pipeTo(new WritableStream({ write() {} }));
     child.stdin.write(`${JSON.stringify(request)}\n`);
     child.stdin.end();
 
@@ -144,7 +143,6 @@ export class AdapterClient {
         ),
       );
       const exitCode = await child.exited;
-      await diagnosticsDrained;
       if (failure) throw failure;
       if (exitCode !== 0) {
         throw new AdapterProtocolError(
@@ -221,11 +219,7 @@ async function readLimited(
 }
 
 function processEnvironment(): Record<string, string> {
-  const allowed = ["PATH", "TMPDIR", "LANG", "LC_ALL", "SYSTEMROOT", "WINDIR", "PATHEXT"];
   return Object.fromEntries(
-    allowed.flatMap((name) => {
-      const value = Bun.env[name];
-      return value === undefined ? [] : [[name, value]];
-    }),
+    Object.entries(Bun.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
   );
 }
