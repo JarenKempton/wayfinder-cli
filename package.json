@@ -1,0 +1,26 @@
+{
+  "name": "@jarenkempton/nav",
+  "version": "0.1.0-dev",
+  "private": true,
+  "description": "Portable work orchestration for Wayfinder maps across trackers, agent harnesses, and models.",
+  "type": "module",
+  "bin": {
+    "nav": "./src/cli.ts"
+  },
+  "scripts": {
+    "dev": "bun run src/cli.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "check": "biome check .",
+    "format": "biome format --write .",
+    "build": "bun build ./src/cli.ts --compile --outfile ./dist/nav"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.2.4",
+    "@types/bun": "^1.3.11",
+    "typescript": "^5.9.2"
+  },
+  "engines": {
+    "bun": ">=1.3.0"
+  }
+}

@@ -10,17 +10,18 @@ by Matt Pocock. See [NOTICE.md](NOTICE.md) for attribution and project lineage.
 
 ## Status
 
-Nav is pre-release. This repository currently defines and implements the stable
+Nav is a TypeScript/Bun pre-release. This repository currently defines and implements the stable
 foundation: qualified references, portable ticket and capability types, frontier
 evaluation, adapter protocol discovery, layered execution routing, SQLite run
 state, and the initial CLI. Hosted tracker mutations and product-specific
 session lifecycle adapters must pass their conformance suites before being
 advertised as supported.
 
-## Install from source
+## Develop from source
 
 ```sh
-go install github.com/JarenKempton/nav/cmd/nav@latest
+bun install
+bun run src/cli.ts doctor
 ```
 
 ## Commands
@@ -55,9 +56,10 @@ are implemented and tested.
 ## Development
 
 ```sh
-go test ./...
-go vet ./...
-go run ./cmd/nav doctor
+bun test
+bun run typecheck
+bun run check
+bun run build
 ```
 
 Nav is licensed under the [MIT License](LICENSE).

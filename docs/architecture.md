@@ -52,6 +52,13 @@ claims, transaction steps, tracker snapshots, workspaces, adapter capabilities,
 receipts, and errors. JSON export is an inspection format, not a coordination
 store.
 
+## Runtime boundary
+
+Portable entities, frontier rules, routing, and transaction coordination are
+ordinary TypeScript. Bun-specific filesystem, subprocess, SQLite, executable
+build, and update behavior remains isolated in platform-facing modules. Release
+binaries embed Bun, so consumers install a single executable without a runtime.
+
 ## Capability honesty
 
 Adapters advertise fine-grained capabilities. Core derives presentation tiers

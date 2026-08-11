@@ -2,9 +2,10 @@
 
 ## Decided scope
 
-Nav is a local-first, MIT-licensed Go CLI. It will ship native macOS, Linux, and
-Windows binaries. Common adapters are bundled; custom adapters are separate
-executables using the versioned Nav Adapter Protocol.
+Nav is a local-first, MIT-licensed TypeScript CLI compiled with Bun. It will ship
+standalone macOS, Linux, and Windows binaries; users do not need Bun or Node.
+Common adapters are bundled; custom adapters are separate executables using the
+versioned Nav Adapter Protocol.
 
 V1 tracker targets are Jira Cloud, Linear, and GitHub Issues. A Markdown adapter
 is the credential-free conformance implementation. One tracker instance owns a
@@ -62,3 +63,12 @@ document is a requirements baseline, not a claim that every command ships now.
 - Automatic stale-claim reassignment.
 - Desktop UI automation as a lifecycle integration.
 - Any behavior not listed in this document or the architecture contract.
+
+## Distribution and updates
+
+GitHub Releases are the canonical binary source. A public Homebrew tap provides
+the primary macOS/Linux install path, with checksum-verifying shell and
+PowerShell installers as fallbacks. GitHub Packages and npm are not required.
+Nav will check for updates at most once per 24 hours in interactive mode and
+notify rather than silently update. Homebrew installations use `brew upgrade`;
+direct installations may use the future `nav update` command.
