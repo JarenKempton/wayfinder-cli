@@ -8,16 +8,19 @@ import type {
   TrackerAdapter,
   WorkspaceAdapter,
 } from "./contracts.ts";
+import { ClaimCollisionError, HarnessLaunchError } from "./contracts.ts";
 import { capabilities, type PreparedWorkspace, type Run, type RunRef } from "./domain.ts";
 
 export type PickupState =
   | "planning"
+  | "claiming"
   | "claimed"
   | "workspace_prepared"
   | "launched"
   | "committed"
   | "compensating"
   | "compensated"
+  | "collision"
   | "recovery_required";
 
 export interface PickupReceipt {
@@ -113,8 +116,19 @@ export class PickupCoordinator {
       ).toISOString(),
       expectedVersion: snapshot.version,
     };
-    await this.#options.tracker.claim(claimRequest);
+    receipt.state = "claiming";
+    await this.#options.ledger.recordStep(runRef, "claiming", receipt);
     try {
+      try {
+        await this.#options.tracker.claim(claimRequest);
+      } catch (error) {
+        if (error instanceof ClaimCollisionError) {
+          receipt.state = "collision";
+          await this.#options.ledger.recordStep(runRef, "collision", receipt, error);
+          throw new PickupResultError(receipt, error);
+        }
+        return this.#compensate(receipt, snapshot, error);
+      }
       await this.#options.tracker.verifyClaim(claimRequest);
       receipt.state = "claimed";
       await this.#options.ledger.recordStep(runRef, "claimed", receipt);
@@ -146,6 +160,10 @@ export class PickupCoordinator {
       await this.#options.ledger.recordStep(runRef, "committed", receipt);
       return receipt;
     } catch (error) {
+      if (error instanceof PickupResultError) throw error;
+      if (error instanceof HarnessLaunchError && error.receipt) {
+        receipt.launch = error.receipt;
+      }
       return this.#compensate(receipt, snapshot, error);
     }
   }
@@ -158,30 +176,38 @@ export class PickupCoordinator {
     receipt.ok = false;
     receipt.state = "compensating";
     await this.#options.ledger.recordStep(receipt.run, "compensating", receipt, cause);
+    const recoveryErrors: unknown[] = [];
     if (receipt.launch?.sessionId !== undefined || receipt.launch?.pid !== undefined) {
       try {
         await this.#options.harness.stop(receipt.launch);
-      } catch {
-        // Tracker restoration remains mandatory even if stopping a partial session fails.
+      } catch (error) {
+        recoveryErrors.push(error);
       }
     }
+    const restoreRequest = {
+      ticket: receipt.ticket,
+      claim: receipt.claim,
+      originalSnapshot: snapshot,
+    };
     try {
-      await this.#options.tracker.restoreClaimState(receipt.ticket, snapshot);
-      await this.#options.tracker.verifyRestored(receipt.ticket, snapshot);
+      await this.#options.tracker.restoreClaimState(restoreRequest);
+      await this.#options.tracker.verifyRestored(restoreRequest);
+    } catch (error) {
+      recoveryErrors.push(error);
+    }
+    if (recoveryErrors.length === 0) {
       receipt.state = "compensated";
       await this.#options.ledger.recordStep(receipt.run, "compensated", receipt, cause);
       throw new PickupResultError(receipt, cause);
-    } catch (restorationError) {
-      if (restorationError instanceof PickupResultError) throw restorationError;
-      receipt.state = "recovery_required";
-      receipt.recoveryCommand = `nav recover ${receipt.run}`;
-      const combined = new AggregateError(
-        [cause, restorationError],
-        "Pickup and restoration failed",
-      );
-      await this.#options.ledger.recordStep(receipt.run, "recovery_required", receipt, combined);
-      throw new PickupResultError(receipt, combined);
     }
+    receipt.state = "recovery_required";
+    receipt.recoveryCommand = `wayfinder recover ${receipt.run}`;
+    const combined = new AggregateError(
+      [cause, ...recoveryErrors],
+      "Pickup compensation could not be fully verified",
+    );
+    await this.#options.ledger.recordStep(receipt.run, "recovery_required", receipt, combined);
+    throw new PickupResultError(receipt, combined);
   }
 }
 

@@ -1,11 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import type {
-  ClaimRequest,
-  HarnessAdapter,
-  LaunchReceipt,
-  Ledger,
-  TrackerAdapter,
-  WorkspaceAdapter,
+import {
+  AmbiguousTrackerResultError,
+  ClaimCollisionError,
+  type ClaimRequest,
+  type HarnessAdapter,
+  HarnessLaunchError,
+  type LaunchReceipt,
+  type Ledger,
+  type ReclaimRequest,
+  type ReleaseClaimRequest,
+  type RenewLeaseRequest,
+  type RestoreClaimRequest,
+  type TrackerAdapter,
+  type WorkspaceAdapter,
 } from "../src/contracts.ts";
 import {
   type ActorRef,
@@ -28,12 +35,22 @@ class FakeLedger implements Ledger {
 }
 
 class FakeTracker implements TrackerAdapter {
-  restored = false;
+  claimError?: Error;
+  preflightError?: Error;
+  restoreError?: Error;
+  verifyClaimError?: Error;
   verifyRestoreError?: Error;
+  claimRequest?: ClaimRequest;
+  restoreRequest?: RestoreClaimRequest;
+  claimCalls = 0;
+  restoreCalls = 0;
+
   async describe() {
     return capabilities("conditional_update");
   }
-  async preflight(_ticket: TicketRef) {}
+  async preflight(_ticket: TicketRef) {
+    if (this.preflightError) throw this.preflightError;
+  }
   async getTicket(ticket: TicketRef): Promise<Ticket> {
     return {
       ref: ticket,
@@ -45,18 +62,30 @@ class FakeTracker implements TrackerAdapter {
     };
   }
   async snapshotClaimState(_ticket: TicketRef): Promise<TrackerSnapshot> {
-    return { version: "1", payload: {} };
+    return { version: "1", payload: { assignee: null, status: "To Do" } };
   }
-  async claim(_request: ClaimRequest) {}
-  async verifyClaim(_request: ClaimRequest) {}
-  async restoreClaimState(_ticket: TicketRef, _snapshot: TrackerSnapshot) {
-    this.restored = true;
+  async claim(request: ClaimRequest) {
+    this.claimCalls += 1;
+    this.claimRequest = request;
+    if (this.claimError) throw this.claimError;
   }
-  async verifyRestored(_ticket: TicketRef, _snapshot: TrackerSnapshot) {
+  async verifyClaim(_request: ClaimRequest) {
+    if (this.verifyClaimError) throw this.verifyClaimError;
+  }
+  async restoreClaimState(request: RestoreClaimRequest) {
+    this.restoreCalls += 1;
+    this.restoreRequest = request;
+    if (this.restoreError) throw this.restoreError;
+  }
+  async verifyRestored(_request: RestoreClaimRequest) {
     if (this.verifyRestoreError) throw this.verifyRestoreError;
   }
-  async renewLease(_claim: ClaimRef, _expiresAt: string) {}
-  async releaseClaim(_claim: ClaimRef) {}
+  async renewLease(_request: RenewLeaseRequest) {}
+  async verifyLease(_request: RenewLeaseRequest) {}
+  async releaseClaim(_request: ReleaseClaimRequest) {}
+  async verifyReleased(_request: ReleaseClaimRequest) {}
+  async reclaim(_request: ReclaimRequest) {}
+  async verifyReclaimed(_request: ReclaimRequest) {}
 }
 
 class FakeWorkspace implements WorkspaceAdapter {
@@ -73,6 +102,7 @@ class FakeWorkspace implements WorkspaceAdapter {
 
 class FakeHarness implements HarnessAdapter {
   launchError?: Error;
+  stopError?: Error;
   stopped = false;
   async describe() {
     return capabilities("process_launch");
@@ -84,6 +114,7 @@ class FakeHarness implements HarnessAdapter {
   }
   async stop() {
     this.stopped = true;
+    if (this.stopError) throw this.stopError;
   }
 }
 
@@ -98,55 +129,115 @@ function coordinator(
   workspace = new FakeWorkspace(),
   harness = new FakeHarness(),
 ) {
+  const ledger = new FakeLedger();
   return {
     tracker,
     workspace,
     harness,
+    ledger,
     coordinator: new PickupCoordinator({
       tracker,
       workspace,
       harness,
-      ledger: new FakeLedger(),
-      ids: { run: () => "nav-run:test" as RunRef, claim: () => "nav-claim:test" as ClaimRef },
+      ledger,
+      ids: {
+        run: () => "wayfinder-run:test" as RunRef,
+        claim: () => "wayfinder-claim:test" as ClaimRef,
+      },
       clock: { now: () => new Date("2026-08-10T12:00:00Z") },
     }),
   };
 }
 
+async function failure(subject: PickupCoordinator): Promise<PickupResultError> {
+  try {
+    await subject.execute(request);
+    throw new Error("Expected pickup to fail");
+  } catch (error) {
+    expect(error).toBeInstanceOf(PickupResultError);
+    return error as PickupResultError;
+  }
+}
+
 describe("pickup coordinator", () => {
-  test("commits a verified pickup", async () => {
-    const { coordinator: subject } = coordinator();
+  test("commits a verified pickup with a default 15-minute lease", async () => {
+    const { coordinator: subject, tracker, ledger } = coordinator();
     expect(await subject.execute(request)).toMatchObject({ ok: true, state: "committed" });
+    expect(tracker.claimRequest?.leaseExpiresAt).toBe("2026-08-10T12:15:00.000Z");
+    expect(ledger.steps).toEqual([
+      "planning",
+      "claiming",
+      "claimed",
+      "workspace_prepared",
+      "launched",
+      "committed",
+    ]);
+  });
+
+  test("preflight failure performs no tracker mutation", async () => {
+    const tracker = new FakeTracker();
+    tracker.preflightError = new Error("unsupported");
+    const { coordinator: subject } = coordinator(tracker);
+    await expect(subject.execute(request)).rejects.toThrow("unsupported");
+    expect(tracker.claimCalls).toBe(0);
+    expect(tracker.restoreCalls).toBe(0);
+  });
+
+  test("definite claim collision does not compensate", async () => {
+    const tracker = new FakeTracker();
+    tracker.claimError = new ClaimCollisionError();
+    const { coordinator: subject, ledger } = coordinator(tracker);
+    expect((await failure(subject)).receipt.state).toBe("collision");
+    expect(tracker.restoreCalls).toBe(0);
+    expect(ledger.steps).toEqual(["planning", "claiming", "collision"]);
+  });
+
+  test("ambiguous claim failure compensates the exact snapshot", async () => {
+    const tracker = new FakeTracker();
+    tracker.claimError = new AmbiguousTrackerResultError();
+    const { coordinator: subject } = coordinator(tracker);
+    expect((await failure(subject)).receipt.state).toBe("compensated");
+    expect(tracker.restoreRequest).toEqual({
+      ticket: request.ticket,
+      claim: "wayfinder-claim:test",
+      originalSnapshot: { version: "1", payload: { assignee: null, status: "To Do" } },
+    });
+  });
+
+  test("post-mutation claim verification collision compensates", async () => {
+    const tracker = new FakeTracker();
+    tracker.verifyClaimError = new ClaimCollisionError("claim changed before verification");
+    const { coordinator: subject } = coordinator(tracker);
+    expect((await failure(subject)).receipt.state).toBe("compensated");
+    expect(tracker.restoreCalls).toBe(1);
   });
 
   test("workspace failure compensates", async () => {
     const workspace = new FakeWorkspace();
     workspace.prepareError = new Error("prepare failed");
     const { coordinator: subject, tracker } = coordinator(new FakeTracker(), workspace);
-    try {
-      await subject.execute(request);
-      throw new Error("Expected pickup to fail");
-    } catch (error) {
-      expect(error).toBeInstanceOf(PickupResultError);
-      expect((error as PickupResultError).receipt.state).toBe("compensated");
-      expect(tracker.restored).toBeTrue();
-    }
+    expect((await failure(subject)).receipt.state).toBe("compensated");
+    expect(tracker.restoreCalls).toBe(1);
   });
 
-  test("ambiguous restoration requires recovery", async () => {
+  test("restoration verification failure requires recovery", async () => {
     const tracker = new FakeTracker();
     tracker.verifyRestoreError = new Error("cannot verify");
     const workspace = new FakeWorkspace();
     workspace.prepareError = new Error("prepare failed");
-    const { coordinator: subject } = coordinator(tracker, workspace);
-    try {
-      await subject.execute(request);
-      throw new Error("Expected pickup to fail");
-    } catch (error) {
-      const result = error as PickupResultError;
-      expect(result.receipt.state).toBe("recovery_required");
-      expect(result.receipt.recoveryCommand).toBe("nav recover nav-run:test");
-    }
+    const result = await failure(coordinator(tracker, workspace).coordinator);
+    expect(result.receipt.state).toBe("recovery_required");
+    expect(result.receipt.recoveryCommand).toBe("wayfinder recover wayfinder-run:test");
+  });
+
+  test("concurrent change during restoration requires recovery", async () => {
+    const tracker = new FakeTracker();
+    tracker.restoreError = new ClaimCollisionError("human changed the ticket");
+    const workspace = new FakeWorkspace();
+    workspace.prepareError = new Error("prepare failed");
+    expect((await failure(coordinator(tracker, workspace).coordinator)).receipt.state).toBe(
+      "recovery_required",
+    );
   });
 
   test("launch failure restores the tracker claim", async () => {
@@ -157,7 +248,24 @@ describe("pickup coordinator", () => {
       new FakeWorkspace(),
       harness,
     );
-    await expect(subject.execute(request)).rejects.toBeInstanceOf(PickupResultError);
-    expect(tracker.restored).toBeTrue();
+    expect((await failure(subject)).receipt.state).toBe("compensated");
+    expect(tracker.restoreCalls).toBe(1);
+  });
+
+  test("uncertain partial launch stop still restores tracker and requires recovery", async () => {
+    const harness = new FakeHarness();
+    harness.launchError = new HarnessLaunchError("launch response lost", {
+      sessionId: "partial",
+      tier: "launch",
+    });
+    harness.stopError = new Error("cannot verify stop");
+    const { coordinator: subject, tracker } = coordinator(
+      new FakeTracker(),
+      new FakeWorkspace(),
+      harness,
+    );
+    expect((await failure(subject)).receipt.state).toBe("recovery_required");
+    expect(harness.stopped).toBeTrue();
+    expect(tracker.restoreCalls).toBe(1);
   });
 });

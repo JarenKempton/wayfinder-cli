@@ -1,6 +1,6 @@
 # Architecture
 
-Nav separates policy from vendor mechanics.
+Wayfinder separates policy from vendor mechanics.
 
 The ownership boundary between the shared Wayfinder MCP/skill experience and
 this portable runtime is normative and documented in
@@ -22,6 +22,8 @@ CLI
 
 The accepted entity and identifier contract is documented in
 [Portable domain model and capability vocabulary](domain-model.md).
+The claim transaction and recovery contract is documented in
+[Claim, lease, reclaim, and compensation semantics](claim-semantics.md).
 
 ```text
 tracker   <adapter>:<instance>
@@ -29,8 +31,8 @@ workspace <tracker-ref>:<workspace-id>
 group     <workspace-ref>:group:<native-id>
 map       <workspace-ref>:map:<native-id>
 ticket    <workspace-ref>:ticket:<native-id>
-run       nav-run:<uuid>
-claim     nav-claim:<uuid>
+run       wayfinder-run:<uuid>
+claim     wayfinder-claim:<uuid>
 ```
 
 References are globally qualified now so a later protocol can represent
@@ -46,7 +48,7 @@ adapter's stable order.
 
 ## Pickup transaction
 
-Pickup progresses through `planning`, `claimed`, `workspace_prepared`,
+Pickup progresses through `planning`, `claiming`, `claimed`, `workspace_prepared`,
 `launched`, and `committed`. A post-claim failure enters `compensating`, then
 either `compensated` after verified restoration or `recovery_required` when the
 result is ambiguous. Local steps and receipts are persisted before moving to

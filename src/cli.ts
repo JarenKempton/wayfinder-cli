@@ -56,19 +56,19 @@ export async function run(
 }
 
 function usage(): string {
-  return `Nav — portable work orchestration for agents
+  return `Wayfinder — portable work orchestration for agents
 
 Usage:
-  nav doctor
-  nav resolve <qualified-reference>
-  nav frontier --input <tickets.json> [--scope <ref>] [--available "To Do,Open"] [--json]
-  nav adapter list
-  nav adapter describe <name>
-  nav adapter test <executable>
-  nav runs list
-  nav runs show <run-id>
-  nav runs export <run-id>
-  nav version`;
+  wayfinder doctor
+  wayfinder resolve <qualified-reference>
+  wayfinder frontier --input <tickets.json> [--scope <ref>] [--available "To Do,Open"] [--json]
+  wayfinder adapter list
+  wayfinder adapter describe <name>
+  wayfinder adapter test <executable>
+  wayfinder runs list
+  wayfinder runs show <run-id>
+  wayfinder runs export <run-id>
+  wayfinder version`;
 }
 
 function doctor(write: (text: string) => void): void {
@@ -136,8 +136,8 @@ function runs(args: string[], write: (text: string) => void): void {
     }
     if ((subcommand === "show" || subcommand === "export") && target) {
       const ref = (
-        target.startsWith("nav-run:") ? target : `nav-run:${target}`
-      ) as `nav-run:${string}`;
+        target.startsWith("wayfinder-run:") ? target : `wayfinder-run:${target}`
+      ) as `wayfinder-run:${string}`;
       writeJson(write, store.run(ref));
       return;
     }
@@ -185,7 +185,7 @@ function writeJson(write: (text: string) => void, data: unknown): void {
 
 if (import.meta.main) {
   run(Bun.argv.slice(2)).catch((error: unknown) => {
-    console.error(`nav: ${error instanceof Error ? error.message : String(error)}`);
+    console.error(`wayfinder: ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;
   });
 }
