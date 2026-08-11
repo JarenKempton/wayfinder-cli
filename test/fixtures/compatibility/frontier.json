@@ -1,8 +1,5 @@
 {
-  "invocations": {
-    "list": ["wf", "frontier", "JWB-1", "--json"],
-    "pickupFirst": ["wf", "pickup", "JWB-1", "--frontier", "--t3", "--json"]
-  },
+  "operations": ["list_frontier", "pickup_first_eligible"],
   "map": {
     "key": "JWB-1",
     "title": "Compatibility map",
@@ -55,13 +52,7 @@
     }
   ],
   "expected": {
-    "ok": true,
-    "action": "frontier_listed",
-    "map": {
-      "key": "JWB-1",
-      "title": "Compatibility map"
-    },
-    "tickets": [
+    "eligibleTickets": [
       {
         "key": "JWB-2",
         "title": "First eligible task",
@@ -74,7 +65,8 @@
         "role": "prototype",
         "status": "Open"
       }
-    ]
-  },
-  "expectedFirstPickup": "JWB-2"
+    ],
+    "firstEligibleTicket": "JWB-2",
+    "trackerMutations": 0
+  }
 }

@@ -2,13 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const fixtureRoot = join(import.meta.dir, "fixtures", "legacy-wf");
+const fixtureRoot = join(import.meta.dir, "fixtures", "compatibility");
 
 function fixture<T>(name: string): T {
   return JSON.parse(readFileSync(join(fixtureRoot, name), "utf8")) as T;
 }
 
-describe("legacy wf compatibility fixtures", () => {
+describe("pickup compatibility fixtures", () => {
   test("frontier remains read-only, filtered, and in map order", () => {
     const value = fixture<{
       map: { subtasks: string[] };
@@ -19,8 +19,11 @@ describe("legacy wf compatibility fixtures", () => {
         assigned: boolean;
         openBlockers: string[];
       }>;
-      expected: { tickets: Array<{ key: string }> };
-      expectedFirstPickup: string;
+      expected: {
+        eligibleTickets: Array<{ key: string }>;
+        firstEligibleTicket: string;
+        trackerMutations: number;
+      };
     }>("frontier.json");
     const eligible = value.map.subtasks.filter((key) => {
       const child = value.children.find((item) => item.key === key);
@@ -31,42 +34,48 @@ describe("legacy wf compatibility fixtures", () => {
         child.openBlockers.length === 0
       );
     });
-    expect(value.expected.tickets.map((ticket) => ticket.key)).toEqual(eligible);
+    expect(value.expected.eligibleTickets.map((ticket) => ticket.key)).toEqual(eligible);
     expect(eligible.length).toBeGreaterThan(0);
-    expect(value.expectedFirstPickup).toBe(eligible[0] as string);
+    expect(value.expected.firstEligibleTicket).toBe(eligible[0] as string);
+    expect(value.expected.trackerMutations).toBe(0);
   });
 
   test("pickup captures deterministic identity and every supported form", () => {
     const value = fixture<{
-      invocations: Record<string, string[]>;
-      expectedPlan: {
-        ticket: { key: string; role: string };
-        workspace: { path: string; branch: string; policy: string };
-        t3: { worktreePath: string };
+      modes: string[];
+      expected: {
+        plan: {
+          ticket: { key: string; role: string };
+          workspace: { path: string; branch: string; policy: string };
+          session: { worktreePath: string };
+          trackerMutations: number;
+          worktreesCreated: number;
+          sessionsCreated: number;
+        };
+        resume: Record<string, boolean | number | string>;
       };
-      expectedResume: Record<string, boolean | number | string>;
     }>("pickup.json");
-    expect(Object.keys(value.invocations).sort()).toEqual([
-      "mapFrontier",
-      "planOnly",
-      "resumeOnly",
-      "ticket",
-    ]);
-    expect(value.expectedPlan.workspace.branch).toBe(
-      `${value.expectedPlan.ticket.role}/${value.expectedPlan.ticket.key}`,
+    expect(value.modes).toEqual(["direct_ticket", "first_frontier", "plan_only", "resume_only"]);
+    expect(value.expected.plan.workspace.branch).toBe(
+      `${value.expected.plan.ticket.role}/${value.expected.plan.ticket.key}`,
     );
-    expect(value.expectedPlan.workspace.path.endsWith(`/${value.expectedPlan.ticket.key}`)).toBe(
+    expect(value.expected.plan.workspace.path.endsWith(`/${value.expected.plan.ticket.key}`)).toBe(
       true,
     );
-    expect(value.expectedPlan.workspace.policy).toBe("ticket-key-v1");
-    expect(value.expectedPlan.t3.worktreePath).toBe(value.expectedPlan.workspace.path);
-    expect(value.expectedResume).toMatchObject({
+    expect(value.expected.plan.workspace.policy).toBe("ticket-key-v1");
+    expect(value.expected.plan.session.worktreePath).toBe(value.expected.plan.workspace.path);
+    expect(value.expected.plan).toMatchObject({
+      trackerMutations: 0,
+      worktreesCreated: 0,
+      sessionsCreated: 0,
+    });
+    expect(value.expected.resume).toMatchObject({
       sameTransaction: true,
       sameWorkspace: true,
-      sameThread: true,
+      sameSession: true,
       additionalClaims: 0,
       additionalWorktrees: 0,
-      additionalThreads: 0,
+      additionalSessions: 0,
     });
   });
 

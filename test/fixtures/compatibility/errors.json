@@ -2,22 +2,22 @@
   "cases": [
     {
       "name": "map requires frontier flag",
-      "invocation": ["wf", "pickup", "JWB-1", "--json"],
+      "operation": "pickup_map_without_frontier_selection",
       "expected": { "code": "ticket_required", "stage": "resolve", "recoverable": false }
     },
     {
       "name": "frontier requires map",
-      "invocation": ["wf", "frontier", "JWB-2", "--json"],
+      "operation": "list_frontier_for_ticket",
       "expected": { "code": "frontier_requires_map", "stage": "resolve", "recoverable": false }
     },
     {
       "name": "resume requires manifest",
-      "invocation": ["wf", "pickup", "JWB-2", "--resume", "--json"],
+      "operation": "resume_without_manifest",
       "expected": { "code": "resume_not_found", "stage": "preflight", "recoverable": false }
     },
     {
       "name": "claim race prevents local mutation",
-      "invocation": ["wf", "pickup", "JWB-2", "--t3", "--json"],
+      "operation": "pickup_with_claim_race",
       "expected": {
         "code": "claim_race",
         "stage": "claim",
@@ -28,7 +28,7 @@
     },
     {
       "name": "worktree failure is compensated",
-      "invocation": ["wf", "pickup", "JWB-2", "--t3", "--json"],
+      "operation": "pickup_with_worktree_failure",
       "expected": {
         "code": "git_worktree_failed",
         "stage": "git",
@@ -39,7 +39,7 @@
     },
     {
       "name": "bootstrap failure remains resumable",
-      "invocation": ["wf", "pickup", "JWB-2", "--t3", "--json"],
+      "operation": "pickup_with_session_bootstrap_failure",
       "expected": {
         "code": "t3_bootstrap_failed",
         "stage": "t3",

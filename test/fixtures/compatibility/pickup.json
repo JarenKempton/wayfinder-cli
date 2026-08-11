@@ -1,0 +1,69 @@
+{
+  "modes": ["direct_ticket", "first_frontier", "plan_only", "resume_only"],
+  "input": {
+    "ticket": {
+      "key": "JWB-2",
+      "title": "Compatibility task",
+      "role": "task"
+    },
+    "map": {
+      "key": "JWB-1",
+      "title": "Compatibility map"
+    },
+    "repository": {
+      "github": "Acme/widgets",
+      "baseBranch": "main",
+      "baseCommit": "0123456789abcdef0123456789abcdef01234567"
+    },
+    "worktreeRoot": "/worktrees/widgets"
+  },
+  "expected": {
+    "plan": {
+      "state": "planned",
+      "trackerMutations": 0,
+      "worktreesCreated": 0,
+      "sessionsCreated": 0,
+      "transactionId": "00000000-0000-4000-8000-000000000001",
+      "ticket": {
+        "key": "JWB-2",
+        "title": "Compatibility task",
+        "role": "task"
+      },
+      "map": {
+        "key": "JWB-1",
+        "title": "Compatibility map"
+      },
+      "repository": {
+        "github": "Acme/widgets",
+        "baseBranch": "main",
+        "baseCommit": "0123456789abcdef0123456789abcdef01234567"
+      },
+      "workspace": {
+        "path": "/worktrees/widgets/JWB-2",
+        "branch": "task/JWB-2",
+        "policy": "ticket-key-v1"
+      },
+      "session": {
+        "title": "JWB-2 — Compatibility task",
+        "worktreePath": "/worktrees/widgets/JWB-2"
+      }
+    },
+    "ready": {
+      "state": "ready",
+      "claimTransition": {
+        "from": "To Do",
+        "to": "In Progress"
+      },
+      "sessionId": "session-1"
+    },
+    "resume": {
+      "state": "ready",
+      "sameTransaction": true,
+      "sameWorkspace": true,
+      "sameSession": true,
+      "additionalClaims": 0,
+      "additionalWorktrees": 0,
+      "additionalSessions": 0
+    }
+  }
+}
