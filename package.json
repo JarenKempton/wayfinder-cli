@@ -9,6 +9,7 @@
   },
   "scripts": {
     "dev": "bun run src/cli.ts",
+    "prototype:jwb-281": "bun run prototypes/jwb-281/run.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "check": "biome check .",
