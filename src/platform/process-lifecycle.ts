@@ -1,35 +1,20 @@
 import type { RunLifecycleAdapter } from "../contracts.ts";
 import type { Run, RunObservation } from "../domain.ts";
+import { capabilities, UnsupportedCapabilityError } from "../domain.ts";
 
-/** Narrow Bun/Node process implementation; managed sessions use harness adapters instead. */
+/**
+ * Bare PIDs are not stable process identities and may be reused by the OS.
+ * Until a platform adapter can verify an adapter-owned identity token, this
+ * fallback advertises no lifecycle capability and never probes or signals.
+ */
 export class ProcessLifecycleAdapter implements RunLifecycleAdapter {
-  async observe(run: Run): Promise<RunObservation> {
-    const observedAt = new Date().toISOString();
-    const pid = run.execution?.pid;
-    if (pid === undefined)
-      return { state: "unknown", observedAt, detail: "No process id recorded" };
-    try {
-      process.kill(pid, 0);
-      return { state: "running", observedAt };
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code === "ESRCH") return { state: "missing", observedAt };
-      return {
-        state: "unknown",
-        observedAt,
-        detail: error instanceof Error ? error.message : String(error),
-      };
-    }
+  readonly capabilities = capabilities();
+
+  async observe(_run: Run): Promise<RunObservation> {
+    throw new UnsupportedCapabilityError(["session_status"]);
   }
 
-  async stop(run: Run): Promise<void> {
-    const pid = run.execution?.pid;
-    if (pid === undefined)
-      throw new Error("Run has no process id; use its harness lifecycle adapter");
-    try {
-      process.kill(pid, "SIGTERM");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-    }
+  async stop(_run: Run): Promise<void> {
+    throw new UnsupportedCapabilityError(["session_interrupt"]);
   }
 }

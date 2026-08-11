@@ -29,12 +29,24 @@ import { PickupCoordinator, PickupResultError } from "../src/pickup.ts";
 class FakeLedger implements Ledger {
   readonly steps: string[] = [];
   saveClaim(_claim: import("../src/domain.ts").Claim): void {}
+  commitClaim(_claim: import("../src/domain.ts").Claim): void {
+    this.steps.push("claimed");
+  }
+  recoveryRun?: Run;
   savedRun?: Run;
   saveRun(run: Run): void {
     this.savedRun = structuredClone(run);
   }
+  commitRun(run: Run, state: string): void {
+    this.savedRun = structuredClone(run);
+    this.steps.push(state);
+  }
   recordStep(_run: RunRef, state: string): void {
     this.steps.push(state);
+  }
+  saveRecoveryRequired(run: Run): void {
+    this.recoveryRun = structuredClone(run);
+    this.steps.push("recovery_required");
   }
 }
 
@@ -297,9 +309,13 @@ describe("pickup coordinator", () => {
     tracker.verifyRestoreError = new Error("cannot verify");
     const workspace = new FakeWorkspace();
     workspace.prepareError = new Error("prepare failed");
-    const result = await failure(coordinator(tracker, workspace).coordinator);
+    const item = coordinator(tracker, workspace);
+    const result = await failure(item.coordinator);
     expect(result.receipt.state).toBe("recovery_required");
-    expect(result.receipt.recoveryCommand).toBe("wayfinder recover wayfinder-run:test");
+    expect(result.receipt.recoveryCommand).toBe(
+      `wayfinder recover wayfinder-run:test --evidence '{"tracker":"verify","session":"verify"}'`,
+    );
+    expect(item.ledger.recoveryRun?.status).toBe("recovery_required");
   });
 
   test("concurrent change during restoration requires recovery", async () => {

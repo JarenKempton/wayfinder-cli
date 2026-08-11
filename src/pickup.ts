@@ -136,7 +136,7 @@ export class PickupCoordinator {
           await this.#options.ledger.recordStep(runRef, "collision", receipt, error);
           throw new PickupResultError(receipt, error);
         }
-        return this.#compensate(receipt, snapshot, error);
+        return this.#compensate(run, receipt, snapshot, error);
       }
       await this.#options.tracker.verifyClaim(claimRequest);
       const verifiedSnapshot = await this.#options.tracker.snapshotClaimState(request.ticket);
@@ -151,9 +151,8 @@ export class PickupCoordinator {
         status: "active",
         currentVersion: verifiedSnapshot.version,
       };
-      await this.#options.ledger.saveClaim(claim);
       receipt.state = "claimed";
-      await this.#options.ledger.recordStep(runRef, "claimed", receipt);
+      await this.#options.ledger.commitClaim(claim, receipt);
 
       const prepared = await this.#options.workspace.prepare(plan);
       receipt.state = "workspace_prepared";
@@ -181,21 +180,21 @@ export class PickupCoordinator {
       if (request.effort) run.effort = request.effort;
       if (request.context) run.context = request.context;
       run.capabilities = harnessCapabilities;
-      await this.#options.ledger.saveRun(run);
       receipt.ok = true;
       receipt.state = "committed";
-      await this.#options.ledger.recordStep(runRef, "committed", receipt);
+      await this.#options.ledger.commitRun(run, "committed", receipt);
       return receipt;
     } catch (error) {
       if (error instanceof PickupResultError) throw error;
       if (error instanceof HarnessLaunchError && error.receipt) {
         receipt.launch = error.receipt;
       }
-      return this.#compensate(receipt, snapshot, error);
+      return this.#compensate(run, receipt, snapshot, error);
     }
   }
 
   async #compensate(
+    run: Run,
     receipt: PickupReceipt,
     snapshot: Awaited<ReturnType<TrackerAdapter["snapshotClaimState"]>>,
     cause: unknown,
@@ -228,12 +227,18 @@ export class PickupCoordinator {
       throw new PickupResultError(receipt, cause);
     }
     receipt.state = "recovery_required";
-    receipt.recoveryCommand = `wayfinder recover ${receipt.run}`;
+    receipt.recoveryCommand = `wayfinder recover ${receipt.run} --evidence '{"tracker":"verify","session":"verify"}'`;
     const combined = new AggregateError(
       [cause, ...recoveryErrors],
       "Pickup compensation could not be fully verified",
     );
-    await this.#options.ledger.recordStep(receipt.run, "recovery_required", receipt, combined);
+    run.status = "recovery_required";
+    run.updatedAt = this.#options.clock.now().toISOString();
+    await this.#options.ledger.saveRecoveryRequired(run, receipt, combined, {
+      command: receipt.recoveryCommand,
+      tracker: "verification_required",
+      session: receipt.launch ? "verification_required" : "not_started",
+    });
     throw new PickupResultError(receipt, combined);
   }
 }

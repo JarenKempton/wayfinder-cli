@@ -163,13 +163,28 @@ export interface HarnessAdapter {
 export interface Ledger {
   saveRun(run: Run): void | Promise<void>;
   saveClaim(claim: import("./domain.ts").Claim): void | Promise<void>;
+  commitClaim(claim: import("./domain.ts").Claim, receipt: unknown): void | Promise<void>;
+  commitRun(run: Run, state: string, receipt: unknown): void | Promise<void>;
   recordStep(run: RunRef, state: string, receipt?: unknown, error?: unknown): void | Promise<void>;
+  saveRecoveryRequired(
+    run: Run,
+    receipt: unknown,
+    error: unknown,
+    evidence: unknown,
+  ): void | Promise<void>;
 }
 
 /** Harness-specific observation is kept behind this portable lifecycle boundary. */
 export interface RunLifecycleAdapter {
+  capabilities: CapabilitySet;
   observe(run: Run): Promise<RunObservation>;
   stop(run: Run): Promise<void>;
+}
+
+export interface RecoveryVerification {
+  verified: boolean;
+  evidence: unknown;
+  resolvedStatus?: "active" | "stopped";
 }
 
 export interface IdFactory {

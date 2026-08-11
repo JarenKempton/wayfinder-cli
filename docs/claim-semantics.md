@@ -31,11 +31,20 @@ A claim defaults to a 15-minute lease. A live supervisor renews it every five
 minutes. Renewal updates machine-readable metadata and is verified by reading
 the tracker. Lease expiration never unassigns, releases, or reassigns a ticket.
 
-The supervisor is a per-user runtime service. Each tick reads active runs from
-the local ledger, asks the run's harness adapter for observed session state,
-and renews only sessions observed as running. Missing, stopped, unknown, or
-unverifiable sessions become `attention_required`; they are never silently
-stopped, released, or reassigned. Renewal errors follow the same rule.
+The supervisor is a per-user runtime service protected by a heartbeat-refreshed,
+fenced local lock that is released after every tick. Each run is isolated so a
+missing claim, adapter error, or observation failure cannot abort later runs.
+Only an active run with an active claim and a session observed as running may
+renew. Released and superseded claims never renew. Missing, stopped, unknown,
+or unverifiable sessions become `attention_required`; they are never silently
+stopped, released, or reassigned. Verified reconciliation of both the running
+session and matching active claim is the explicit path back to `active`.
+
+Before a remote renewal, the ledger persists a renewal intent. The verified
+tracker version, lease, run observation, step, and intent deletion then commit
+in one SQLite transaction. On restart, the supervisor verifies pending intents
+against the tracker and either commits the observed renewal or requires human
+attention. This closes the crash window between remote success and local state.
 
 Reclaim requires an authenticated human who may assign the tracker ticket. It
 must name the stale claim, re-read current state, and conditionally install new
@@ -46,10 +55,16 @@ return the ticket to the state that first made it frontier-eligible.
 
 ## Stop and release are different
 
-`wayfinder stop <run>` stops execution and marks the local run stopped. It
+`wayfinder stop <run>` stops execution and marks the local run stopped only
+after the lifecycle adapter observes termination. It
 preserves tracker assignment, claim metadata, workspace, and history. Since a
 stopped run no longer renews its lease, readers eventually observe its claim as
 stale.
+
+A bare PID is never sufficient process identity because operating systems reuse
+PIDs. The built-in fallback therefore never probes or signals PID-only receipts;
+a lifecycle adapter must provide a verifiable session/process identity and
+advertise both interrupt and status capabilities.
 
 `wayfinder claim release <claim>` means the human is giving up ownership. It
 conditionally restores the original claim-related tracker snapshot and verifies
@@ -59,8 +74,8 @@ separate explicit operation.
 
 Run exports include the run, claim snapshot, ordered transaction steps, and
 append-only recovery evidence. Recovery changes a `recovery_required` run only
-after the caller supplies explicit verified evidence; failed verification is
-recorded and leaves the run unchanged.
+after a configured verifier accepts the supplied evidence; a flag is not proof.
+Failed or unavailable verification is recorded and leaves the run unchanged.
 
 ## Pickup and compensation
 

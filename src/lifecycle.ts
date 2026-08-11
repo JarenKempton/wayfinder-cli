@@ -1,7 +1,12 @@
-import type { Clock, RunLifecycleAdapter, TrackerAdapter } from "./contracts.ts";
-import { ClaimCollisionError } from "./contracts.ts";
-import type { ActorRef, ClaimRef, Run, RunRef } from "./domain.ts";
-import { stopRun } from "./domain.ts";
+import type {
+  Clock,
+  RecoveryVerification,
+  RenewLeaseRequest,
+  RunLifecycleAdapter,
+  TrackerAdapter,
+} from "./contracts.ts";
+import type { ActorRef, Claim, ClaimRef, Run, RunObservation, RunRef } from "./domain.ts";
+import { capabilities, requireCapabilities, stopRun } from "./domain.ts";
 import type { StateStore } from "./state.ts";
 
 export interface SupervisorOptions {
@@ -12,62 +17,158 @@ export interface SupervisorOptions {
   leaseDurationMs?: number;
   supervisorId?: string;
   supervisorLockMs?: number;
+  lockClock?: () => Date;
+  /** Test/crash injection after remote verification and before the local transaction. */
+  afterRenewVerified?: (run: Run) => void;
 }
 
-/** One tick observes every active run and renews only verified, running claims. */
 export class Supervisor {
   constructor(private readonly options: SupervisorOptions) {}
 
   async tick(): Promise<Array<{ run: RunRef; outcome: string }>> {
-    const startedAt = this.options.clock.now();
     const owner = this.options.supervisorId ?? `process:${process.pid}`;
-    const acquired = this.options.store.acquireSupervisor(
-      owner,
-      startedAt.toISOString(),
-      new Date(startedAt.getTime() + (this.options.supervisorLockMs ?? 60_000)).toISOString(),
-    );
-    if (!acquired) throw new Error("Another per-user supervisor holds the active lease");
-    const results: Array<{ run: RunRef; outcome: string }> = [];
-    for (const run of this.options.store.activeRuns()) {
-      const observation = await this.options.lifecycle(run).observe(run);
-      run.observation = observation;
-      run.updatedAt = this.options.clock.now().toISOString();
-      if (observation.state !== "running") {
-        run.status = "attention_required";
-        this.options.store.saveRun(run);
-        this.options.store.recordStep(run.ref, "attention_required", observation);
-        results.push({ run: run.ref, outcome: "attention_required" });
-        continue;
-      }
+    const lockClock = this.options.lockClock ?? (() => new Date());
+    const lockMs = this.options.supervisorLockMs ?? 60_000;
+    const startedAt = lockClock();
+    if (
+      !this.options.store.acquireSupervisor(
+        owner,
+        startedAt.toISOString(),
+        new Date(startedAt.getTime() + lockMs).toISOString(),
+      )
+    ) {
+      throw new Error("Another per-user supervisor holds the active lease");
+    }
 
-      const claim = this.options.store.claimForRun(run.ref);
-      const leaseExpiresAt = new Date(
-        this.options.clock.now().getTime() + (this.options.leaseDurationMs ?? 900_000),
-      ).toISOString();
-      const request = {
-        claim: claim.ref,
-        ticket: claim.ticket,
-        leaseExpiresAt,
-        expectedVersion: claim.currentVersion ?? claim.previousState.version,
-      };
+    const renewLock = () => {
+      const now = lockClock();
+      if (
+        !this.options.store.refreshSupervisor(
+          owner,
+          now.toISOString(),
+          new Date(now.getTime() + lockMs).toISOString(),
+        )
+      ) {
+        throw new Error("Supervisor lease ownership was lost");
+      }
+    };
+    const heartbeat = setInterval(
+      () => {
+        try {
+          renewLock();
+        } catch {
+          // The foreground path checks the fence before every remote renewal.
+        }
+      },
+      Math.max(1, Math.floor(lockMs / 3)),
+    );
+    const results: Array<{ run: RunRef; outcome: string }> = [];
+    try {
+      await this.#reconcilePendingRenewals(results, renewLock);
+      for (const run of this.options.store.activeRuns()) {
+        if (results.some((result) => result.run === run.ref)) continue;
+        try {
+          results.push(await this.#process(run, renewLock));
+        } catch (error) {
+          this.#attention(run, { phase: "supervision" }, error);
+          results.push({ run: run.ref, outcome: "attention_required" });
+        }
+      }
+      return results;
+    } finally {
+      clearInterval(heartbeat);
+      this.options.store.releaseSupervisor(owner);
+    }
+  }
+
+  async #process(run: Run, renewLock: () => void): Promise<{ run: RunRef; outcome: string }> {
+    const claim = this.options.store.claimForRun(run.ref);
+    if (claim.status !== "active") {
+      this.#attention(run, { phase: "claim_check", claim: claim.ref, status: claim.status });
+      return { run: run.ref, outcome: "attention_required" };
+    }
+
+    const lifecycle = this.options.lifecycle(run);
+    requireCapabilities(lifecycle.capabilities, capabilities("session_status"));
+    const observation = await lifecycle.observe(run);
+    run.observation = observation;
+    run.updatedAt = this.options.clock.now().toISOString();
+    if (observation.state !== "running") {
+      this.#attention(run, observation);
+      return { run: run.ref, outcome: "attention_required" };
+    }
+
+    const leaseExpiresAt = new Date(
+      this.options.clock.now().getTime() + (this.options.leaseDurationMs ?? 900_000),
+    ).toISOString();
+    const request: RenewLeaseRequest = {
+      claim: claim.ref,
+      ticket: claim.ticket,
+      leaseExpiresAt,
+      expectedVersion: claim.currentVersion ?? claim.previousState.version,
+    };
+    renewLock();
+    this.options.store.beginRenewal(
+      run.ref,
+      claim.ref,
+      request,
+      this.options.clock.now().toISOString(),
+    );
+    try {
+      await this.options.tracker.renewLease(request);
+    } catch (renewError) {
       try {
-        await this.options.tracker.renewLease(request);
+        await this.options.tracker.verifyLease(request);
+      } catch (verifyError) {
+        this.options.store.discardRenewal(run.ref);
+        throw new AggregateError(
+          [renewError, verifyError],
+          "Lease renewal failed and was not applied",
+        );
+      }
+    }
+    await this.options.tracker.verifyLease(request);
+    const verified = await this.options.tracker.snapshotClaimState(claim.ticket);
+    this.options.afterRenewVerified?.(run);
+    claim.leaseExpiresAt = leaseExpiresAt;
+    claim.currentVersion = verified.version;
+    this.options.store.commitRenewal(run, claim, { leaseExpiresAt, reconciled: false });
+    return { run: run.ref, outcome: "renewed" };
+  }
+
+  async #reconcilePendingRenewals(
+    results: Array<{ run: RunRef; outcome: string }>,
+    renewLock: () => void,
+  ): Promise<void> {
+    for (const pending of this.options.store.pendingRenewals()) {
+      const run = this.options.store.run(pending.run);
+      try {
+        const claim = this.options.store.claim(pending.claim);
+        if (claim.status !== "active") throw new Error(`Claim is ${claim.status}`);
+        const request = pending.request as RenewLeaseRequest;
+        renewLock();
         await this.options.tracker.verifyLease(request);
         const verified = await this.options.tracker.snapshotClaimState(claim.ticket);
-        claim.leaseExpiresAt = leaseExpiresAt;
+        claim.leaseExpiresAt = request.leaseExpiresAt;
         claim.currentVersion = verified.version;
-        this.options.store.saveClaim(claim);
-        this.options.store.saveRun(run);
-        this.options.store.recordStep(run.ref, "renewed", { leaseExpiresAt });
-        results.push({ run: run.ref, outcome: "renewed" });
+        run.status = "active";
+        run.updatedAt = this.options.clock.now().toISOString();
+        this.options.store.commitRenewal(run, claim, {
+          leaseExpiresAt: request.leaseExpiresAt,
+          reconciled: true,
+        });
+        results.push({ run: run.ref, outcome: "renewal_reconciled" });
       } catch (error) {
-        run.status = "attention_required";
-        this.options.store.saveRun(run);
-        this.options.store.recordStep(run.ref, "attention_required", observation, error);
+        this.#attention(run, { phase: "renewal_reconciliation" }, error);
         results.push({ run: run.ref, outcome: "attention_required" });
       }
     }
-    return results;
+  }
+
+  #attention(run: Run, receipt: unknown, error?: unknown): void {
+    run.status = "attention_required";
+    run.updatedAt = this.options.clock.now().toISOString();
+    this.options.store.markAttention(run, receipt, error);
   }
 }
 
@@ -82,17 +183,27 @@ export class LifecycleCoordinator {
   async stop(ref: RunRef): Promise<Run> {
     const run = this.store.run(ref);
     if (run.status === "stopped") return run;
+    // Adapter selection and capability checks are preflight: they never mutate the run.
+    const lifecycle = this.lifecycle(run);
+    requireCapabilities(
+      lifecycle.capabilities,
+      capabilities("session_interrupt", "session_status"),
+    );
     try {
-      await this.lifecycle(run).stop(run);
-      const stopped = stopRun(run, this.clock.now());
-      this.store.saveRun(stopped);
-      this.store.recordStep(ref, "stopped", { execution: run.execution });
+      await lifecycle.stop(run);
+      const observation = await lifecycle.observe(run);
+      if (observation.state !== "stopped" && observation.state !== "missing") {
+        throw new Error(`Stop could not be verified; observed ${observation.state}`);
+      }
+      const stopped = stopRun({ ...run, observation }, this.clock.now());
+      this.store.commitStopped(stopped, { operation: "stop", observation });
       return stopped;
     } catch (error) {
       run.status = "recovery_required";
       run.updatedAt = this.clock.now().toISOString();
-      this.store.saveRun(run);
-      this.store.recordStep(ref, "recovery_required", { operation: "stop" }, error);
+      this.store.saveRecoveryRequired(run, { operation: "stop" }, error, {
+        verification: "stop_unverified",
+      });
       throw error;
     }
   }
@@ -100,6 +211,9 @@ export class LifecycleCoordinator {
   async release(ref: ClaimRef, authorizedBy: ActorRef): Promise<void> {
     if (!this.tracker) throw new Error("Claim release requires a configured tracker adapter");
     const claim = this.store.claim(ref);
+    if (claim.status !== "active" && claim.status !== "stale") {
+      throw new Error(`Claim cannot be released from ${claim.status}`);
+    }
     const request = {
       claim: claim.ref,
       ticket: claim.ticket,
@@ -111,37 +225,59 @@ export class LifecycleCoordinator {
       await this.tracker.releaseClaim(request);
       await this.tracker.verifyReleased(request);
       claim.status = "released";
-      this.store.saveClaim(claim);
-      this.store.recordStep(claim.run, "released", { claim: claim.ref });
+      this.store.commitRelease(claim, { claim: claim.ref });
     } catch (error) {
       const run = this.store.run(claim.run);
       run.status = "recovery_required";
       run.updatedAt = this.clock.now().toISOString();
-      this.store.saveRun(run);
-      this.store.recordStep(claim.run, "recovery_required", { operation: "release" }, error);
+      this.store.saveRecoveryRequired(run, { operation: "release", claim: claim.ref }, error, {
+        verification: "release_unverified",
+      });
       throw error;
     }
   }
 
-  /** Recovery never guesses: a caller supplies human-guided verification evidence. */
-  recover(ref: RunRef, recovered: boolean, evidence: unknown): Run {
+  async recover(
+    ref: RunRef,
+    evidence: unknown,
+    verify: (run: Run, evidence: unknown) => Promise<RecoveryVerification>,
+  ): Promise<Run> {
     const run = this.store.run(ref);
-    if (run.status !== "recovery_required") {
-      throw new Error(`Run is not awaiting recovery: ${ref}`);
+    if (run.status !== "recovery_required") throw new Error(`Run is not awaiting recovery: ${ref}`);
+    let verification: RecoveryVerification;
+    try {
+      verification = await verify(run, evidence);
+    } catch (error) {
+      this.store.commitRecovery(run, "verification_failed", { evidence, error: message(error) });
+      return run;
     }
-    this.store.recordRecovery(ref, recovered ? "recovered" : "still_required", evidence);
-    if (recovered) {
-      run.status = "stopped";
-      run.updatedAt = this.clock.now().toISOString();
-      this.store.saveRun(run);
-      this.store.recordStep(ref, "recovered", evidence);
-    } else {
-      this.store.recordStep(ref, "recovery_required", evidence);
+    if (!verification.verified) {
+      this.store.commitRecovery(run, "verification_failed", verification.evidence);
+      return run;
     }
+    run.status = verification.resolvedStatus ?? "stopped";
+    run.updatedAt = this.clock.now().toISOString();
+    this.store.commitRecovery(run, "recovered", verification.evidence);
+    return run;
+  }
+
+  reconcileAttention(ref: RunRef, observation: RunObservation, claim: Claim): Run {
+    const run = this.store.run(ref);
+    if (run.status !== "attention_required")
+      throw new Error(`Run does not require attention: ${ref}`);
+    if (observation.state !== "running" || claim.run !== ref || claim.status !== "active") {
+      throw new Error(
+        "Reconciliation requires a verified running session and active matching claim",
+      );
+    }
+    run.status = "active";
+    run.observation = observation;
+    run.updatedAt = this.clock.now().toISOString();
+    this.store.reconcileAttention(run, { observation, claim: claim.ref });
     return run;
   }
 }
 
-export function isClaimCollision(error: unknown): boolean {
-  return error instanceof ClaimCollisionError;
+function message(value: unknown): string {
+  return value instanceof Error ? value.message : String(value);
 }

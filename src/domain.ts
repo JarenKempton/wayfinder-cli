@@ -229,6 +229,8 @@ export interface Run {
 export interface ExecutionReceipt {
   sessionId?: string;
   pid?: number;
+  /** PID operations are forbidden unless this adapter-owned identity can be verified. */
+  processIdentity?: string;
   tier: "prepare" | "launch" | "managed" | "lifecycle";
 }
 

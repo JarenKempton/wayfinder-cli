@@ -4,8 +4,17 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { builtInAdapters, findAdapter } from "./adapters.ts";
 import { runAdapterConformance } from "./conformance.ts";
-import type { RunLifecycleAdapter, TrackerAdapter } from "./contracts.ts";
-import type { GroupRef, MapRef, Run, Ticket, TicketRef, WorkspaceRef } from "./domain.ts";
+import type { RecoveryVerification, RunLifecycleAdapter, TrackerAdapter } from "./contracts.ts";
+import type {
+  Claim,
+  GroupRef,
+  MapRef,
+  Run,
+  RunObservation,
+  Ticket,
+  TicketRef,
+  WorkspaceRef,
+} from "./domain.ts";
 import { evaluateFrontier, type FrontierScope } from "./frontier.ts";
 import { LifecycleCoordinator, Supervisor } from "./lifecycle.ts";
 import { databasePath } from "./paths.ts";
@@ -21,6 +30,11 @@ export interface RuntimeServices {
   lifecycle?(run: Run): RunLifecycleAdapter;
   statePath?: string;
   now?: () => Date;
+  verifyRecovery?(run: Run, evidence: unknown): Promise<RecoveryVerification>;
+  verifyAttention?(
+    run: Run,
+    evidence: unknown,
+  ): Promise<{ observation: RunObservation; claim: Claim }>;
 }
 
 export async function run(
@@ -88,9 +102,10 @@ Usage:
   wayfinder claim show <claim-id>
   wayfinder claim release <claim-id> --authorized-by <actor>
   wayfinder stop <run-id>
-  wayfinder recover <run-id> --verified --evidence <json>
+  wayfinder recover <run-id> --evidence <json>
   wayfinder supervisor status
   wayfinder supervisor tick
+  wayfinder supervisor reconcile <run-id> --evidence <json>
   wayfinder version`;
 }
 
@@ -204,23 +219,34 @@ async function stop(
   }
 }
 
-function recover(args: string[], write: (text: string) => void, services: RuntimeServices): void {
+async function recover(
+  args: string[],
+  write: (text: string) => void,
+  services: RuntimeServices,
+): Promise<void> {
   const [target, ...rest] = args;
   if (!target) throw new Error("recover requires a run");
   const flags = parseFlags(rest);
-  if (!flags.has("verified")) throw new Error("recover requires human-guided --verified evidence");
   const evidence = value(flags, "evidence");
   if (!evidence) throw new Error("recover requires --evidence <json>");
   const store = openStore(services);
   try {
-    const result = new LifecycleCoordinator(
+    const coordinator = new LifecycleCoordinator(
       store,
       undefined,
       services.lifecycle ?? (() => new ProcessLifecycleAdapter()),
       {
         now: services.now ?? (() => new Date()),
       },
-    ).recover(runRef(target), true, JSON.parse(evidence));
+    );
+    const parsed = JSON.parse(evidence);
+    const verifier =
+      services.verifyRecovery ??
+      (async () => ({
+        verified: false,
+        evidence: { supplied: parsed, error: "No recovery verifier is configured" },
+      }));
+    const result = await coordinator.recover(runRef(target), parsed, verifier);
     writeJson(write, result);
   } finally {
     store.close();
@@ -261,12 +287,13 @@ async function supervisor(
   write: (text: string) => void,
   services: RuntimeServices,
 ): Promise<void> {
-  if (args.length !== 1 || !["status", "tick"].includes(args[0] ?? "")) {
-    throw new Error("supervisor requires status or tick");
+  const [subcommand, target, ...rest] = args;
+  if (!subcommand || !["status", "tick", "reconcile"].includes(subcommand)) {
+    throw new Error("supervisor requires status, tick, or reconcile <run> --evidence <json>");
   }
   const store = openStore(services);
   try {
-    if (args[0] === "tick") {
+    if (subcommand === "tick") {
       if (!services.tracker || !services.lifecycle) {
         throw new Error("supervisor tick requires configured tracker and lifecycle adapters");
       }
@@ -278,6 +305,24 @@ async function supervisor(
           lifecycle: services.lifecycle,
           clock: { now: services.now ?? (() => new Date()) },
         }).tick(),
+      );
+    }
+    if (subcommand === "reconcile") {
+      if (!target || !services.verifyAttention) {
+        throw new Error("supervisor reconcile requires a run and configured attention verifier");
+      }
+      const evidence = value(parseFlags(rest), "evidence");
+      if (!evidence) throw new Error("supervisor reconcile requires --evidence <json>");
+      const ref = runRef(target);
+      const verified = await services.verifyAttention(store.run(ref), JSON.parse(evidence));
+      return writeJson(
+        write,
+        new LifecycleCoordinator(
+          store,
+          services.tracker,
+          services.lifecycle ?? (() => new ProcessLifecycleAdapter()),
+          { now: services.now ?? (() => new Date()) },
+        ).reconcileAttention(ref, verified.observation, verified.claim),
       );
     }
     writeJson(write, {

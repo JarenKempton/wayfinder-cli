@@ -42,14 +42,16 @@ wayfinder runs export <run-id>
 wayfinder claim show <claim-id>
 wayfinder claim release <claim-id> --authorized-by <actor>
 wayfinder stop <run-id>
-wayfinder recover <run-id> --verified --evidence <json>
+wayfinder recover <run-id> --evidence <json>
 wayfinder supervisor status
 wayfinder supervisor tick
+wayfinder supervisor reconcile <run-id> --evidence <json>
 ```
 
-Lifecycle commands use injected conforming tracker and harness adapters. The
-standalone process fallback can observe and stop PID-backed runs; managed
-sessions fail explicitly unless their harness lifecycle adapter is configured.
+Lifecycle commands use injected conforming tracker and harness adapters. Bare
+PIDs are explicitly insufficient process identity and the standalone fallback
+advertises no observe/stop capability; managed sessions fail before mutation
+unless their harness lifecycle adapter is configured.
 Claim release is always explicit and requires both an authorizing actor and a
 tracker adapter capable of guarded mutation plus read-after-write verification.
 
