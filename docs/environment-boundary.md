@@ -2,83 +2,89 @@
 
 Status: accepted design for JWB-296.
 
-Nav owns the transaction around a development environment; an environment
-adapter owns the application. Nav selects a named profile, checks advertised
-capabilities, schedules lifecycle operations, persists adapter receipts and
-readiness evidence, and defines when stop and cleanup may run. It does not know
-which services an application has or how they are started.
+A prepared Git worktree is not necessarily ready for agent work. An application
+may still need processes, credentials, hosted dependencies, routing, and health
+checks. Nav coordinates that lifecycle through an environment adapter, but the
+adapter—not Nav core—owns what the application environment means.
 
-The environment adapter owns service topology, local-versus-hosted routing,
-ports, containers, commands, process groups, application health checks, log
-locations, and credential-provider requirements. A Git workspace adapter still
-owns checkout/worktree preparation. These are separate stages: a prepared Git
-workspace is an input to environment planning.
+Nav resolves an adapter and an opaque profile reference, requests a
+side-effect-free plan, obtains authorization, and coordinates start, readiness,
+logs, resume, and stop. It records the adapter's summary, warnings, opaque
+environment ID, credential handles, readiness evidence, and log references
+without interpreting application topology.
 
 ## Portable contract and capabilities
 
 The portable `EnvironmentAdapter` contract is `preflight`, `plan`, `start`,
-`verifyReady`, `logs`, `resume`, and `stop`. Every operation is gated by the
+`verifyReady`, `logs`, `resume`, and `stop`. Operations are gated by the
 fine-grained capabilities `environment_plan`, `environment_start`,
 `environment_readiness`, `environment_logs`, `environment_resume`, and
-`environment_stop`. Missing capabilities are reported as unsupported; Nav does
-not infer success.
+`environment_stop`. Missing capabilities are explicit unsupported errors.
 
-`plan` is side-effect free. It resolves a portable profile into an adapter-owned
-plan without exposing secret values. `start` returns an opaque environment ID,
-per-service readiness evidence, and log references. `resume` reattaches using
-that ID and must verify actual state. `stop` stops only processes/resources in
-the adapter receipt; it does not delete the Git workspace, hosted services, or
-unrelated shared dependencies.
+`preflight` and `plan` are side-effect free. A plan contains an opaque ID and
+profile, a human-readable summary and warnings, and credential-provider handles;
+it contains no secret values. `start` requires either recorded human confirmation
+or a named explicit automation policy. Interactive runs confirm by default.
 
-## Configuration ownership and precedence
+`start` returns an opaque environment ID, adapter-defined readiness evidence,
+and log references. `resume` must verify actual state and never silently recreate
+a stale environment. `stop` is idempotent and receipt-scoped: it may stop only
+resources the adapter can prove it owns, and it never deletes a prepared Git
+workspace or mutates unrelated hosted resources.
 
-Repositories declare portable named profiles and service selections. A profile
-contains stable logical service names and selects each as `local`, `hosted`, or
-`disabled`; hosted selections may name an abstract target such as `staging`.
-Adapter-owned configuration maps those logical names to commands, URLs, ports,
-containers, health checks, and credential handles.
+## Opaque profiles and named workspaces
 
-Precedence is deterministic, from lowest to highest:
+Nav configuration selects only an adapter and an adapter-defined profile. It
+does not merge component choices. Precedence is deterministic, from lowest to
+highest:
 
-1. repository profile defaults;
-2. user-local, uncommitted overrides;
-3. explicit invocation overrides.
+1. workspace or repository defaults;
+2. developer-local configuration;
+3. map or ticket structured hints;
+4. explicit invocation.
 
-Higher layers may select a profile or override declared services, but cannot
-introduce undeclared application services. Tracker/map routing may select a
-profile through normal execution settings; it does not define application
-topology. Effective non-secret configuration is recorded with the run.
+The plan request includes a map of opaque workspace names to prepared workspace
+paths. This permits an adapter to consume more than one worktree without making
+Nav define repository relationships or assume sibling directory layouts. How a
+profile relates those workspaces is entirely adapter-owned.
 
-## Resource and lifecycle rules
+Application component catalogs, dependency expansion, local/hosted/off routing,
+ports, containers, commands, gateways, health checks, production guards, and
+detailed selection interfaces remain outside Nav core. Protocol 1.x does not
+standardize those concepts. A later protocol may add a portable model only after
+independent prototypes demonstrate that it generalizes without application
+coupling.
 
-- Secrets remain in credential providers. Configuration and plans contain only
-  handles; secret values are injected through scoped environment or equivalent
-  secure channels and never appear in arguments, logs, receipts, or SQLite.
-- The adapter reserves and validates ports during preflight/plan. A collision is
-  a failed preflight, not permission for Nav to kill the existing listener.
-- The adapter owns spawned process groups and returns opaque ownership evidence.
-  Nav persists the receipt before advancing the transaction.
-- Logs remain adapter/application artifacts. Nav stores bounded references and
-  may stream them, but does not require a universal log format.
-- Readiness is application-defined and must distinguish local readiness from an
-  externally hosted dependency. Start is not committed until required evidence
-  verifies or the profile explicitly marks the dependency external.
-- Resume revalidates processes, ports, hosted reachability, and readiness; a
-  stale receipt is attention-required, never silently recreated.
-- Failure cleanup and explicit stop are receipt-scoped, idempotent, and
-  capability-checked. They never delete the prepared workspace or mutate hosted
-  services unless a future, separately advertised capability explicitly says so.
+## Secrets and lifecycle evidence
+
+- Versioned configuration and plans contain credential-provider handles, never
+  secret values.
+- Secret values use scoped secure channels and never appear in arguments, logs,
+  receipts, or ordinary SQLite fields.
+- Nav displays and persists bounded plan summaries, warnings, readiness evidence,
+  and log references without requiring an application-specific schema.
+- A failed readiness check does not become success. Ambiguous or stale state is
+  attention-required and retains its evidence.
+- Stop and failure cleanup use the exact persisted environment receipt and do not
+  imply tracker resolution, claim release, or workspace deletion.
 
 ## Embedded and external implementations
 
-Both are supported through the same contract. Bundled, generally portable
-behavior may be embedded behind an in-process adapter. A separate executable is
-justified when the lifecycle is independently versioned, organization-specific,
-requires a different runtime, or already has a useful developer-facing CLI.
-External adapters use the versioned Nav Adapter Protocol and are discovered as
-`nav-adapter-<name>`; Nav passes argument arrays and credential handles, not
-shell command strings or secret values.
+Embedded and executable adapters implement the same semantic contract. Bundled,
+generally portable behavior may run in process. A separate executable is
+appropriate when an environment is independently versioned, organization
+specific, implemented in another runtime, or already has a developer-facing
+CLI. External adapters use the versioned Nav Adapter Protocol and are discovered
+as `nav-adapter-<name>`.
 
-This keeps Biz App and every company-specific development lifecycle outside Nav
-core while allowing their adapters or CLIs to compose with the same orchestration
-transaction, capability checks, receipts, and recovery rules.
+This lets a product-specific tool compose with Nav without compiling its topology
+or lifecycle into the portable runtime.
+
+## ResponsiBid ownership
+
+JWB-10, not JWB-296, owns ResponsiBid's concrete local and hybrid developer lane:
+PHP and Next.js applications, Docker microservices, gateway configuration,
+hosted authentication, developer isolation, production prohibition, deterministic
+reset/seed behavior, and concrete profiles. Its prototypes provide the evidence
+for those decisions. Nav treats the resulting integration and profile names as
+opaque and coordinates only the portable lifecycle described here.

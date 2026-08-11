@@ -15,6 +15,9 @@ Core sends `adapter.initialize` before any other method:
 `adapter_kind` is one of `tracker`, `workspace`, `environment`, or `harness`.
 Embedded and executable environment adapters expose the same lifecycle contract;
 the protocol transport does not change ownership of application topology.
+Environment profile references, plan summaries, warnings, and lifecycle evidence
+are adapter-defined and opaque to core. Protocol 1.x does not define a universal
+component catalog or local-versus-hosted service-routing schema.
 
 The adapter responds with its identity and exact capabilities:
 

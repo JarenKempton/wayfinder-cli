@@ -1,49 +1,74 @@
 import { expect, test } from "bun:test";
-import { resolveEnvironmentSettings, selectEnvironmentProfile } from "../src/environment.ts";
+import type {
+  AdapterRef,
+  EnvironmentProfileRef,
+  EnvironmentStartAuthorization,
+} from "../src/domain.ts";
+import {
+  requireEnvironmentSettings,
+  requireEnvironmentStartAuthorization,
+  resolveEnvironmentSettings,
+} from "../src/environment.ts";
 
-const profiles = [
-  {
-    name: "hybrid",
-    services: [
-      { service: "web", mode: "local" as const },
-      { service: "database", mode: "hosted" as const, target: "staging" },
-    ],
-  },
-];
+const adapter = (value: string) => value as AdapterRef;
+const profile = (value: string) => value as EnvironmentProfileRef;
 
-test("environment settings apply repository, user, then invocation precedence", () => {
+test("workspace environment defaults are retained without higher layers", () => {
+  expect(
+    resolveEnvironmentSettings({
+      adapter: adapter("environment:example"),
+      profile: profile("base"),
+    }),
+  ).toEqual({ adapter: adapter("environment:example"), profile: profile("base") });
+});
+
+test("environment selection applies workspace, local, ticket, then invocation precedence", () => {
   expect(
     resolveEnvironmentSettings(
-      { profile: "hybrid", services: { web: { service: "web", mode: "local" } } },
-      { services: { web: { service: "web", mode: "disabled" } } },
-      { services: { web: { service: "web", mode: "hosted", target: "preview" } } },
+      { adapter: adapter("environment:workspace"), profile: profile("workspace") },
+      { profile: profile("local") },
+      { adapter: adapter("environment:ticket"), profile: profile("ticket") },
+      { profile: profile("invocation") },
     ),
-  ).toEqual({
-    profile: "hybrid",
-    services: { web: { service: "web", mode: "hosted", target: "preview" } },
-  });
+  ).toEqual({ adapter: adapter("environment:ticket"), profile: profile("invocation") });
 });
 
-test("profiles compose local and hosted services deterministically", () => {
+test("adapter and profile resolve independently by field", () => {
   expect(
-    selectEnvironmentProfile(profiles, {
-      profile: "hybrid",
-      services: { web: { service: "web", mode: "hosted", target: "preview" } },
-    }),
-  ).toEqual({
-    name: "hybrid",
-    services: [
-      { service: "web", mode: "hosted", target: "preview" },
-      { service: "database", mode: "hosted", target: "staging" },
-    ],
-  });
+    resolveEnvironmentSettings(
+      { adapter: adapter("environment:workspace"), profile: profile("workspace") },
+      { adapter: adapter("environment:explicit") },
+    ),
+  ).toEqual({ adapter: adapter("environment:explicit"), profile: profile("workspace") });
 });
 
-test("profiles reject overrides for undeclared application services", () => {
-  expect(() =>
-    selectEnvironmentProfile(profiles, {
-      profile: "hybrid",
-      services: { payments: { service: "payments", mode: "local" } },
-    }),
-  ).toThrow("Unknown service override: payments");
+test("environment selection is complete before an adapter call", () => {
+  expect(() => requireEnvironmentSettings({ profile: profile("hybrid") })).toThrow(
+    "An environment adapter is required",
+  );
+  expect(() => requireEnvironmentSettings({ adapter: adapter("environment:example") })).toThrow(
+    "An environment profile is required",
+  );
+});
+
+test("human confirmation authorizes environment start", () => {
+  const authorization: EnvironmentStartAuthorization = { kind: "human" };
+  expect(requireEnvironmentStartAuthorization(authorization)).toEqual(authorization);
+});
+
+test("a named automation policy authorizes environment start", () => {
+  const authorization: EnvironmentStartAuthorization = { kind: "policy", policy: "trusted-ci" };
+  expect(requireEnvironmentStartAuthorization(authorization)).toEqual(authorization);
+});
+
+test("environment start rejects missing or unnamed authority", () => {
+  expect(() => requireEnvironmentStartAuthorization()).toThrow(
+    "Environment start authorization is required",
+  );
+  expect(() => requireEnvironmentStartAuthorization({ kind: "policy" })).toThrow(
+    "Environment automation policy must be named",
+  );
+  expect(() => requireEnvironmentStartAuthorization({ kind: "policy", policy: "  " })).toThrow(
+    "Environment automation policy must be named",
+  );
 });

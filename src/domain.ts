@@ -165,28 +165,24 @@ export interface PreparedWorkspace {
   branch?: string;
 }
 
-export type EnvironmentServiceMode = "local" | "hosted" | "disabled";
-
-export interface EnvironmentServiceSelection {
-  service: string;
-  mode: EnvironmentServiceMode;
-  target?: string;
-}
-
-export interface EnvironmentProfile {
-  name: string;
-  services: EnvironmentServiceSelection[];
-}
+export type EnvironmentProfileRef = string & { readonly __kind: "EnvironmentProfileRef" };
 
 export interface EnvironmentPlan {
-  profile: string;
-  services: EnvironmentServiceSelection[];
+  id: string;
+  profile: EnvironmentProfileRef;
+  summary: string;
+  warnings: string[];
   credentialHandles: string[];
+}
+
+export interface EnvironmentStartAuthorization {
+  kind: "human" | "policy";
+  policy?: string;
 }
 
 export interface PreparedEnvironment {
   id: string;
-  profile: string;
+  profile: EnvironmentProfileRef;
   readiness: Record<string, "ready" | "not_ready" | "external">;
   logReferences: string[];
 }

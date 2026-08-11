@@ -1,36 +1,41 @@
-import type { EnvironmentProfile, EnvironmentServiceSelection } from "./domain.ts";
+import type { AdapterRef, EnvironmentProfileRef, EnvironmentStartAuthorization } from "./domain.ts";
 
 export interface EnvironmentSettings {
-  profile?: string;
-  services?: Record<string, EnvironmentServiceSelection>;
+  adapter?: AdapterRef;
+  profile?: EnvironmentProfileRef;
 }
 
-/** Merge repository, user, and invocation settings from lowest to highest precedence. */
+export interface ResolvedEnvironmentSettings {
+  adapter: AdapterRef;
+  profile: EnvironmentProfileRef;
+}
+
+/** Merge workspace, local, ticket/map, and invocation layers from lowest to highest precedence. */
 export function resolveEnvironmentSettings(...layers: EnvironmentSettings[]): EnvironmentSettings {
   const resolved: EnvironmentSettings = {};
   for (const layer of layers) {
+    if (layer.adapter !== undefined) resolved.adapter = layer.adapter;
     if (layer.profile !== undefined) resolved.profile = layer.profile;
-    if (layer.services !== undefined)
-      resolved.services = { ...resolved.services, ...layer.services };
   }
   return resolved;
 }
 
-export function selectEnvironmentProfile(
-  profiles: EnvironmentProfile[],
+/** Validate selection before any environment adapter is called. */
+export function requireEnvironmentSettings(
   settings: EnvironmentSettings,
-): EnvironmentProfile {
+): ResolvedEnvironmentSettings {
+  if (!settings.adapter) throw new Error("An environment adapter is required");
   if (!settings.profile) throw new Error("An environment profile is required");
-  const profile = profiles.find((candidate) => candidate.name === settings.profile);
-  if (!profile) throw new Error(`Unknown environment profile: ${settings.profile}`);
+  return { adapter: settings.adapter, profile: settings.profile };
+}
 
-  const services = new Map(profile.services.map((service) => [service.service, service]));
-  for (const [name, selection] of Object.entries(settings.services ?? {})) {
-    if (selection.service !== name) {
-      throw new Error(`Service override key does not match selection: ${name}`);
-    }
-    if (!services.has(name)) throw new Error(`Unknown service override: ${name}`);
-    services.set(name, selection);
+/** Validate the explicit authority required before a side-effecting environment start. */
+export function requireEnvironmentStartAuthorization(
+  authorization?: EnvironmentStartAuthorization,
+): EnvironmentStartAuthorization {
+  if (!authorization) throw new Error("Environment start authorization is required");
+  if (authorization.kind === "policy" && !authorization.policy?.trim()) {
+    throw new Error("Environment automation policy must be named");
   }
-  return { name: profile.name, services: [...services.values()] };
+  return authorization;
 }
