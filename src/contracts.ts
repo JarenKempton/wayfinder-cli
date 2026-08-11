@@ -92,6 +92,11 @@ export interface TrackerAdapter {
   verifyReclaimed(request: ReclaimRequest): Promise<void>;
 }
 
+/** Optional read surface implemented by adapters that can hydrate a complete map frontier. */
+export interface FrontierTrackerAdapter extends TrackerAdapter {
+  listMapTickets(map: import("./domain.ts").MapRef): Promise<Ticket[]>;
+}
+
 export interface WorkspacePlan {
   ticket: TicketRef;
   path: string;

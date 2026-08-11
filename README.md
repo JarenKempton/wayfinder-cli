@@ -15,9 +15,24 @@ stays in the MCP/skill layer and what belongs to this CLI runtime.
 Wayfinder CLI is a TypeScript/Bun pre-release. This repository currently defines and implements the stable
 foundation: qualified references, portable ticket and capability types, frontier
 evaluation, adapter protocol discovery, layered execution routing, SQLite run
-state, and the initial CLI. Hosted tracker mutations and product-specific
-session lifecycle adapters must pass their conformance suites before being
-advertised as supported.
+state, and the initial CLI. Bundled Linear and GitHub Issues adapters normalize
+native map children and blockers, exhaust provider pagination, and use guarded,
+read-after-write assignment and restoration. Product-specific session lifecycle
+adapters must pass their conformance suites before being advertised as supported.
+
+## Tracker credentials
+
+The Linear adapter accepts a scoped API token and the GitHub adapter accepts a
+token with repository Issues access. The built-in adapter registry reports them
+as available when `LINEAR_API_KEY` or `GITHUB_TOKEN`/`GH_TOKEN` is present. Tokens
+are passed in request headers and are never placed in process arguments or logs.
+
+Both adapters intentionally omit `conditional_update`, `atomic_assignment`, and
+`lease_metadata` from their advertised capabilities. Their public assignment APIs
+do not provide a verified compare-and-swap or native expiring lease. Assignment is
+therefore guarded by a pre-write read, verified by an authoritative reread, and
+restored only while the adapter-owned assignee is still present; a concurrent
+owner is reported as a collision and is never overwritten.
 
 ## Develop from source
 
