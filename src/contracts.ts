@@ -138,6 +138,7 @@ export interface LaunchRequest {
   workspace: PreparedWorkspace;
   model?: string;
   effort?: string;
+  context?: string;
 }
 
 export interface LaunchReceipt {
@@ -183,4 +184,6 @@ export interface PickupRequest {
   harness: AdapterRef;
   model?: string;
   effort?: string;
+  context?: string;
+  requiredCapabilities?: CapabilitySet;
 }

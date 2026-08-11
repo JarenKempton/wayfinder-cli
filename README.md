@@ -49,6 +49,8 @@ wayfinder resolve <reference>
 wayfinder frontier --input tickets.json [--scope <reference>] [--json]
 wayfinder adapter list
 wayfinder adapter describe <name>
+wayfinder adapter test <executable>
+wayfinder adapter conformance <fixture>
 wayfinder runs list
 wayfinder runs show <run-id>
 wayfinder runs export <run-id>
