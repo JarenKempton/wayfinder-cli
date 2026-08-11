@@ -2,6 +2,10 @@
 
 Nav separates policy from vendor mechanics.
 
+The ownership boundary between the shared Wayfinder MCP/skill experience and
+this portable runtime is normative and documented in
+[`ownership-boundary.md`](ownership-boundary.md).
+
 ```text
 CLI
  ├── resolver and configuration
@@ -16,6 +20,9 @@ CLI
 ```
 
 ## Qualified references
+
+The accepted entity and identifier contract is documented in
+[Portable domain model and capability vocabulary](domain-model.md).
 
 ```text
 tracker   <adapter>:<instance>
