@@ -32,6 +32,7 @@ export const CAPABILITIES = [
   "session_close",
   "model_selection",
   "reasoning_selection",
+  "context_selection",
   "tool_configuration",
   "visible_multi_session",
   "workspace_prepare",
@@ -214,6 +215,8 @@ export interface Run {
   ticket: TicketRef;
   harness: AdapterRef;
   model?: string;
+  effort?: string;
+  context?: string;
   workspace: PreparedWorkspace;
   capabilities: CapabilitySet;
   status: RunStatus;
