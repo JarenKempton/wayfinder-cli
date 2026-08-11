@@ -98,7 +98,8 @@ function client(
     environment?: Record<string, string>;
   } = {},
 ) {
-  return new AdapterClient(executable, {
+  const command = executable.endsWith(".ts") ? [process.execPath, executable] : executable;
+  return new AdapterClient(command, {
     ...options,
     environment: { ...options.environment, WAYFINDER_CONFORMANCE_SCENARIO: scenario },
   });

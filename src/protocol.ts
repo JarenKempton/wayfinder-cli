@@ -64,14 +64,17 @@ export interface AdapterCallOptions {
 }
 
 export class AdapterClient {
-  readonly #path: string;
+  readonly #command: string[];
   readonly #timeoutMs: number;
   readonly #maxMessageSize: number;
   readonly #environment: Record<string, string>;
 
-  constructor(path: string, options: AdapterClientOptions = {}) {
-    if (!path) throw new Error("Adapter path is required");
-    this.#path = path;
+  constructor(command: string | readonly string[], options: AdapterClientOptions = {}) {
+    const normalized = typeof command === "string" ? [command] : [...command];
+    if (normalized.length === 0 || normalized.some((argument) => argument.length === 0)) {
+      throw new Error("Adapter command is required");
+    }
+    this.#command = normalized;
     this.#timeoutMs = options.timeoutMs ?? 15_000;
     this.#maxMessageSize = options.maxMessageSize ?? DEFAULT_MAX_MESSAGE_SIZE;
     this.#environment = options.environment ?? {};
@@ -108,7 +111,7 @@ export class AdapterClient {
     }
 
     const request: RpcRequest = { jsonrpc: "2.0", id: crypto.randomUUID(), method, params };
-    const child = Bun.spawn([this.#path], {
+    const child = Bun.spawn(this.#command, {
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
