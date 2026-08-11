@@ -1,4 +1,5 @@
 import { type CapabilitySet, capabilities } from "./domain.ts";
+import { jiraCapabilities } from "./jira.ts";
 
 export type AdapterKind = "tracker" | "harness" | "workspace" | "environment";
 
@@ -22,13 +23,22 @@ const harnessExecutables: Record<string, string | undefined> = {
 };
 
 export function builtInAdapters(): AdapterDescriptor[] {
-  const trackers = ["jira", "linear", "github", "markdown"].map<AdapterDescriptor>((name) => ({
-    name,
-    kind: "tracker",
-    bundled: true,
-    available: false,
-    capabilities: {},
-  }));
+  const trackers: AdapterDescriptor[] = [
+    {
+      name: "jira",
+      kind: "tracker",
+      bundled: true,
+      available: true,
+      capabilities: jiraCapabilities(),
+    },
+    ...["linear", "github", "markdown"].map<AdapterDescriptor>((name) => ({
+      name,
+      kind: "tracker",
+      bundled: true,
+      available: false,
+      capabilities: {},
+    })),
+  ];
 
   const harnesses = Object.entries(harnessExecutables).map<AdapterDescriptor>(
     ([name, executable]) => {
