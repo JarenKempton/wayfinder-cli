@@ -62,8 +62,11 @@ function ok(stdout: string) {
 function fail(stderr = "not found") {
   return { exitCode: 1, stdout: "", stderr };
 }
-function subject(git = new FakeGit()) {
-  return { git, workspace: new GitWorkspaceAdapter(repository, git) };
+function subject(
+  git = new FakeGit(),
+  exists: (path: string) => Promise<boolean> = async () => false,
+) {
+  return { git, workspace: new GitWorkspaceAdapter(repository, git, exists) };
 }
 
 describe("Git workspace adapter", () => {
@@ -87,13 +90,27 @@ describe("Git workspace adapter", () => {
   });
 
   test("resumes an exact registered worktree without mutating dirty work", async () => {
-    const { workspace, git } = subject();
+    const { workspace, git } = subject(new FakeGit(), async () => true);
     git.worktrees = `worktree ${worktreePath}\nbranch refs/heads/task/ABC-123\n`;
     expect(await workspace.prepare(await workspace.plan(ticket))).toEqual({
       path: worktreePath,
       branch: "task/ABC-123",
     });
     expect(git.calls).toHaveLength(1);
+  });
+
+  test("rejects a missing or prunable registered worktree", async () => {
+    const missing = subject(new FakeGit(), async () => false);
+    missing.git.worktrees = `worktree ${worktreePath}\nbranch refs/heads/task/ABC-123\n`;
+    await expect(
+      missing.workspace.prepare(await missing.workspace.plan(ticket)),
+    ).rejects.toBeInstanceOf(WorkspaceConflictError);
+
+    const prunable = subject();
+    prunable.git.worktrees = `worktree ${worktreePath}\nbranch refs/heads/task/ABC-123\nprunable gitdir file points to non-existent location\n`;
+    await expect(
+      prunable.workspace.prepare(await prunable.workspace.plan(ticket)),
+    ).rejects.toBeInstanceOf(WorkspaceConflictError);
   });
 
   test("fails closed on path or branch collisions", async () => {
@@ -149,6 +166,30 @@ describe("Git workspace adapter", () => {
     expect(parseWorktrees(`worktree ${nativePath}\r\nbranch refs/heads/task/ABC-123\r\n`)).toEqual([
       { path: resolve(nativePath), branch: "task/ABC-123" },
     ]);
+  });
+
+  test("retains prunable metadata from porcelain output", () => {
+    expect(
+      parseWorktrees(
+        `worktree ${worktreePath}\nbranch refs/heads/task/ABC-123\nprunable gitdir file points to non-existent location\n`,
+      ),
+    ).toEqual([
+      {
+        path: worktreePath,
+        branch: "task/ABC-123",
+        prunable: "gitdir file points to non-existent location",
+      },
+    ]);
+  });
+
+  test("rejects empty repository paths and unsafe ticket-derived refs", async () => {
+    expect(() => new GitWorkspaceAdapter({ ...repository, path: "" })).toThrow(
+      "path, and worktree root are required",
+    );
+    const { workspace } = subject();
+    await expect(
+      workspace.plan({ ...ticket, ref: "jira:example:TEAM:ticket:A..B" as TicketRef }),
+    ).rejects.toThrow("not safe");
   });
 
   test("passes a path with spaces as one argv element", async () => {
