@@ -9,7 +9,13 @@ import type {
   WorkspaceAdapter,
 } from "./contracts.ts";
 import { ClaimCollisionError, HarnessLaunchError } from "./contracts.ts";
-import { capabilities, type PreparedWorkspace, type Run, type RunRef } from "./domain.ts";
+import {
+  type Claim,
+  capabilities,
+  type PreparedWorkspace,
+  type Run,
+  type RunRef,
+} from "./domain.ts";
 
 export type PickupState =
   | "planning"
@@ -130,6 +136,19 @@ export class PickupCoordinator {
         return this.#compensate(receipt, snapshot, error);
       }
       await this.#options.tracker.verifyClaim(claimRequest);
+      const verifiedSnapshot = await this.#options.tracker.snapshotClaimState(request.ticket);
+      const claim: Claim = {
+        ref: claimRef,
+        ticket: request.ticket,
+        humanOwner: request.owner,
+        run: runRef,
+        previousState: snapshot,
+        claimedAt: now.toISOString(),
+        leaseExpiresAt: claimRequest.leaseExpiresAt,
+        status: "active",
+        currentVersion: verifiedSnapshot.version,
+      };
+      await this.#options.ledger.saveClaim(claim);
       receipt.state = "claimed";
       await this.#options.ledger.recordStep(runRef, "claimed", receipt);
 
@@ -151,6 +170,7 @@ export class PickupCoordinator {
       await this.#options.ledger.recordStep(runRef, "launched", receipt);
 
       run.workspace = prepared;
+      run.execution = launch;
       run.status = "active";
       run.updatedAt = this.#options.clock.now().toISOString();
       if (request.model) run.model = request.model;

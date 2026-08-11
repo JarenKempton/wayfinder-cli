@@ -31,6 +31,12 @@ A claim defaults to a 15-minute lease. A live supervisor renews it every five
 minutes. Renewal updates machine-readable metadata and is verified by reading
 the tracker. Lease expiration never unassigns, releases, or reassigns a ticket.
 
+The supervisor is a per-user runtime service. Each tick reads active runs from
+the local ledger, asks the run's harness adapter for observed session state,
+and renews only sessions observed as running. Missing, stopped, unknown, or
+unverifiable sessions become `attention_required`; they are never silently
+stopped, released, or reassigned. Renewal errors follow the same rule.
+
 Reclaim requires an authenticated human who may assign the tracker ticket. It
 must name the stale claim, re-read current state, and conditionally install new
 claim and run identities. A version or claim mismatch is a collision, not an
@@ -50,6 +56,11 @@ conditionally restores the original claim-related tracker snapshot and verifies
 the result. The ticket can return to the frontier only when that restored state
 is open, available, unassigned, and unblocked. Workspace deletion is always a
 separate explicit operation.
+
+Run exports include the run, claim snapshot, ordered transaction steps, and
+append-only recovery evidence. Recovery changes a `recovery_required` run only
+after the caller supplies explicit verified evidence; failed verification is
+recorded and leaves the run unchanged.
 
 ## Pickup and compensation
 

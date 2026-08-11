@@ -29,6 +29,7 @@ import { PickupCoordinator, PickupResultError } from "../src/pickup.ts";
 class FakeLedger implements Ledger {
   readonly steps: string[] = [];
   saveRun(_run: Run): void {}
+  saveClaim(_claim: import("../src/domain.ts").Claim): void {}
   recordStep(_run: RunRef, state: string): void {
     this.steps.push(state);
   }

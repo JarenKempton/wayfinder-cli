@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { capabilities, type Run } from "../src/domain.ts";
+import { type Claim, capabilities, type Run } from "../src/domain.ts";
 import { StateStore } from "../src/state.ts";
 
 test("SQLite store round-trips runs", () => {
@@ -23,6 +23,21 @@ test("SQLite store round-trips runs", () => {
   try {
     store.saveRun(run);
     expect(store.run(run.ref)).toEqual(run);
+    const claim: Claim = {
+      ref: "wayfinder-claim:test",
+      ticket: run.ticket,
+      humanOwner: "human" as Claim["humanOwner"],
+      run: run.ref,
+      previousState: { version: "1", payload: { status: "To Do" } },
+      claimedAt: now,
+      leaseExpiresAt: now,
+      status: "active",
+      currentVersion: "2",
+    };
+    store.saveClaim(claim);
+    expect(store.claim(claim.ref)).toEqual(claim);
+    expect(store.claimForRun(run.ref)).toEqual(claim);
+    expect(store.activeRuns()).toEqual([run]);
   } finally {
     store.close();
     rmSync(directory, { recursive: true, force: true });

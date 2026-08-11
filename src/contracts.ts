@@ -9,6 +9,7 @@ import type {
   PreparedEnvironment,
   PreparedWorkspace,
   Run,
+  RunObservation,
   RunRef,
   Ticket,
   TicketRef,
@@ -160,7 +161,14 @@ export interface HarnessAdapter {
 
 export interface Ledger {
   saveRun(run: Run): void | Promise<void>;
+  saveClaim(claim: import("./domain.ts").Claim): void | Promise<void>;
   recordStep(run: RunRef, state: string, receipt?: unknown, error?: unknown): void | Promise<void>;
+}
+
+/** Harness-specific observation is kept behind this portable lifecycle boundary. */
+export interface RunLifecycleAdapter {
+  observe(run: Run): Promise<RunObservation>;
+  stop(run: Run): Promise<void>;
 }
 
 export interface IdFactory {

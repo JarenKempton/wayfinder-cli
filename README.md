@@ -14,8 +14,8 @@ stays in the MCP/skill layer and what belongs to this CLI runtime.
 
 Wayfinder CLI is a TypeScript/Bun pre-release. This repository currently defines and implements the stable
 foundation: qualified references, portable ticket and capability types, frontier
-evaluation, adapter protocol discovery, layered execution routing, SQLite run
-state, and the initial CLI. Hosted tracker mutations and product-specific
+evaluation, adapter protocol discovery, layered execution routing, SQLite run,
+claim, lease, observation, and recovery state, and the lifecycle CLI. Hosted tracker mutations and product-specific
 session lifecycle adapters must pass their conformance suites before being
 advertised as supported.
 
@@ -37,12 +37,19 @@ wayfinder adapter describe <name>
 wayfinder runs list
 wayfinder runs show <run-id>
 wayfinder runs export <run-id>
+wayfinder claim show <claim-id>
+wayfinder claim release <claim-id> --authorized-by <actor>
+wayfinder stop <run-id>
+wayfinder recover <run-id> --verified --evidence <json>
+wayfinder supervisor status
+wayfinder supervisor tick
 ```
 
-The planned pickup, claim, supervisor, workspace, and recovery commands are
-documented in [docs/requirements.md](docs/requirements.md). Commands that could
-mutate a tracker are not exposed until their atomicity and compensation paths
-are implemented and tested.
+Lifecycle commands use injected conforming tracker and harness adapters. The
+standalone process fallback can observe and stop PID-backed runs; managed
+sessions fail explicitly unless their harness lifecycle adapter is configured.
+Claim release is always explicit and requires both an authorizing actor and a
+tracker adapter capable of guarded mutation plus read-after-write verification.
 
 ## Principles
 

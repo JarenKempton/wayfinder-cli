@@ -151,6 +151,8 @@ export interface Claim {
   claimedAt: string;
   leaseExpiresAt: string;
   status: ClaimStatus;
+  /** Latest tracker version verified for this claim; used to guard renewal/release. */
+  currentVersion?: string;
   supersedes?: ClaimRef;
   supersededBy?: ClaimRef;
 }
@@ -217,6 +219,22 @@ export interface Run {
   status: RunStatus;
   createdAt: string;
   updatedAt: string;
+  execution?: ExecutionReceipt;
+  observation?: RunObservation;
+}
+
+export interface ExecutionReceipt {
+  sessionId?: string;
+  pid?: number;
+  tier: "prepare" | "launch" | "managed" | "lifecycle";
+}
+
+export type ObservedSessionState = "running" | "stopped" | "missing" | "unknown";
+
+export interface RunObservation {
+  state: ObservedSessionState;
+  observedAt: string;
+  detail?: string;
 }
 
 /** Stopping execution preserves workspace and claim/tracker ownership outside the run record. */

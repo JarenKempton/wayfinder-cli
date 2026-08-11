@@ -3,18 +3,29 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { builtInAdapters, findAdapter } from "./adapters.ts";
-import type { GroupRef, MapRef, Ticket, TicketRef, WorkspaceRef } from "./domain.ts";
+import type { RunLifecycleAdapter, TrackerAdapter } from "./contracts.ts";
+import type { GroupRef, MapRef, Run, Ticket, TicketRef, WorkspaceRef } from "./domain.ts";
 import { evaluateFrontier, type FrontierScope } from "./frontier.ts";
+import { LifecycleCoordinator, Supervisor } from "./lifecycle.ts";
 import { databasePath } from "./paths.ts";
+import { ProcessLifecycleAdapter } from "./platform/process-lifecycle.ts";
 import { AdapterClient, PROTOCOL_VERSION } from "./protocol.ts";
 import { parseRef } from "./reference.ts";
 import { StateStore } from "./state.ts";
 
 export const VERSION = "0.1.0-dev";
 
+export interface RuntimeServices {
+  tracker?: TrackerAdapter;
+  lifecycle?(run: Run): RunLifecycleAdapter;
+  statePath?: string;
+  now?: () => Date;
+}
+
 export async function run(
   args: string[],
   write: (text: string) => void = console.log,
+  services: RuntimeServices = {},
 ): Promise<void> {
   const [command, ...rest] = args;
   switch (command) {
@@ -37,14 +48,18 @@ export async function run(
     case "adapter":
       return adapter(rest, write);
     case "runs":
-      return runs(rest, write);
-    case "pickup":
-    case "claim":
-    case "recover":
-    case "resume":
+      return runs(rest, write, services);
     case "stop":
-    case "workspace":
+      return stop(rest, write, services);
+    case "recover":
+      return recover(rest, write, services);
+    case "claim":
+      return claim(rest, write, services);
     case "supervisor":
+      return supervisor(rest, write, services);
+    case "pickup":
+    case "resume":
+    case "workspace":
     case "init":
     case "config":
       throw new Error(
@@ -68,6 +83,12 @@ Usage:
   wayfinder runs list
   wayfinder runs show <run-id>
   wayfinder runs export <run-id>
+  wayfinder claim show <claim-id>
+  wayfinder claim release <claim-id> --authorized-by <actor>
+  wayfinder stop <run-id>
+  wayfinder recover <run-id> --verified --evidence <json>
+  wayfinder supervisor status
+  wayfinder supervisor tick
   wayfinder version`;
 }
 
@@ -124,26 +145,157 @@ async function adapter(args: string[], write: (text: string) => void): Promise<v
   throw new Error("adapter requires list, describe <name>, or test <executable>");
 }
 
-function runs(args: string[], write: (text: string) => void): void {
+function runs(args: string[], write: (text: string) => void, services: RuntimeServices): void {
   const [subcommand, target] = args;
-  const path = databasePath();
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const store = new StateStore(path);
+  const store = openStore(services);
   try {
     if (subcommand === "list") {
       writeJson(write, store.listRuns());
       return;
     }
     if ((subcommand === "show" || subcommand === "export") && target) {
-      const ref = (
-        target.startsWith("wayfinder-run:") ? target : `wayfinder-run:${target}`
-      ) as `wayfinder-run:${string}`;
-      writeJson(write, store.run(ref));
+      const ref = runRef(target);
+      const run = store.run(ref);
+      writeJson(
+        write,
+        subcommand === "export"
+          ? {
+              run,
+              claim: optional(() => store.claimForRun(ref)),
+              steps: store.steps(ref),
+              recovery: store.recoveryEvidence(ref),
+            }
+          : run,
+      );
       return;
     }
     throw new Error("runs requires list, show <run>, or export <run>");
   } finally {
     store.close();
+  }
+}
+
+async function stop(
+  args: string[],
+  write: (text: string) => void,
+  services: RuntimeServices,
+): Promise<void> {
+  if (args.length !== 1 || !args[0]) throw new Error("stop requires exactly one run");
+  const store = openStore(services);
+  try {
+    const lifecycle = services.lifecycle ?? (() => new ProcessLifecycleAdapter());
+    const result = await new LifecycleCoordinator(store, undefined, lifecycle, {
+      now: services.now ?? (() => new Date()),
+    }).stop(runRef(args[0]));
+    writeJson(write, result);
+  } finally {
+    store.close();
+  }
+}
+
+function recover(args: string[], write: (text: string) => void, services: RuntimeServices): void {
+  const [target, ...rest] = args;
+  if (!target) throw new Error("recover requires a run");
+  const flags = parseFlags(rest);
+  if (!flags.has("verified")) throw new Error("recover requires human-guided --verified evidence");
+  const evidence = value(flags, "evidence");
+  if (!evidence) throw new Error("recover requires --evidence <json>");
+  const store = openStore(services);
+  try {
+    const result = new LifecycleCoordinator(
+      store,
+      undefined,
+      services.lifecycle ?? (() => new ProcessLifecycleAdapter()),
+      {
+        now: services.now ?? (() => new Date()),
+      },
+    ).recover(runRef(target), true, JSON.parse(evidence));
+    writeJson(write, result);
+  } finally {
+    store.close();
+  }
+}
+
+async function claim(
+  args: string[],
+  write: (text: string) => void,
+  services: RuntimeServices,
+): Promise<void> {
+  const [subcommand, target, ...rest] = args;
+  if (!target || (subcommand !== "show" && subcommand !== "release")) {
+    throw new Error("claim requires show <claim> or release <claim> --authorized-by <actor>");
+  }
+  const ref = (
+    target.startsWith("wayfinder-claim:") ? target : `wayfinder-claim:${target}`
+  ) as `wayfinder-claim:${string}`;
+  const store = openStore(services);
+  try {
+    if (subcommand === "show") return writeJson(write, store.claim(ref));
+    const authorizedBy = value(parseFlags(rest), "authorized-by");
+    if (!authorizedBy) throw new Error("claim release requires --authorized-by <actor>");
+    await new LifecycleCoordinator(
+      store,
+      services.tracker,
+      services.lifecycle ?? (() => new ProcessLifecycleAdapter()),
+      { now: services.now ?? (() => new Date()) },
+    ).release(ref, authorizedBy as import("./domain.ts").ActorRef);
+    writeJson(write, store.claim(ref));
+  } finally {
+    store.close();
+  }
+}
+
+async function supervisor(
+  args: string[],
+  write: (text: string) => void,
+  services: RuntimeServices,
+): Promise<void> {
+  if (args.length !== 1 || !["status", "tick"].includes(args[0] ?? "")) {
+    throw new Error("supervisor requires status or tick");
+  }
+  const store = openStore(services);
+  try {
+    if (args[0] === "tick") {
+      if (!services.tracker || !services.lifecycle) {
+        throw new Error("supervisor tick requires configured tracker and lifecycle adapters");
+      }
+      return writeJson(
+        write,
+        await new Supervisor({
+          store,
+          tracker: services.tracker,
+          lifecycle: services.lifecycle,
+          clock: { now: services.now ?? (() => new Date()) },
+        }).tick(),
+      );
+    }
+    writeJson(write, {
+      supervisor: store.supervisorStatus(),
+      active: store.activeRuns(),
+      attentionRequired: store.listRuns().filter((run) => run.status === "attention_required"),
+    });
+  } finally {
+    store.close();
+  }
+}
+
+function openStore(services: RuntimeServices): StateStore {
+  const path = services.statePath ?? databasePath();
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  return new StateStore(path);
+}
+
+function runRef(value: string): `wayfinder-run:${string}` {
+  return (
+    value.startsWith("wayfinder-run:") ? value : `wayfinder-run:${value}`
+  ) as `wayfinder-run:${string}`;
+}
+
+function optional<T>(read: () => T): T | undefined {
+  try {
+    return read();
+  } catch {
+    return undefined;
   }
 }
 
