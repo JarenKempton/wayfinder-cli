@@ -77,6 +77,23 @@ describe("frontier", () => {
     );
   });
 
+  test("normalization rejects partial dependency graphs before scope filtering", () => {
+    const assigned = {
+      ...base("jira:x:W:ticket:B", 0),
+      assignee: "human" as NonNullable<Ticket["assignee"]>,
+    };
+    assigned.dependencies = [
+      { blocking: ref("jira:x:W:ticket:A"), blocked: assigned.ref, kind: "blocks" },
+    ];
+    expect(() =>
+      evaluateFrontier(
+        [assigned],
+        { map: assigned.map },
+        { availableStatuses: new Set(["To Do"]) },
+      ),
+    ).toThrow("unknown blocker");
+  });
+
   test("rejects cross-workspace and malformed tracker inputs", () => {
     const a = base("jira:x:W:ticket:A", 0);
     const other = {
@@ -90,6 +107,25 @@ describe("frontier", () => {
     expect(() => normalizeTrackerTickets([a, malformed])).toThrow("dependency owned by");
 
     expect(() => normalizeTrackerTickets([a, { ...a }])).toThrow("Duplicate ticket");
+
+    expect(() => normalizeTrackerTickets([{ ...a, state: "Open" as never }])).toThrow(
+      "unsupported state",
+    );
+    expect(() => normalizeTrackerTickets([{ ...a, kind: "bug" as never }])).toThrow(
+      "unsupported kind",
+    );
+    expect(() => normalizeTrackerTickets([{ ...a, status: "" }])).toThrow("invalid status");
+  });
+
+  test("canonicalizes parseable scope references", () => {
+    const ticket = base("jira:x:W:ticket:A", 0);
+    const options = { availableStatuses: new Set(["To Do"]) };
+    expect(evaluateFrontier([ticket], { workspace: " jira:x:W " as never }, options)).toEqual([
+      ticket,
+    ]);
+    expect(evaluateFrontier([ticket], { map: ` ${ticket.map} ` as never }, options)).toEqual([
+      ticket,
+    ]);
   });
 
   test("noninteractive selection requires a policy", () => {

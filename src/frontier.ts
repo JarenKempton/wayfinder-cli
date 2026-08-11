@@ -19,14 +19,15 @@ export function evaluateFrontier(
   options: FrontierOptions,
 ): Ticket[] {
   const normalized = normalizeTrackerTickets(tickets);
-  validateScope(scope, normalized.workspace);
+  const normalizedScope = normalizeScope(scope);
+  validateScope(normalizedScope, normalized.workspace);
   const byRef = new Map<TicketRef, Ticket>(
     normalized.tickets.map((ticket) => [ticket.ref, ticket]),
   );
   const eligible: Ticket[] = [];
 
   for (const ticket of normalized.tickets) {
-    if (!isInScope(ticket, scope)) continue;
+    if (!isInScope(ticket, normalizedScope)) continue;
     if (ticket.state !== "open") continue;
     if (!options.availableStatuses.has(ticket.status)) continue;
     if (ticket.assignee !== undefined) continue;
@@ -65,9 +66,19 @@ export function normalizeTrackerTickets(tickets: readonly Ticket[]): NormalizedT
   const normalized: Ticket[] = [];
 
   for (const ticket of tickets) {
+    if (!ticket || typeof ticket !== "object") throw new Error("Invalid normalized ticket");
     requireKind(ticket.ref, "ticket");
     requireKind(ticket.map, "map");
     if (ticket.group !== undefined) requireKind(ticket.group, "group");
+    if (!["task", "research", "prototype", "decision"].includes(ticket.kind)) {
+      throw new Error(`Ticket ${ticket.ref} has an unsupported kind: ${ticket.kind}`);
+    }
+    if (ticket.state !== "open" && ticket.state !== "closed") {
+      throw new Error(`Ticket ${ticket.ref} has an unsupported state: ${ticket.state}`);
+    }
+    if (typeof ticket.status !== "string" || ticket.status.length === 0) {
+      throw new Error(`Ticket ${ticket.ref} has an invalid status`);
+    }
     if (!Number.isFinite(ticket.order)) {
       throw new Error(`Ticket ${ticket.ref} has a non-finite tracker order`);
     }
@@ -101,6 +112,14 @@ export function normalizeTrackerTickets(tickets: readonly Ticket[]): NormalizedT
         ? { dependencies: ticket.dependencies.map((item) => ({ ...item })) }
         : {}),
     });
+  }
+
+  for (const ticket of normalized) {
+    for (const dependency of ticket.dependencies ?? []) {
+      if (!seen.has(dependency.blocking)) {
+        throw new Error(`Ticket ${ticket.ref} references unknown blocker ${dependency.blocking}`);
+      }
+    }
   }
 
   return { ...(workspace ? { workspace } : {}), tickets: normalized };
@@ -143,7 +162,7 @@ function validateScope(scope: FrontierScope, workspace: WorkspaceRef | undefined
   const references = [scope.workspace, scope.group, scope.map, scope.ticket].filter(
     (item): item is WorkspaceRef | GroupRef | MapRef | TicketRef => item !== undefined,
   );
-  if (references.length > 1) throw new Error("Frontier scope must contain exactly one reference");
+  if (references.length > 1) throw new Error("Frontier scope must contain at most one reference");
   const reference = references[0];
   if (
     reference !== undefined &&
@@ -152,4 +171,15 @@ function validateScope(scope: FrontierScope, workspace: WorkspaceRef | undefined
   ) {
     throw new Error(`Frontier scope ${reference} is outside workspace ${workspace}`);
   }
+}
+
+function normalizeScope(scope: FrontierScope): FrontierScope {
+  return {
+    ...(scope.workspace === undefined
+      ? {}
+      : { workspace: parseRef(scope.workspace).raw as WorkspaceRef }),
+    ...(scope.group === undefined ? {} : { group: parseRef(scope.group).raw as GroupRef }),
+    ...(scope.map === undefined ? {} : { map: parseRef(scope.map).raw as MapRef }),
+    ...(scope.ticket === undefined ? {} : { ticket: parseRef(scope.ticket).raw as TicketRef }),
+  };
 }
