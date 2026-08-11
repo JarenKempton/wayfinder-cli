@@ -22,23 +22,12 @@ const harnessExecutables: Record<string, string | undefined> = {
 };
 
 export function builtInAdapters(): AdapterDescriptor[] {
-  const trackers = [
-    { name: "jira", available: false, capabilities: {} },
-    {
-      name: "linear",
-      available: Boolean(Bun.env.LINEAR_API_KEY),
-      capabilities: capabilities("native_maps", "native_dependencies"),
-    },
-    {
-      name: "github",
-      available: Boolean(Bun.env.GITHUB_TOKEN || Bun.env.GH_TOKEN),
-      capabilities: capabilities("native_maps", "native_dependencies"),
-    },
-    { name: "markdown", available: false, capabilities: {} },
-  ].map<AdapterDescriptor>((tracker) => ({
-    ...tracker,
+  const trackers = ["jira", "linear", "github", "markdown"].map<AdapterDescriptor>((name) => ({
+    name,
     kind: "tracker",
     bundled: true,
+    available: false,
+    capabilities: {},
   }));
 
   const harnesses = Object.entries(harnessExecutables).map<AdapterDescriptor>(

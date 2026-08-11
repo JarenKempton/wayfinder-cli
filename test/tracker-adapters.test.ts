@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import { builtInAdapters } from "../src/adapters.ts";
 import {
   AmbiguousTrackerResultError,
   ClaimCollisionError,
   type ClaimRequest,
+  type ReleaseClaimRequest,
 } from "../src/contracts.ts";
 import type { ActorRef, ClaimRef, MapRef, RunRef, TicketRef } from "../src/domain.ts";
+import { evaluateFrontier } from "../src/frontier.ts";
 import { GitHubIssuesTrackerAdapter } from "../src/github-adapter.ts";
 import { LinearTrackerAdapter } from "../src/linear-adapter.ts";
 import type { HttpResponse, HttpTransport } from "../src/tracker-http.ts";
@@ -25,43 +28,69 @@ function response(
   };
 }
 
-function queueTransport(
-  items: HttpResponse[],
-  requests: Array<{ url: string; body?: string }> = [],
-): HttpTransport {
+interface RecordedRequest {
+  url: string;
+  body?: string;
+  headers?: Record<string, string>;
+}
+
+function queueTransport(items: HttpResponse[], requests: RecordedRequest[] = []): HttpTransport {
   return async (url, request) => {
-    requests.push({ url, ...(request?.body ? { body: request.body } : {}) });
+    requests.push({
+      url,
+      ...(request?.body ? { body: request.body } : {}),
+      ...(request?.headers ? { headers: request.headers } : {}),
+    });
     const item = items.shift();
     if (!item) throw new Error(`Unexpected request: ${url}`);
     return item;
   };
 }
 
-const linearIssue = (id: string) => ({
+const linearIssue = (
+  id: string,
+  options: {
+    completed?: boolean;
+    inverseRelations?: unknown[];
+    labelsHaveNextPage?: boolean;
+    relationsHaveNextPage?: boolean;
+  } = {},
+) => ({
   id,
   identifier: `WAY-${id}`,
   updatedAt: "2026-08-11T00:00:00.000Z",
-  completedAt: null,
+  completedAt: options.completed ? "2026-08-11T00:00:00.000Z" : null,
   canceledAt: null,
   parent: { id: "map" },
   assignee: null,
   state: { name: "Todo" },
-  labels: { nodes: [{ name: "wayfinder:task" }] },
-  inverseRelations: { nodes: [] },
+  labels: {
+    nodes: [{ name: "wayfinder:task" }],
+    pageInfo: { hasNextPage: options.labelsHaveNextPage ?? false, endCursor: null },
+  },
+  inverseRelations: {
+    nodes: options.inverseRelations ?? [],
+    pageInfo: { hasNextPage: options.relationsHaveNextPage ?? false, endCursor: null },
+  },
 });
 
-const githubIssue = (number: number, assignees: Array<{ login: string }> = []) => ({
+const githubIssue = (
+  number: number,
+  assignees: Array<{ login: string }> = [],
+  repository = "o/r",
+) => ({
   number,
   state: "open",
   updated_at: `2026-08-11T00:00:0${number}.000Z`,
-  html_url: `https://github.test/o/r/issues/${number}`,
+  html_url: `https://github.test/${repository}/issues/${number}`,
+  repository_url: `https://api.github.test/repos/${repository}`,
   labels: [{ name: "wayfinder:task" }],
   assignees,
 });
 
 describe("Linear tracker adapter", () => {
   test("exhausts cursor pages and preserves map order", async () => {
-    const requests: Array<{ url: string; body?: string }> = [];
+    const requests: RecordedRequest[] = [];
     const adapter = new LinearTrackerAdapter({
       token: "secret",
       pageSize: 1,
@@ -110,12 +139,63 @@ describe("Linear tracker adapter", () => {
       "partial failure",
     );
   });
+
+  test("uses the issue side of inverse blocks relations and unblocks after closure", async () => {
+    const blocker = linearIssue("1");
+    const blocked = linearIssue("2", {
+      inverseRelations: [{ type: "blocks", issue: { id: "1" } }],
+    });
+    const adapter = new LinearTrackerAdapter({
+      token: "secret",
+      transport: queueTransport([
+        response({
+          data: {
+            issue: {
+              children: {
+                nodes: [blocker, blocked],
+                pageInfo: { hasNextPage: false, endCursor: null },
+              },
+            },
+          },
+        }),
+      ]),
+    });
+    const tickets = await adapter.listMapTickets("linear:api:team:map:map" as MapRef);
+    expect(String(tickets[1]?.dependencies?.[0]?.blocking)).toBe("linear:api:team:ticket:1");
+    expect(evaluateFrontier(tickets, {}, { availableStatuses: new Set(["Todo"]) })).toEqual([
+      required(tickets, 0),
+    ]);
+    const closedBlocker = { ...required(tickets, 0), state: "closed" as const, status: "Done" };
+    expect(
+      evaluateFrontier(
+        [closedBlocker, required(tickets, 1)],
+        {},
+        {
+          availableStatuses: new Set(["Todo"]),
+        },
+      ).map((ticket) => String(ticket.ref)),
+    ).toEqual(["linear:api:team:ticket:2"]);
+  });
+
+  test("fails closed when nested Linear connections exceed their explicit bound", async () => {
+    const adapter = new LinearTrackerAdapter({
+      token: "secret",
+      pageSize: 1,
+      transport: queueTransport([
+        response({ data: { issue: linearIssue("1", { relationsHaveNextPage: true }) } }),
+      ]),
+    });
+    await expect(adapter.getTicket("linear:api:team:ticket:1" as TicketRef)).rejects.toThrow(
+      "exceeds the configured nested page bound",
+    );
+  });
 });
 
 describe("GitHub Issues tracker adapter", () => {
   test("follows Link pagination, filters pull requests, and hydrates blockers", async () => {
     const adapter = new GitHubIssuesTrackerAdapter({
       token: "secret",
+      apiBase: "https://api.github.test",
       pageSize: 1,
       transport: queueTransport([
         response([githubIssue(1)], {
@@ -135,9 +215,95 @@ describe("GitHub Issues tracker adapter", () => {
     expect(tickets[1]?.order).toBe(2);
   });
 
+  test("preserves cross-repository child and blocker identities", async () => {
+    const requests: RecordedRequest[] = [];
+    const adapter = new GitHubIssuesTrackerAdapter({
+      token: "secret",
+      apiBase: "https://api.github.test",
+      transport: queueTransport(
+        [
+          response([githubIssue(7, [], "child/repo")]),
+          response([githubIssue(7, [], "blocker/repo")]),
+          response(githubIssue(7, [], "child/repo"), { headers: { etag: "v1" } }),
+        ],
+        requests,
+      ),
+    });
+    const tickets = await adapter.listMapTickets("github:github.com:parent/repo:map:5" as MapRef);
+    const ticket = required(tickets, 0);
+    expect(String(ticket.ref)).toBe("github:github.com:child/repo:ticket:7");
+    expect(String(ticket.map)).toBe("github:github.com:parent/repo:map:5");
+    expect(String(ticket.dependencies?.[0]?.blocking)).toBe(
+      "github:github.com:blocker/repo:ticket:7",
+    );
+    expect(requests[1]?.url).toContain("/repos/child/repo/issues/7/dependencies/blocked_by");
+    await adapter.snapshotClaimState(ticket.ref);
+    expect(requests[2]?.url).toContain("/repos/child/repo/issues/7");
+  });
+
+  test("rejects cross-origin pagination before sending authorization", async () => {
+    const requests: RecordedRequest[] = [];
+    const adapter = new GitHubIssuesTrackerAdapter({
+      token: "secret",
+      apiBase: "https://api.github.test",
+      transport: queueTransport(
+        [response([], { headers: { link: '<https://evil.test/steal>; rel="next"' } })],
+        requests,
+      ),
+    });
+    await expect(adapter.listMapTickets("github:github.com:o/r:map:5" as MapRef)).rejects.toThrow(
+      "outside the configured API origin",
+    );
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.headers?.Authorization).toBe("Bearer secret");
+  });
+
+  test("getTicket and map listing use the same map and assignee normalization", async () => {
+    const issue = githubIssue(7, [{ login: "human" }], "child/repo");
+    const parent = githubIssue(5, [], "parent/repo");
+    const direct = new GitHubIssuesTrackerAdapter({
+      token: "secret",
+      apiBase: "https://api.github.test",
+      transport: queueTransport([response(issue), response(parent), response([])]),
+    });
+    const listed = new GitHubIssuesTrackerAdapter({
+      token: "secret",
+      apiBase: "https://api.github.test",
+      transport: queueTransport([response([issue]), response([])]),
+    });
+    const directTicket = await direct.getTicket(
+      "github:github.com:child/repo:ticket:7" as TicketRef,
+    );
+    const listedTickets = await listed.listMapTickets(
+      "github:github.com:parent/repo:map:5" as MapRef,
+    );
+    expect(directTicket).toEqual(required(listedTickets, 0));
+  });
+
+  test("rejects multiple assignees consistently for direct and map reads", async () => {
+    const issue = githubIssue(7, [{ login: "one" }, { login: "two" }], "o/r");
+    const direct = new GitHubIssuesTrackerAdapter({
+      token: "secret",
+      apiBase: "https://api.github.test",
+      transport: queueTransport([response(issue), response(githubIssue(5)), response([])]),
+    });
+    const listed = new GitHubIssuesTrackerAdapter({
+      token: "secret",
+      apiBase: "https://api.github.test",
+      transport: queueTransport([response([issue]), response([])]),
+    });
+    await expect(direct.getTicket("github:github.com:o/r:ticket:7" as TicketRef)).rejects.toThrow(
+      "multiple assignees",
+    );
+    await expect(listed.listMapTickets("github:github.com:o/r:map:5" as MapRef)).rejects.toThrow(
+      "multiple assignees",
+    );
+  });
+
   test("classifies a pre-write assignment race as a collision", async () => {
     const adapter = new GitHubIssuesTrackerAdapter({
       token: "secret",
+      apiBase: "https://api.github.test",
       transport: queueTransport([
         response(githubIssue(1, [{ login: "other" }]), { headers: { etag: "v2" } }),
       ]),
@@ -145,15 +311,23 @@ describe("GitHub Issues tracker adapter", () => {
     await expect(adapter.claim(claimRequest())).rejects.toBeInstanceOf(ClaimCollisionError);
   });
 
-  test("restores only while the adapter-owned assignment is still present", async () => {
-    const requests: Array<{ url: string; body?: string }> = [];
-    const adapter = new GitHubIssuesTrackerAdapter({
+  test("restores from a fresh adapter while the persisted claimed owner is still present", async () => {
+    const requests: RecordedRequest[] = [];
+    const first = new GitHubIssuesTrackerAdapter({
       token: "secret",
+      apiBase: "https://api.github.test",
+      transport: queueTransport([
+        response(githubIssue(1), { headers: { etag: "v1" } }),
+        response(githubIssue(1, [{ login: "human" }])),
+      ]),
+    });
+    const request = claimRequest();
+    await first.claim(request);
+    const fresh = new GitHubIssuesTrackerAdapter({
+      token: "secret",
+      apiBase: "https://api.github.test",
       transport: queueTransport(
         [
-          response(githubIssue(1), { headers: { etag: "v1" } }),
-          response(githubIssue(1, [{ login: "human" }])),
-          response(githubIssue(1, [{ login: "human" }]), { headers: { etag: "v2" } }),
           response(githubIssue(1, [{ login: "human" }])),
           response(githubIssue(1)),
           response(githubIssue(1), { headers: { etag: "v3" } }),
@@ -161,38 +335,36 @@ describe("GitHub Issues tracker adapter", () => {
         requests,
       ),
     });
-    const request = claimRequest();
-    await adapter.claim(request);
-    await adapter.verifyClaim(request);
     const originalSnapshot = { version: "v1", payload: { assignee: null } };
-    await adapter.restoreClaimState({
+    await fresh.restoreClaimState({
       ticket: request.ticket,
       claim: request.claim,
+      claimedOwner: request.owner,
       originalSnapshot,
     });
-    await adapter.verifyRestored({
+    await fresh.verifyRestored({
       ticket: request.ticket,
       claim: request.claim,
+      claimedOwner: request.owner,
       originalSnapshot,
     });
-    expect(JSON.parse(requestBody(requests, 4))).toEqual({ assignees: [] });
+    expect(JSON.parse(requestBody(requests, 1))).toEqual({ assignees: [] });
   });
 
-  test("refuses to overwrite a concurrent owner during restoration", async () => {
-    const adapter = new GitHubIssuesTrackerAdapter({
+  test("a fresh adapter refuses to overwrite a concurrent owner during restoration", async () => {
+    const fresh = new GitHubIssuesTrackerAdapter({
       token: "secret",
+      apiBase: "https://api.github.test",
       transport: queueTransport([
-        response(githubIssue(1), { headers: { etag: "v1" } }),
-        response(githubIssue(1, [{ login: "other" }]), { headers: { etag: "v2" } }),
         response(githubIssue(1, [{ login: "other" }]), { headers: { etag: "v2" } }),
       ]),
     });
     const request = claimRequest();
-    await adapter.claim(request);
     await expect(
-      adapter.restoreClaimState({
+      fresh.restoreClaimState({
         ticket: request.ticket,
         claim: request.claim,
+        claimedOwner: request.owner,
         originalSnapshot: { version: "v1", payload: { assignee: null } },
       }),
     ).rejects.toBeInstanceOf(ClaimCollisionError);
@@ -201,6 +373,7 @@ describe("GitHub Issues tracker adapter", () => {
   test("can compensate a claim whose write response was ambiguous", async () => {
     const adapter = new GitHubIssuesTrackerAdapter({
       token: "secret",
+      apiBase: "https://api.github.test",
       transport: queueTransport([
         response(githubIssue(1), { headers: { etag: "v1" } }),
         response({ message: "gateway lost response" }, { status: 500 }),
@@ -215,14 +388,59 @@ describe("GitHub Issues tracker adapter", () => {
     await adapter.restoreClaimState({
       ticket: request.ticket,
       claim: request.claim,
+      claimedOwner: request.owner,
       originalSnapshot,
     });
     await adapter.verifyRestored({
       ticket: request.ticket,
       claim: request.claim,
+      claimedOwner: request.owner,
       originalSnapshot,
     });
   });
+
+  test("release enforces authorization, expected version, and persisted owner", async () => {
+    const base = releaseRequest();
+    const unauthorized = new GitHubIssuesTrackerAdapter({
+      token: "secret",
+      apiBase: "https://api.github.test",
+      transport: queueTransport([]),
+    });
+    await expect(
+      unauthorized.releaseClaim({ ...base, authorizedBy: "" as ActorRef }),
+    ).rejects.toThrow("authorizing actor");
+
+    const stale = new GitHubIssuesTrackerAdapter({
+      token: "secret",
+      apiBase: "https://api.github.test",
+      transport: queueTransport([
+        response(githubIssue(1, [{ login: "human" }]), { headers: { etag: "v3" } }),
+      ]),
+    });
+    await expect(stale.releaseClaim(base)).rejects.toBeInstanceOf(ClaimCollisionError);
+
+    const fresh = new GitHubIssuesTrackerAdapter({
+      token: "secret",
+      apiBase: "https://api.github.test",
+      transport: queueTransport([
+        response(githubIssue(1, [{ login: "human" }]), { headers: { etag: "v2" } }),
+        response(githubIssue(1)),
+        response(githubIssue(1), { headers: { etag: "v3" } }),
+      ]),
+    });
+    await fresh.releaseClaim(base);
+    await fresh.verifyReleased(base);
+  });
+});
+
+test("registry does not advertise uncomposed tracker adapters as available", () => {
+  const trackers = builtInAdapters().filter((adapter) => adapter.kind === "tracker");
+  expect(trackers.map(({ name, available }) => ({ name, available }))).toEqual([
+    { name: "github", available: false },
+    { name: "jira", available: false },
+    { name: "linear", available: false },
+    { name: "markdown", available: false },
+  ]);
 });
 
 function claimRequest(): ClaimRequest {
@@ -236,8 +454,25 @@ function claimRequest(): ClaimRequest {
   };
 }
 
-function requestBody(requests: Array<{ url: string; body?: string }>, index: number): string {
+function releaseRequest(): ReleaseClaimRequest {
+  return {
+    claim: "wayfinder-claim:test" as ClaimRef,
+    ticket: "github:github.com:o/r:ticket:1" as TicketRef,
+    claimedOwner: "human" as ActorRef,
+    originalSnapshot: { version: "v1", payload: { assignee: null } },
+    expectedVersion: "v2",
+    authorizedBy: "operator" as ActorRef,
+  };
+}
+
+function requestBody(requests: RecordedRequest[], index: number): string {
   const body = requests[index]?.body;
   if (body === undefined) throw new Error(`Request ${index} has no body`);
   return body;
+}
+
+function required<T>(values: readonly T[], index: number): T {
+  const value = values[index];
+  if (value === undefined) throw new Error(`Missing item ${index}`);
+  return value;
 }

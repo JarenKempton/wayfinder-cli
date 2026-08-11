@@ -38,6 +38,12 @@ export class LinearTrackerAdapter
   constructor(options: LinearAdapterOptions) {
     super();
     if (!options.token) throw new Error("Linear token is required");
+    if (
+      options.pageSize !== undefined &&
+      (!Number.isInteger(options.pageSize) || options.pageSize < 1 || options.pageSize > 50)
+    ) {
+      throw new Error("Linear page size must be an integer from 1 to 50");
+    }
     this.#token = options.token;
     this.#endpoint = options.endpoint ?? "https://api.linear.app/graphql";
     this.#transport = options.transport ?? fetchTransport;
@@ -54,7 +60,10 @@ export class LinearTrackerAdapter
 
   async getTicket(ticket: TicketRef): Promise<Ticket> {
     const parsed = linearRef(ticket, "ticket");
-    const data = await this.#graphql(ISSUE_QUERY, { id: parsed.nativeId });
+    const data = await this.#graphql(ISSUE_QUERY, {
+      id: parsed.nativeId,
+      nestedFirst: this.#pageSize,
+    });
     return normalizeLinearTicket(object(data.issue, "Linear issue"), ticket, 0);
   }
 
@@ -67,6 +76,7 @@ export class LinearTrackerAdapter
         id: parsed.nativeId,
         first: this.#pageSize,
         after,
+        nestedFirst: this.#pageSize,
       });
       const children = object(object(data.issue, "Linear map").children, "Linear children");
       const page = children.nodes;
@@ -144,21 +154,22 @@ function normalizeLinearTicket(
       : object(node.parent, "Linear parent");
   const mapId = parent ? string(parent.id, "parent id") : string(node.id, "issue id");
   const parsed = linearRef(ref, "ticket");
-  const labels = object(node.labels, "Linear labels").nodes;
+  const labelConnection = completeConnection(node.labels, "Linear labels");
+  const labels = labelConnection.nodes;
   const labelNames = Array.isArray(labels)
     ? labels.map((label) => string(object(label, "Linear label").name, "label name"))
     : [];
   const kind = kindFromLabels(labelNames);
-  const relations = object(node.inverseRelations, "Linear inverse relations").nodes;
+  const relations = completeConnection(node.inverseRelations, "Linear inverse relations").nodes;
   const dependencies = Array.isArray(relations)
     ? relations.flatMap((relation) => {
         const item = object(relation, "Linear relation");
         if (item.type !== "blocks") return [];
-        const related = object(item.relatedIssue, "Linear related issue");
+        const blocker = object(item.issue, "Linear blocking issue");
         return [
           {
             blocking:
-              `${parsed.adapter}:${parsed.instance}:${parsed.workspace}:ticket:${string(related.id, "related id")}` as TicketRef,
+              `${parsed.adapter}:${parsed.instance}:${parsed.workspace}:ticket:${string(blocker.id, "blocking issue id")}` as TicketRef,
             blocked: ref,
             kind: "blocks" as const,
           },
@@ -184,6 +195,19 @@ function normalizeLinearTicket(
       updatedAt: string(node.updatedAt, "issue updatedAt"),
     },
   };
+}
+
+function completeConnection(
+  value: unknown,
+  context: string,
+): { nodes: unknown[]; pageInfo: Record<string, unknown> } {
+  const connection = object(value, context);
+  if (!Array.isArray(connection.nodes)) throw new Error(`Invalid ${context} nodes`);
+  const pageInfo = object(connection.pageInfo, `${context} page info`);
+  if (pageInfo.hasNextPage === true) {
+    throw new Error(`${context} exceeds the configured nested page bound`);
+  }
+  return { nodes: connection.nodes, pageInfo };
 }
 
 function kindFromLabels(labels: string[]): TicketKind {
@@ -219,8 +243,8 @@ function linearRef(ref: string, kind: "map" | "ticket") {
   };
 }
 
-const ISSUE_FIELDS = `id identifier updatedAt completedAt canceledAt parent { id } assignee { id } state { name } labels { nodes { name } } inverseRelations { nodes { type relatedIssue { id } } }`;
-const ISSUE_QUERY = `query Issue($id: String!) { issue(id: $id) { ${ISSUE_FIELDS} } }`;
+const ISSUE_FIELDS = `id identifier updatedAt completedAt canceledAt parent { id } assignee { id } state { name } labels(first: $nestedFirst) { nodes { name } pageInfo { hasNextPage endCursor } } inverseRelations(first: $nestedFirst) { nodes { type issue { id completedAt canceledAt } } pageInfo { hasNextPage endCursor } }`;
+const ISSUE_QUERY = `query Issue($id: String!, $nestedFirst: Int!) { issue(id: $id) { ${ISSUE_FIELDS} } }`;
 const ASSIGNMENT_QUERY = `query Assignment($id: String!) { issue(id: $id) { updatedAt assignee { id } } }`;
 const ASSIGN_MUTATION = `mutation Assign($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }`;
-const MAP_TICKETS_QUERY = `query MapTickets($id: String!, $first: Int!, $after: String) { issue(id: $id) { children(first: $first, after: $after) { nodes { ${ISSUE_FIELDS} } pageInfo { hasNextPage endCursor } } } }`;
+const MAP_TICKETS_QUERY = `query MapTickets($id: String!, $first: Int!, $after: String, $nestedFirst: Int!) { issue(id: $id) { children(first: $first, after: $after) { nodes { ${ISSUE_FIELDS} } pageInfo { hasNextPage endCursor } } } }`;

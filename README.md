@@ -23,9 +23,10 @@ adapters must pass their conformance suites before being advertised as supported
 ## Tracker credentials
 
 The Linear adapter accepts a scoped API token and the GitHub adapter accepts a
-token with repository Issues access. The built-in adapter registry reports them
-as available when `LINEAR_API_KEY` or `GITHUB_TOKEN`/`GH_TOKEN` is present. Tokens
-are passed in request headers and are never placed in process arguments or logs.
+token with repository Issues access. Tokens are passed in request headers and
+are never placed in process arguments or logs. The registry leaves both adapters
+unavailable until credential validation and CLI composition are proven; merely
+setting an environment variable does not advertise a usable adapter.
 
 Both adapters intentionally omit `conditional_update`, `atomic_assignment`, and
 `lease_metadata` from their advertised capabilities. Their public assignment APIs

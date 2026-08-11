@@ -38,6 +38,12 @@ export class GitHubIssuesTrackerAdapter
   constructor(options: GitHubAdapterOptions) {
     super();
     if (!options.token) throw new Error("GitHub token is required");
+    if (
+      options.pageSize !== undefined &&
+      (!Number.isInteger(options.pageSize) || options.pageSize < 1 || options.pageSize > 100)
+    ) {
+      throw new Error("GitHub page size must be an integer from 1 to 100");
+    }
     this.#token = options.token;
     this.#apiBase = (options.apiBase ?? "https://api.github.com").replace(/\/$/, "");
     this.#transport = options.transport ?? fetchTransport;
@@ -55,7 +61,14 @@ export class GitHubIssuesTrackerAdapter
   async getTicket(ticket: TicketRef): Promise<Ticket> {
     const parsed = githubRef(ticket, "ticket");
     const issue = object(await this.#get(this.#issueUrl(parsed)), "GitHub issue");
-    return this.#normalize(issue, ticket, ticketMapRef(parsed, parsed.nativeId), 0, []);
+    const actual = issueRef(parsed, issue, "ticket");
+    if (actual !== ticket) {
+      throw new Error("GitHub issue repository does not match its qualified ticket reference");
+    }
+    const parent = object(await this.#get(`${this.#issueUrl(parsed)}/parent`), "GitHub parent");
+    const map = issueRef(parsed, parent, "map");
+    const blockers = await this.#paginate(`${this.#issueUrl(parsed)}/dependencies/blocked_by`);
+    return this.#normalize(issue, ticket, map, 0, blockers);
   }
 
   async listMapTickets(map: MapRef): Promise<Ticket[]> {
@@ -64,11 +77,9 @@ export class GitHubIssuesTrackerAdapter
     const normalized: Ticket[] = [];
     for (const [order, child] of children.entries()) {
       if (child.pull_request !== undefined) continue;
-      const number = String(child.number);
-      const ref = ticketRef(parsed, number);
-      const blockers = await this.#paginate(
-        `${this.#issueUrl({ ...parsed, nativeId: number })}/dependencies/blocked_by`,
-      );
+      const ref = issueRef(parsed, child, "ticket");
+      const childRef = githubRef(ref, "ticket");
+      const blockers = await this.#paginate(`${this.#issueUrl(childRef)}/dependencies/blocked_by`);
       normalized.push(this.#normalize(child, ref, map, order, blockers));
     }
     return normalized;
@@ -114,6 +125,9 @@ export class GitHubIssuesTrackerAdapter
     );
     const assignees = issue.assignees;
     if (!Array.isArray(assignees)) throw new Error("Invalid GitHub issue assignees");
+    if (assignees.length > 1) {
+      throw new Error("GitHub issue has multiple assignees and cannot be normalized");
+    }
     const assignee = assignees[0]
       ? (string(object(assignees[0], "GitHub assignee").login, "assignee login") as ActorRef)
       : undefined;
@@ -126,7 +140,7 @@ export class GitHubIssuesTrackerAdapter
       status: string(issue.state, "issue state"),
       ...(assignee ? { assignee } : {}),
       dependencies: blockers.map((blocker) => ({
-        blocking: ticketRef(parsed, String(blocker.number)),
+        blocking: issueRef(parsed, blocker, "ticket"),
         blocked: ref,
         kind: "blocks",
       })),
@@ -148,7 +162,8 @@ export class GitHubIssuesTrackerAdapter
       const page = await responseJson(response, "GitHub paginated read");
       if (!Array.isArray(page)) throw new Error("Invalid GitHub paginated response");
       result.push(...page.map((item) => object(item, "GitHub page item")));
-      next = nextLink(response.headers.get("link"));
+      const link = nextLink(response.headers.get("link"));
+      next = link ? this.#authorizedUrl(link, next) : undefined;
     }
     return result;
   }
@@ -159,7 +174,8 @@ export class GitHubIssuesTrackerAdapter
   }
 
   async #request(url: string, method = "GET", body?: unknown): Promise<HttpResponse> {
-    const response = await this.#transport(url, {
+    const authorizedUrl = this.#authorizedUrl(url);
+    const response = await this.#transport(authorizedUrl, {
       method,
       headers: {
         Accept: "application/vnd.github+json",
@@ -173,6 +189,15 @@ export class GitHubIssuesTrackerAdapter
       await responseJson(response, `GitHub ${method}`);
     }
     return response;
+  }
+
+  #authorizedUrl(value: string, base = this.#apiBase): string {
+    const configured = new URL(this.#apiBase);
+    const candidate = new URL(value, base);
+    if (candidate.origin !== configured.origin) {
+      throw new Error("GitHub pagination URL is outside the configured API origin");
+    }
+    return candidate.toString();
   }
 
   #issueUrl(ref: ReturnType<typeof githubRef>): string {
@@ -225,10 +250,33 @@ function githubRef(ref: string, kind: "map" | "ticket") {
   };
 }
 
-function ticketRef(ref: ReturnType<typeof githubRef>, number: string): TicketRef {
-  return `github:${ref.instance}:${ref.workspace}:ticket:${number}` as TicketRef;
-}
-
-function ticketMapRef(ref: ReturnType<typeof githubRef>, number: string): MapRef {
-  return `github:${ref.instance}:${ref.workspace}:map:${number}` as MapRef;
+function issueRef(
+  context: ReturnType<typeof githubRef>,
+  issue: Record<string, unknown>,
+  kind: "map",
+): MapRef;
+function issueRef(
+  context: ReturnType<typeof githubRef>,
+  issue: Record<string, unknown>,
+  kind: "ticket",
+): TicketRef;
+function issueRef(
+  context: ReturnType<typeof githubRef>,
+  issue: Record<string, unknown>,
+  kind: "map" | "ticket",
+): MapRef | TicketRef {
+  const repositoryUrl = string(issue.repository_url, "issue repository_url");
+  const url = new URL(repositoryUrl);
+  const parts = url.pathname.split("/").filter(Boolean);
+  const repos = parts.lastIndexOf("repos");
+  const owner = parts[repos + 1];
+  const repository = parts[repos + 2];
+  if (repos < 0 || !owner || !repository || parts.length !== repos + 3) {
+    throw new Error("Invalid GitHub issue repository identity");
+  }
+  const number = String(issue.number);
+  if (!/^\d+$/.test(number)) throw new Error("Invalid GitHub issue number");
+  return `github:${context.instance}:${owner}/${repository}:${kind}:${number}` as
+    | MapRef
+    | TicketRef;
 }

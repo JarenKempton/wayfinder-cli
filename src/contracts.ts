@@ -34,6 +34,8 @@ export interface RenewLeaseRequest {
 export interface ReleaseClaimRequest {
   claim: ClaimRef;
   ticket: TicketRef;
+  /** Persisted owner installed by the claim; required by guarded release implementations. */
+  claimedOwner?: ActorRef;
   originalSnapshot: TrackerSnapshot;
   expectedVersion: string;
   authorizedBy: ActorRef;
@@ -54,6 +56,8 @@ export interface ReclaimRequest {
 export interface RestoreClaimRequest {
   ticket: TicketRef;
   claim: ClaimRef;
+  /** Persisted owner installed by the claim; required for restart-safe restoration. */
+  claimedOwner?: ActorRef;
   originalSnapshot: TrackerSnapshot;
 }
 

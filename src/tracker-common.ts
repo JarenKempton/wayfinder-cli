@@ -14,7 +14,6 @@ export interface AssignmentState {
 }
 
 export abstract class AssignmentTrackerAdapter {
-  readonly #claimOwners = new Map<string, ActorRef>();
   abstract readAssignment(ticket: TicketRef): Promise<AssignmentState>;
   abstract writeAssignment(ticket: TicketRef, assignee?: ActorRef): Promise<void>;
 
@@ -28,7 +27,6 @@ export abstract class AssignmentTrackerAdapter {
     if (before.version !== request.expectedVersion || before.assignee !== undefined) {
       throw new ClaimCollisionError();
     }
-    this.#claimOwners.set(request.claim, request.owner);
     try {
       await this.writeAssignment(request.ticket, request.owner);
     } catch (error) {
@@ -47,8 +45,8 @@ export abstract class AssignmentTrackerAdapter {
     const current = await this.readAssignment(request.ticket);
     const original = snapshotAssignee(request.originalSnapshot);
     if (current.assignee === original) return;
-    const claimedOwner = this.#claimOwners.get(request.claim);
-    if (claimedOwner === undefined || current.assignee !== claimedOwner) {
+    const claimedOwner = requireClaimedOwner(request.claimedOwner);
+    if (current.assignee !== claimedOwner) {
       throw new ClaimCollisionError("Claim owner changed before restoration");
     }
     try {
@@ -63,7 +61,6 @@ export abstract class AssignmentTrackerAdapter {
     if (current.assignee !== snapshotAssignee(request.originalSnapshot)) {
       throw new AmbiguousTrackerResultError("Original assignment was not restored");
     }
-    this.#claimOwners.delete(request.claim);
   }
 
   async renewLease(_request: RenewLeaseRequest): Promise<void> {
@@ -75,17 +72,30 @@ export abstract class AssignmentTrackerAdapter {
   }
 
   async releaseClaim(request: ReleaseClaimRequest): Promise<void> {
-    await this.restoreClaimState({
-      ticket: request.ticket,
-      claim: request.claim,
-      originalSnapshot: request.originalSnapshot,
-    });
+    if (!request.authorizedBy) throw new Error("Release requires an authorizing actor");
+    const claimedOwner = requireClaimedOwner(request.claimedOwner);
+    const current = await this.readAssignment(request.ticket);
+    if (current.version !== request.expectedVersion) {
+      throw new ClaimCollisionError("Claim version changed before release");
+    }
+    if (current.assignee !== claimedOwner) {
+      throw new ClaimCollisionError("Claim owner changed before release");
+    }
+    const original = snapshotAssignee(request.originalSnapshot);
+    if (current.assignee === original) return;
+    try {
+      await this.writeAssignment(request.ticket, original);
+    } catch (error) {
+      throw new AmbiguousTrackerResultError(message(error));
+    }
   }
 
   async verifyReleased(request: ReleaseClaimRequest): Promise<void> {
+    const claimedOwner = requireClaimedOwner(request.claimedOwner);
     await this.verifyRestored({
       ticket: request.ticket,
       claim: request.claim,
+      claimedOwner,
       originalSnapshot: request.originalSnapshot,
     });
   }
@@ -108,6 +118,11 @@ function snapshotAssignee(snapshot: TrackerSnapshot): ActorRef | undefined {
   if (assignee === null) return undefined;
   if (typeof assignee !== "string") throw new Error("Claim snapshot has an invalid assignee");
   return assignee as ActorRef;
+}
+
+function requireClaimedOwner(owner: ActorRef | undefined): ActorRef {
+  if (!owner) throw new Error("Persisted claimed owner is required");
+  return owner;
 }
 
 function message(value: unknown): string {

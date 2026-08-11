@@ -271,6 +271,7 @@ describe("pickup coordinator", () => {
     expect(tracker.restoreRequest).toEqual({
       ticket: request.ticket,
       claim: "wayfinder-claim:test",
+      claimedOwner: request.owner,
       originalSnapshot: { version: "1", payload: { assignee: null, status: "To Do" } },
     });
   });

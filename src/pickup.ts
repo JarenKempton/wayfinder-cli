@@ -130,7 +130,7 @@ export class PickupCoordinator {
           await this.#options.ledger.recordStep(runRef, "collision", receipt, error);
           throw new PickupResultError(receipt, error);
         }
-        return this.#compensate(receipt, snapshot, error);
+        return this.#compensate(receipt, snapshot, request.owner, error);
       }
       await this.#options.tracker.verifyClaim(claimRequest);
       receipt.state = "claimed";
@@ -171,13 +171,14 @@ export class PickupCoordinator {
       if (error instanceof HarnessLaunchError && error.receipt) {
         receipt.launch = error.receipt;
       }
-      return this.#compensate(receipt, snapshot, error);
+      return this.#compensate(receipt, snapshot, request.owner, error);
     }
   }
 
   async #compensate(
     receipt: PickupReceipt,
     snapshot: Awaited<ReturnType<TrackerAdapter["snapshotClaimState"]>>,
+    claimedOwner: PickupRequest["owner"],
     cause: unknown,
   ): Promise<never> {
     receipt.ok = false;
@@ -194,6 +195,7 @@ export class PickupCoordinator {
     const restoreRequest = {
       ticket: receipt.ticket,
       claim: receipt.claim,
+      claimedOwner,
       originalSnapshot: snapshot,
     };
     try {
