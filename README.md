@@ -7,6 +7,8 @@ harness part of the core domain.
 
 Wayfinder CLI is designed to integrate with the map-based Wayfinder workflow popularized
 by Matt Pocock. See [NOTICE.md](NOTICE.md) for attribution and project lineage.
+The normative [ownership boundary](docs/ownership-boundary.md) defines what
+stays in the MCP/skill layer and what belongs to this CLI runtime.
 
 ## Status
 
