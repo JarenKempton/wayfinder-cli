@@ -7,7 +7,7 @@ and SQLite WAL ledger resume lease renewal and durably expose
 Run it with:
 
 ```sh
-bun run prototype:jwb-281
+bun run prototypes/jwb-281/run.ts
 ```
 
 The runner uses real child processes and `SIGKILL`, with shortened lease timing.
