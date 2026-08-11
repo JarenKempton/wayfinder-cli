@@ -1,0 +1,65 @@
+{
+  "question": "Can Jira restore assignment, status, revision, and Wayfinder metadata exactly after an injected post-claim failure?",
+  "fixture": "JWB-301",
+  "startedAt": "2026-08-11T22:22:43.971Z",
+  "states": [
+    {
+      "state": "snapshot",
+      "snapshot": {
+        "key": "JWB-301",
+        "assignee": null,
+        "status": "To Do",
+        "labels": ["wayfinder-jwb-282-baseline"],
+        "updated": "2026-08-11T15:22:14.158-0700"
+      }
+    },
+    {
+      "state": "precondition_verified",
+      "snapshot": {
+        "key": "JWB-301",
+        "assignee": null,
+        "status": "To Do",
+        "labels": ["wayfinder-jwb-282-baseline"],
+        "updated": "2026-08-11T15:22:14.158-0700"
+      }
+    },
+    {
+      "state": "claim_verified",
+      "snapshot": {
+        "key": "JWB-301",
+        "assignee": {
+          "accountId": "629f6e1fbe336c006fe7f958",
+          "displayName": "jaren.kempton"
+        },
+        "status": "In Progress",
+        "labels": ["wayfinder-jwb-282-active-claim"],
+        "updated": "2026-08-11T15:22:48.619-0700"
+      }
+    },
+    {
+      "state": "post_claim_failure_injected",
+      "detail": "Intentional JWB-282 probe failure"
+    },
+    {
+      "state": "compensating"
+    },
+    {
+      "state": "restoration_verified",
+      "snapshot": {
+        "key": "JWB-301",
+        "assignee": null,
+        "status": "To Do",
+        "labels": ["wayfinder-jwb-282-baseline"],
+        "updated": "2026-08-11T15:22:52.692-0700"
+      }
+    }
+  ],
+  "verdict": {
+    "serverConditionalClaimProven": false,
+    "exactBusinessStateRestored": true,
+    "exactJiraRevisionRestored": false,
+    "answer": "no",
+    "reason": "The CLI surface supports only a read/check/write precondition; claim fields and status require separate writes, and compensation advances Jira's revision instead of restoring it."
+  },
+  "finishedAt": "2026-08-11T22:22:54.153Z"
+}

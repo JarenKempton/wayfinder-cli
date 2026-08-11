@@ -9,6 +9,7 @@
   },
   "scripts": {
     "dev": "bun run src/cli.ts",
+    "prototype:jira-compensation": "bun run prototypes/jwb-282-jira-compensation.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "check": "biome check .",
