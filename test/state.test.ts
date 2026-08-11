@@ -1,10 +1,13 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { capabilities, type Run } from "../src/domain.ts";
 import { StateStore } from "../src/state.ts";
 
 test("SQLite store round-trips runs", () => {
-  const directory = `${process.env.TMPDIR ?? "/tmp"}/nav-test-${crypto.randomUUID()}`;
-  const store = new StateStore(`${directory}.db`);
+  const directory = mkdtempSync(join(tmpdir(), "nav-test-"));
+  const store = new StateStore(join(directory, "nav.db"));
   const now = new Date().toISOString();
   const run: Run = {
     ref: "nav-run:test",
@@ -22,5 +25,6 @@ test("SQLite store round-trips runs", () => {
     expect(store.run(run.ref)).toEqual(run);
   } finally {
     store.close();
+    rmSync(directory, { recursive: true, force: true });
   }
 });
