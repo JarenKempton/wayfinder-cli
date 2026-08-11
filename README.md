@@ -1,6 +1,6 @@
 # Wayfinder CLI
 
-Wayfinder is portable work orchestration for agents. It discovers unblocked work from
+Wayfinder CLI is portable work orchestration for agents. It discovers unblocked work from
 Wayfinder maps, lets a person select one ticket, and coordinates a deterministic
 claim, workspace, and harness launch without making the tracker, model, or
 harness part of the core domain.
@@ -12,7 +12,7 @@ stays in the MCP/skill layer and what belongs to this CLI runtime.
 
 ## Status
 
-Wayfinder is a TypeScript/Bun pre-release. This repository currently defines and implements the stable
+Wayfinder CLI is a TypeScript/Bun pre-release. This repository currently defines and implements the stable
 foundation: qualified references, portable ticket and capability types, frontier
 evaluation, adapter protocol discovery, layered execution routing, SQLite run
 state, and the initial CLI. Hosted tracker mutations and product-specific
@@ -64,4 +64,4 @@ bun run check
 bun run build
 ```
 
-Wayfinder is licensed under the [MIT License](LICENSE).
+Wayfinder CLI is licensed under the [MIT License](LICENSE).

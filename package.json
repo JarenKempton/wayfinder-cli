@@ -1,5 +1,5 @@
 {
-  "name": "@jarenkempton/wayfinder",
+  "name": "@jarenkempton/wayfinder-cli",
   "version": "0.1.0-dev",
   "private": true,
   "description": "Portable work orchestration for Wayfinder maps across trackers, agent harnesses, and models.",

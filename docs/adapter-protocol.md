@@ -1,6 +1,6 @@
-# Nav Adapter Protocol 1.0
+# Wayfinder Adapter Protocol 1.0
 
-External adapters are executables named `nav-adapter-<name>`. They exchange one
+External adapters are executables named `wayfinder-adapter-<name>`. They exchange one
 JSON-RPC 2.0 object per line over stdin/stdout. Stdout is reserved for protocol
 messages; structured diagnostics go to stderr.
 

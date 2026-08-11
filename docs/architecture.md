@@ -1,6 +1,6 @@
 # Architecture
 
-Wayfinder separates policy from vendor mechanics.
+Wayfinder CLI separates policy from vendor mechanics.
 
 The ownership boundary between the shared Wayfinder MCP/skill experience and
 this portable runtime is normative and documented in

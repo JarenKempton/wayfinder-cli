@@ -56,7 +56,7 @@ export async function run(
 }
 
 function usage(): string {
-  return `Wayfinder — portable work orchestration for agents
+  return `Wayfinder CLI — portable work orchestration for agents
 
 Usage:
   wayfinder doctor

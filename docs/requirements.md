@@ -1,8 +1,8 @@
-# Wayfinder requirements
+# Wayfinder CLI requirements
 
 ## Decided scope
 
-Wayfinder is a local-first, MIT-licensed TypeScript CLI compiled with Bun. It will ship
+Wayfinder CLI is a local-first, MIT-licensed TypeScript CLI compiled with Bun. It will ship
 standalone macOS, Linux, and Windows binaries; users do not need Bun or Node.
 Common adapters are bundled; custom adapters are separate executables using the
 versioned Wayfinder Adapter Protocol.
@@ -14,7 +14,7 @@ cross-tracker dependency evaluation is deferred.
 
 V1 harness targets are T3 Code, Pi, Claude Code, Codex, Cursor, OpenCode, and a
 generic command adapter. Support is capability-tiered (`prepare`, `launch`,
-`managed`, `lifecycle`) and may differ by operating system. Wayfinder does not use UI
+`managed`, `lifecycle`) and may differ by operating system. Wayfinder CLI does not use UI
 automation to pretend a product has a stable session API.
 
 ## Required invariants
@@ -29,7 +29,7 @@ automation to pretend a product has a stable session API.
 8. Ambiguous restoration produces `recovery_required`, never success.
 9. `wayfinder stop` preserves assignment, workspace, claim records, and local history.
 10. Tracker mutations produce structured receipts and support dry-run planning.
-11. Product Pipeline receives no Wayfinder session telemetry in v1.
+11. Product Pipeline receives no Wayfinder CLI session telemetry in v1.
 12. Secrets are referenced through credential providers and never stored in
     ordinary TOML or SQLite fields.
 
@@ -69,6 +69,6 @@ document is a requirements baseline, not a claim that every command ships now.
 GitHub Releases are the canonical binary source. A public Homebrew tap provides
 the primary macOS/Linux install path, with checksum-verifying shell and
 PowerShell installers as fallbacks. GitHub Packages and npm are not required.
-Wayfinder will check for updates at most once per 24 hours in interactive mode and
+Wayfinder CLI will check for updates at most once per 24 hours in interactive mode and
 notify rather than silently update. Homebrew installations use `brew upgrade`;
 direct installations may use the future `wayfinder update` command.

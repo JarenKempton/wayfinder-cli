@@ -2,20 +2,20 @@
 
 ## Question
 
-Which documented, non-UI-automation surfaces can Nav use to launch and manage
+Which documented, non-UI-automation surfaces can Wayfinder CLI use to launch and manage
 sessions for its v1 harness targets, and on which of macOS, Linux, and Windows
 are those surfaces supported?
 
 ## Result
 
-Nav should not treat “the executable exists” as evidence of a managed session.
+Wayfinder CLI should not treat “the executable exists” as evidence of a managed session.
 The targets fall into three integration classes:
 
 1. **Stable machine-facing lifecycle:** Codex app-server, Pi SDK/RPC, and
    OpenCode server expose addressable sessions plus programmatic operations.
 2. **Documented CLI persistence:** Claude Code and Cursor expose launch,
    listing/pickers, and resume, but their public CLI references do not define a
-   general session status/interrupt/close protocol. Nav can launch them and can
+   general session status/interrupt/close protocol. Wayfinder CLI can launch them and can
    stop the child process it owns, but should not advertise full lifecycle.
 3. **Host/command surfaces:** T3 Code is itself a visible multi-session host;
    the generic command adapter owns only a spawned process. Neither should be
@@ -30,13 +30,13 @@ surface and conformance tests.
 ## Evidence matrix
 
 Legend: **yes** is explicitly supported by the cited surface; **process** means
-Nav can supervise the process it launched but has no documented vendor session
+Wayfinder CLI can supervise the process it launched but has no documented vendor session
 operation; **no claim** means the primary documentation inspected does not
 establish the capability.
 
 | Harness | Best non-UI surface | Create / resume | Status | Interrupt | Close/delete | Visible multi-session | OS qualification |
 |---|---|---|---|---|---|---|---|
-| T3 Code | `t3` server plus desktop/web client and provider adapters | T3 creates provider threads and presents conversations, but its public docs do not define a stable external session-control API for Nav | no claim | no claim | no claim | yes (product UI) | Desktop installation is documented for Windows, macOS, and Arch Linux; the server/remote workflow is documented for Linux hosts |
+| T3 Code | `t3` server plus desktop/web client and provider adapters | T3 creates provider threads and presents conversations, but its public docs do not define a stable external session-control API for Wayfinder CLI | no claim | no claim | no claim | yes (product UI) | Desktop installation is documented for Windows, macOS, and Arch Linux; the server/remote workflow is documented for Linux hosts |
 | Pi | `pi --mode rpc` or the published TypeScript SDK/runtime | yes: CLI `--session`, `--continue`, `--resume`; `SessionManager` and `AgentSessionRuntime` create/open/switch sessions | yes in-process/RPC via session state/events | yes: SDK `abort()` (and process supervision) | process/dispose; no durable-session delete operation documented | selectors/list APIs, not a multi-pane host | npm package and project docs include Windows-specific shell/terminal behavior; macOS and Linux are supported by the same Node CLI |
 | Claude Code | CLI / stream-json print mode | yes: `--continue` and `--resume [session-id]` | no general session-status CLI documented | process (interactive cancellation is terminal-driven) | no claim | picker only; current CLI also has background agents, but that is a distinct agent surface | macOS, Linux, Windows via WSL or native Git Bash are explicit system requirements |
 | Codex | stable `codex app-server` JSON-RPC; CLI for interactive use | yes: `thread/start`, `thread/resume`; CLI `resume` | yes: thread status/events | yes: `turn/interrupt` | archive/delete exist in CLI; app-server exposes durable thread operations, but a stable `thread/close` operation is not documented | client-defined; CLI picker is not itself multi-session | macOS/Linux are standard CLI targets; native Windows support/sandboxing remains qualified/experimental, so prefer WSL unless a Windows adapter passes conformance |
@@ -54,7 +54,7 @@ Arch Linux, remote backends, and a UI that hosts provider conversations. The
 remote-access documentation explains that the desktop SSH launcher starts or
 reuses a remote T3 server and that Linux servers can continue running after
 logout. This proves a visible host and server surface, but not a supported
-third-party lifecycle API that Nav can bind to. Treat T3 integration as a
+third-party lifecycle API that Wayfinder CLI can bind to. Treat T3 integration as a
 dedicated adapter whose verified provider/thread contract determines its
 capabilities, not as an executable alias. [T3 Code repository](https://github.com/pingdotgg/t3code),
 [remote access](https://github.com/pingdotgg/t3code/blob/main/docs/user/remote-access.md)
@@ -78,7 +78,7 @@ resume-by-ID. These support deterministic launch and durable resume. The public
 CLI reference inspected does not specify general commands to query arbitrary
 session run state, interrupt a session by ID, or close/delete a durable
 conversation. Therefore `process_launch` and `session_resume` are supportable;
-managed interruption should initially mean stopping the exact child process Nav
+managed interruption should initially mean stopping the exact child process Wayfinder CLI
 started, not claiming a vendor session interrupt API.
 [Claude Code CLI reference](https://docs.anthropic.com/en/docs/claude-code/cli-usage),
 [Claude Code setup/system requirements](https://docs.anthropic.com/en/docs/claude-code/getting-started)
@@ -140,7 +140,7 @@ Initial conservative assignments:
 - **T3 Code:** `visible_multi_session` belongs to the T3 host adapter. Any
   lifecycle claims must come from its supported server/provider protocol.
 - **Generic command:** `prompt_generation` and `process_launch` only. PID/handle
-  supervision is a Nav run capability, not proof of durable harness sessions.
+  supervision is a Wayfinder CLI run capability, not proof of durable harness sessions.
 - **Windows:** represent `windows-native` and `windows-wsl` as different
   environments during preflight. Cursor explicitly supports WSL; Codex and
   OpenCode carry Windows qualifications; collapsing these into one “Windows”
