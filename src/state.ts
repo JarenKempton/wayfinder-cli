@@ -7,11 +7,15 @@ CREATE TABLE IF NOT EXISTS runs (
   ticket TEXT NOT NULL,
   harness TEXT NOT NULL,
   model TEXT,
+  effort TEXT,
+  context TEXT,
   workspace_json TEXT NOT NULL,
   capabilities_json TEXT NOT NULL,
   status TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  execution_json TEXT,
+  observation_json TEXT
 );
 CREATE TABLE IF NOT EXISTS claims (
   ref TEXT PRIMARY KEY,
@@ -56,6 +60,8 @@ interface RunRow {
   ticket: Run["ticket"];
   harness: Run["harness"];
   model: string | null;
+  effort: string | null;
+  context: string | null;
   workspace_json: string;
   capabilities_json: string;
   status: Run["status"];
@@ -88,6 +94,8 @@ export class StateStore {
     this.#database.exec("PRAGMA journal_mode=WAL");
     this.#database.exec("PRAGMA foreign_keys=ON");
     this.#database.exec(schema);
+    ensureColumn(this.#database, "runs", "effort", "TEXT");
+    ensureColumn(this.#database, "runs", "context", "TEXT");
     ensureColumn(this.#database, "runs", "execution_json", "TEXT");
     ensureColumn(this.#database, "runs", "observation_json", "TEXT");
     ensureColumn(this.#database, "claims", "current_version", "TEXT");
@@ -101,9 +109,10 @@ export class StateStore {
 
   saveRun(run: Run): void {
     this.#database
-      .query(`INSERT INTO runs(ref,ticket,harness,model,workspace_json,capabilities_json,status,created_at,updated_at,execution_json,observation_json)
-        VALUES($ref,$ticket,$harness,$model,$workspace,$capabilities,$status,$createdAt,$updatedAt,$execution,$observation)
-        ON CONFLICT(ref) DO UPDATE SET model=excluded.model,workspace_json=excluded.workspace_json,
+      .query(`INSERT INTO runs(ref,ticket,harness,model,effort,context,workspace_json,capabilities_json,status,created_at,updated_at,execution_json,observation_json)
+        VALUES($ref,$ticket,$harness,$model,$effort,$context,$workspace,$capabilities,$status,$createdAt,$updatedAt,$execution,$observation)
+        ON CONFLICT(ref) DO UPDATE SET model=excluded.model,effort=excluded.effort,context=excluded.context,
+          workspace_json=excluded.workspace_json,
           capabilities_json=excluded.capabilities_json,status=excluded.status,updated_at=excluded.updated_at,
           execution_json=excluded.execution_json,observation_json=excluded.observation_json`)
       .run({
@@ -111,6 +120,8 @@ export class StateStore {
         ticket: run.ticket,
         harness: run.harness,
         model: run.model ?? null,
+        effort: run.effort ?? null,
+        context: run.context ?? null,
         workspace: JSON.stringify(run.workspace),
         capabilities: JSON.stringify(run.capabilities),
         status: run.status,
@@ -129,6 +140,8 @@ export class StateStore {
       ticket: row.ticket,
       harness: row.harness,
       ...(row.model ? { model: row.model } : {}),
+      ...(row.effort ? { effort: row.effort } : {}),
+      ...(row.context ? { context: row.context } : {}),
       workspace: JSON.parse(row.workspace_json),
       capabilities: JSON.parse(row.capabilities_json),
       status: row.status,
