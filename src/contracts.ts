@@ -20,6 +20,57 @@ export interface ClaimRequest {
   expectedVersion: string;
 }
 
+export interface RenewLeaseRequest {
+  claim: ClaimRef;
+  ticket: TicketRef;
+  leaseExpiresAt: string;
+  expectedVersion: string;
+}
+
+export interface ReleaseClaimRequest {
+  claim: ClaimRef;
+  ticket: TicketRef;
+  originalSnapshot: TrackerSnapshot;
+  expectedVersion: string;
+  authorizedBy: ActorRef;
+}
+
+export interface ReclaimRequest {
+  staleClaim: ClaimRef;
+  claim: ClaimRef;
+  run: RunRef;
+  ticket: TicketRef;
+  owner: ActorRef;
+  authorizedBy: ActorRef;
+  leaseExpiresAt: string;
+  expectedVersion: string;
+  originalSnapshot: TrackerSnapshot;
+}
+
+export interface RestoreClaimRequest {
+  ticket: TicketRef;
+  claim: ClaimRef;
+  originalSnapshot: TrackerSnapshot;
+}
+
+export class ClaimCollisionError extends Error {
+  readonly code = "claim_collision";
+
+  constructor(message = "Claim state changed concurrently") {
+    super(message);
+    this.name = "ClaimCollisionError";
+  }
+}
+
+export class AmbiguousTrackerResultError extends Error {
+  readonly code = "ambiguous_tracker_result";
+
+  constructor(message = "Tracker mutation result is ambiguous") {
+    super(message);
+    this.name = "AmbiguousTrackerResultError";
+  }
+}
+
 export interface TrackerAdapter {
   describe(): Promise<CapabilitySet>;
   preflight(ticket: TicketRef): Promise<void>;
@@ -27,10 +78,14 @@ export interface TrackerAdapter {
   snapshotClaimState(ticket: TicketRef): Promise<TrackerSnapshot>;
   claim(request: ClaimRequest): Promise<void>;
   verifyClaim(request: ClaimRequest): Promise<void>;
-  restoreClaimState(ticket: TicketRef, snapshot: TrackerSnapshot): Promise<void>;
-  verifyRestored(ticket: TicketRef, snapshot: TrackerSnapshot): Promise<void>;
-  renewLease(claim: ClaimRef, expiresAt: string): Promise<void>;
-  releaseClaim(claim: ClaimRef): Promise<void>;
+  restoreClaimState(request: RestoreClaimRequest): Promise<void>;
+  verifyRestored(request: RestoreClaimRequest): Promise<void>;
+  renewLease(request: RenewLeaseRequest): Promise<void>;
+  verifyLease(request: RenewLeaseRequest): Promise<void>;
+  releaseClaim(request: ReleaseClaimRequest): Promise<void>;
+  verifyReleased(request: ReleaseClaimRequest): Promise<void>;
+  reclaim(request: ReclaimRequest): Promise<void>;
+  verifyReclaimed(request: ReclaimRequest): Promise<void>;
 }
 
 export interface WorkspacePlan {
@@ -57,6 +112,16 @@ export interface LaunchReceipt {
   sessionId?: string;
   pid?: number;
   tier: "prepare" | "launch" | "managed" | "lifecycle";
+}
+
+export class HarnessLaunchError extends Error {
+  constructor(
+    message: string,
+    readonly receipt?: LaunchReceipt,
+  ) {
+    super(message);
+    this.name = "HarnessLaunchError";
+  }
 }
 
 export interface HarnessAdapter {
