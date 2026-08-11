@@ -1,0 +1,39 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+      - run: bun install --frozen-lockfile
+      - name: Build standalone release matrix
+        shell: bash
+        run: |
+          mkdir -p dist
+          bun build src/cli.ts --compile --target=bun-darwin-arm64 --outfile=dist/nav-darwin-arm64
+          bun build src/cli.ts --compile --target=bun-darwin-x64 --outfile=dist/nav-darwin-x64
+          bun build src/cli.ts --compile --target=bun-linux-arm64 --outfile=dist/nav-linux-arm64
+          bun build src/cli.ts --compile --target=bun-linux-x64-baseline --outfile=dist/nav-linux-x64
+          bun build src/cli.ts --compile --target=bun-windows-arm64 --outfile=dist/nav-windows-arm64.exe
+          bun build src/cli.ts --compile --target=bun-windows-x64-baseline --outfile=dist/nav-windows-x64.exe
+          cd dist
+          sha256sum * > checksums.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nav-release
+          path: dist/
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
