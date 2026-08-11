@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { capabilities, missingCapabilities } from "../src/domain.ts";
+import {
+  CAPABILITIES,
+  capabilities,
+  missingCapabilities,
+  requireCapabilities,
+  type UnsupportedCapabilityError,
+} from "../src/domain.ts";
 import type { RefKind } from "../src/reference.ts";
 import { parseRef } from "../src/reference.ts";
 
@@ -14,14 +20,41 @@ describe("parseRef", () => {
     ["wayfinder-claim:018f", "claim"],
   ] as const)("parses %s", (raw, kind) => expect(parseRef(raw).kind).toBe(kind as RefKind));
 
-  test.each(["JWB-245", "jira:", "jira:x:y:map", "jira:x:y:other:z", "wayfinder-run:"])(
-    "rejects %s",
-    (raw) => expect(() => parseRef(raw)).toThrow(),
-  );
+  test.each([
+    "JWB-245",
+    "jira:",
+    "jira:x:y:map",
+    "jira:x:y:other:z",
+    "wayfinder-run:",
+    "nav-run:018f",
+    "nav-claim:018f",
+  ])("rejects %s", (raw) => expect(() => parseRef(raw)).toThrow());
 });
 
 test("reports missing capabilities", () => {
   expect(
     missingCapabilities(capabilities("native_maps"), capabilities("native_maps", "claim_comments")),
   ).toEqual(["claim_comments"]);
+});
+
+test("capability vocabulary is unique and protocol-safe", () => {
+  expect(new Set(CAPABILITIES).size).toBe(CAPABILITIES.length);
+  for (const capability of CAPABILITIES) {
+    expect(capability).toMatch(/^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/);
+  }
+});
+
+test("unsupported capabilities fail explicitly with a stable code", () => {
+  expect(() =>
+    requireCapabilities(
+      capabilities("native_maps"),
+      capabilities("native_maps", "conditional_update", "claim_comments"),
+    ),
+  ).toThrow(
+    expect.objectContaining({
+      name: "UnsupportedCapabilityError",
+      code: "unsupported_capability",
+      missing: ["conditional_update", "claim_comments"],
+    }) as UnsupportedCapabilityError,
+  );
 });

@@ -27,7 +27,7 @@ automation to pretend a product has a stable session API.
 6. Lease expiry never automatically unassigns or reassigns a ticket.
 7. A failure after claim attempts verified restoration of the exact snapshot.
 8. Ambiguous restoration produces `recovery_required`, never success.
-9. `wayfinder stop` preserves assignment, workspace, and local history.
+9. `wayfinder stop` preserves assignment, workspace, claim records, and local history.
 10. Tracker mutations produce structured receipts and support dry-run planning.
 11. Product Pipeline receives no Wayfinder CLI session telemetry in v1.
 12. Secrets are referenced through credential providers and never stored in

@@ -2,6 +2,10 @@
 
 Wayfinder CLI separates policy from vendor mechanics.
 
+The ownership boundary between the shared Wayfinder MCP/skill experience and
+this portable runtime is normative and documented in
+[`ownership-boundary.md`](ownership-boundary.md).
+
 ```text
 CLI
  ├── resolver and configuration
@@ -11,10 +15,16 @@ CLI
  └── adapter registry
       ├── tracker adapters
       ├── workspace adapters
+      ├── environment adapters
       └── harness adapters
 ```
 
 ## Qualified references
+
+The accepted entity and identifier contract is documented in
+[Portable domain model and capability vocabulary](domain-model.md).
+The claim transaction and recovery contract is documented in
+[Claim, lease, reclaim, and compensation semantics](claim-semantics.md).
 
 ```text
 tracker   <adapter>:<instance>
@@ -39,7 +49,7 @@ adapter's stable order.
 
 ## Pickup transaction
 
-Pickup progresses through `planning`, `claimed`, `workspace_prepared`,
+Pickup progresses through `planning`, `claiming`, `claimed`, `workspace_prepared`,
 `launched`, and `committed`. A post-claim failure enters `compensating`, then
 either `compensated` after verified restoration or `recovery_required` when the
 result is ambiguous. Local steps and receipts are persisted before moving to
@@ -58,6 +68,9 @@ Portable entities, frontier rules, routing, and transaction coordination are
 ordinary TypeScript. Bun-specific filesystem, subprocess, SQLite, executable
 build, and update behavior remains isolated in platform-facing modules. Release
 binaries embed Bun, so consumers install a single executable without a runtime.
+
+Application development lifecycle behavior crosses the separate environment
+adapter boundary defined in [Development environment boundary](environment-boundary.md).
 
 ## Capability honesty
 

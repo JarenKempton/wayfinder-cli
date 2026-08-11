@@ -17,6 +17,9 @@ export function parseRef(input: string): ParsedRef {
   if (raw.startsWith("wayfinder-claim:")) {
     return terminalRef(raw, "wayfinder-claim:", "claim");
   }
+  if (raw.startsWith("nav-run:") || raw.startsWith("nav-claim:")) {
+    throw new Error("Pre-release nav run and claim references are no longer supported");
+  }
 
   const parts = raw.split(":");
   const [adapter, instance, workspace, kind, nativeId] = parts;

@@ -5,9 +5,10 @@ Wayfinder maps, lets a person select one ticket, and coordinates a deterministic
 claim, workspace, and harness launch without making the tracker, model, or
 harness part of the core domain.
 
-It implements the map-based Wayfinder workflow created by Matt Pocock while
-remaining an independent project. See [NOTICE.md](NOTICE.md) for exact upstream
-attribution and project lineage.
+Wayfinder CLI is designed to integrate with the map-based Wayfinder workflow popularized
+by Matt Pocock. See [NOTICE.md](NOTICE.md) for attribution and project lineage.
+The normative [ownership boundary](docs/ownership-boundary.md) defines what
+stays in the MCP/skill layer and what belongs to this CLI runtime.
 
 ## Status
 

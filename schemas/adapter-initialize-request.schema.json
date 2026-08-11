@@ -16,7 +16,7 @@
       "properties": {
         "protocol_version": { "type": "string", "pattern": "^1\\.[0-9]+$" },
         "core_version": { "type": "string", "minLength": 1 },
-        "adapter_kind": { "enum": ["tracker", "harness", "workspace"] },
+        "adapter_kind": { "enum": ["tracker", "harness", "workspace", "environment"] },
         "workspace": { "type": "string" }
       }
     }

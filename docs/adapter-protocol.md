@@ -12,6 +12,13 @@ Core sends `adapter.initialize` before any other method:
 {"jsonrpc":"2.0","id":"1","method":"adapter.initialize","params":{"protocol_version":"1.0","core_version":"0.1.0","adapter_kind":"tracker","workspace":"jira:example:ABC"}}
 ```
 
+`adapter_kind` is one of `tracker`, `workspace`, `environment`, or `harness`.
+Embedded and executable environment adapters expose the same lifecycle contract;
+the protocol transport does not change ownership of application topology.
+Environment profile references, plan summaries, warnings, and lifecycle evidence
+are adapter-defined and opaque to core. Protocol 1.x does not define a universal
+component catalog or local-versus-hosted service-routing schema.
+
 The adapter responds with its identity and exact capabilities:
 
 ```json

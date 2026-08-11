@@ -55,7 +55,7 @@ export class AdapterClient {
   }
 
   async initialize(
-    kind: "tracker" | "harness" | "workspace",
+    kind: "tracker" | "harness" | "workspace" | "environment",
     workspace: string,
     coreVersion: string,
   ) {

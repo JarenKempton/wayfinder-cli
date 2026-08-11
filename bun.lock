@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@jarenkempton/nav",
+      "name": "@jarenkempton/wayfinder",
       "devDependencies": {
         "@biomejs/biome": "^2.2.4",
         "@types/bun": "^1.3.11",
