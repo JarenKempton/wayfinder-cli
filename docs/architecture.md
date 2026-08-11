@@ -72,6 +72,16 @@ binaries embed Bun, so consumers install a single executable without a runtime.
 Application development lifecycle behavior crosses the separate environment
 adapter boundary defined in [Development environment boundary](environment-boundary.md).
 
+## Git workspaces
+
+The Git adapter consumes one explicit repository mapping and derives the canonical
+`<worktreeRoot>/<native-ticket-id>` path and `<ticket-kind>/<native-ticket-id>` branch.
+Preparation resumes only an already-registered exact path/branch pair. An occupied path,
+branch checked out elsewhere, detached worktree, or mismatched repository mapping fails
+closed. Resume preserves dirty work; worktree removal is a separate explicit operation
+that refuses dirty work. Git is always invoked with an argument array so native paths,
+including paths containing spaces, are not shell-interpreted.
+
 ## Capability honesty
 
 Adapters advertise fine-grained capabilities. Core derives presentation tiers
