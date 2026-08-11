@@ -8,32 +8,36 @@ export type ClaimRef = `nav-claim:${string}`;
 export type ActorRef = string & { readonly __kind: "ActorRef" };
 export type AdapterRef = string & { readonly __kind: "AdapterRef" };
 
-export type Capability =
-  | "native_maps"
-  | "native_groups"
-  | "native_dependencies"
-  | "cross_map_dependencies"
-  | "atomic_assignment"
-  | "workflow_transition"
-  | "conditional_update"
-  | "native_properties"
-  | "claim_comments"
-  | "lease_metadata"
-  | "resolution_comments"
-  | "artifact_links"
-  | "prompt_generation"
-  | "workspace_open"
-  | "process_launch"
-  | "session_create"
-  | "session_resume"
-  | "session_status"
-  | "session_interrupt"
-  | "session_close"
-  | "model_selection"
-  | "reasoning_selection"
-  | "tool_configuration"
-  | "visible_multi_session"
-  | "workspace_prepare";
+/** Protocol-stable capability identifiers. Additions are backward compatible; renames are not. */
+export const CAPABILITIES = [
+  "native_maps",
+  "native_groups",
+  "native_dependencies",
+  "cross_map_dependencies",
+  "atomic_assignment",
+  "workflow_transition",
+  "conditional_update",
+  "native_properties",
+  "claim_comments",
+  "lease_metadata",
+  "resolution_comments",
+  "artifact_links",
+  "prompt_generation",
+  "workspace_open",
+  "process_launch",
+  "session_create",
+  "session_resume",
+  "session_status",
+  "session_interrupt",
+  "session_close",
+  "model_selection",
+  "reasoning_selection",
+  "tool_configuration",
+  "visible_multi_session",
+  "workspace_prepare",
+] as const;
+
+export type Capability = (typeof CAPABILITIES)[number];
 
 export type CapabilitySet = Partial<Record<Capability, true>>;
 
@@ -46,6 +50,21 @@ export function missingCapabilities(
   required: CapabilitySet,
 ): Capability[] {
   return (Object.keys(required) as Capability[]).filter((item) => !available[item]);
+}
+
+export class UnsupportedCapabilityError extends Error {
+  readonly code = "unsupported_capability";
+
+  constructor(readonly missing: readonly Capability[]) {
+    super(`Unsupported capabilities: ${missing.join(", ")}`);
+    this.name = "UnsupportedCapabilityError";
+  }
+}
+
+/** Fails before an operation when its adapter cannot verify every required capability. */
+export function requireCapabilities(available: CapabilitySet, required: CapabilitySet): void {
+  const missing = missingCapabilities(available, required);
+  if (missing.length > 0) throw new UnsupportedCapabilityError(missing);
 }
 
 export interface RepositorySpec {
