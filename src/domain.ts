@@ -33,7 +33,13 @@ export type Capability =
   | "reasoning_selection"
   | "tool_configuration"
   | "visible_multi_session"
-  | "workspace_prepare";
+  | "workspace_prepare"
+  | "environment_plan"
+  | "environment_start"
+  | "environment_readiness"
+  | "environment_logs"
+  | "environment_resume"
+  | "environment_stop";
 
 export type CapabilitySet = Partial<Record<Capability, true>>;
 
@@ -138,6 +144,32 @@ export type RunStatus =
 export interface PreparedWorkspace {
   path: string;
   branch?: string;
+}
+
+export type EnvironmentServiceMode = "local" | "hosted" | "disabled";
+
+export interface EnvironmentServiceSelection {
+  service: string;
+  mode: EnvironmentServiceMode;
+  target?: string;
+}
+
+export interface EnvironmentProfile {
+  name: string;
+  services: EnvironmentServiceSelection[];
+}
+
+export interface EnvironmentPlan {
+  profile: string;
+  services: EnvironmentServiceSelection[];
+  credentialHandles: string[];
+}
+
+export interface PreparedEnvironment {
+  id: string;
+  profile: string;
+  readiness: Record<string, "ready" | "not_ready" | "external">;
+  logReferences: string[];
 }
 
 export interface Run {

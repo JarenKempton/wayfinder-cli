@@ -3,6 +3,9 @@ import type {
   AdapterRef,
   CapabilitySet,
   ClaimRef,
+  EnvironmentPlan,
+  EnvironmentProfile,
+  PreparedEnvironment,
   PreparedWorkspace,
   Run,
   RunRef,
@@ -43,6 +46,24 @@ export interface WorkspaceAdapter {
   preflight(ticket: Ticket): Promise<void>;
   plan(ticket: Ticket): Promise<WorkspacePlan>;
   prepare(plan: WorkspacePlan): Promise<PreparedWorkspace>;
+}
+
+export interface EnvironmentPlanRequest {
+  ticket: Ticket;
+  workspace: PreparedWorkspace;
+  profile: EnvironmentProfile;
+}
+
+/** Application-specific lifecycle boundary, whether embedded or external. */
+export interface EnvironmentAdapter {
+  describe(): Promise<CapabilitySet>;
+  preflight(request: EnvironmentPlanRequest): Promise<void>;
+  plan(request: EnvironmentPlanRequest): Promise<EnvironmentPlan>;
+  start(plan: EnvironmentPlan): Promise<PreparedEnvironment>;
+  verifyReady(environment: PreparedEnvironment): Promise<void>;
+  logs(environment: PreparedEnvironment): Promise<string[]>;
+  resume(id: string): Promise<PreparedEnvironment>;
+  stop(environment: PreparedEnvironment): Promise<void>;
 }
 
 export interface LaunchRequest {
