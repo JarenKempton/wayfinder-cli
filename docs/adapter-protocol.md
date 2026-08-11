@@ -36,4 +36,19 @@ The adapter responds with its identity and exact capabilities:
 - Credential-provider handles may be passed in scoped environment variables.
 - Core applies per-call deadlines and treats process exit as an adapter failure.
 
+## Prototype conformance runner
+
+`wayfinder adapter test <executable>` runs the JWB-280 subprocess proof. A
+conformance fixture selects its deliberate behavior from the scoped
+`WAYFINDER_CONFORMANCE_SCENARIO` environment variable. The runner verifies 1.x
+negotiation, the standard unknown-method error, deadline and explicit
+cancellation termination, incremental response-size enforcement, crash
+isolation, fresh-process recovery, and credential-provider handles passed only
+through the environment. The client does not inherit the caller's complete
+environment, and it never places a credential handle or secret in argv.
+
+This is a transport proof, not certification of tracker mutation semantics.
+Each live adapter still needs its domain conformance suite before advertising
+mutation capabilities.
+
 The canonical JSON Schemas live under [`schemas/`](../schemas/).

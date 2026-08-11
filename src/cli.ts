@@ -3,10 +3,11 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { builtInAdapters, findAdapter } from "./adapters.ts";
+import { runAdapterConformance } from "./conformance.ts";
 import type { GroupRef, MapRef, Ticket, TicketRef, WorkspaceRef } from "./domain.ts";
 import { evaluateFrontier, type FrontierScope } from "./frontier.ts";
 import { databasePath } from "./paths.ts";
-import { AdapterClient, PROTOCOL_VERSION } from "./protocol.ts";
+import { PROTOCOL_VERSION } from "./protocol.ts";
 import { parseRef } from "./reference.ts";
 import { StateStore } from "./state.ts";
 
@@ -114,12 +115,7 @@ async function adapter(args: string[], write: (text: string) => void): Promise<v
   if (subcommand === "list") return writeJson(write, builtInAdapters());
   if (subcommand === "describe" && target) return writeJson(write, findAdapter(target));
   if (subcommand === "test" && target) {
-    const description = await new AdapterClient(target).initialize(
-      "tracker",
-      "conformance:test",
-      VERSION,
-    );
-    return writeJson(write, { ok: true, adapter: description });
+    return writeJson(write, await runAdapterConformance(target));
   }
   throw new Error("adapter requires list, describe <name>, or test <executable>");
 }
