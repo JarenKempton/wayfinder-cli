@@ -15,13 +15,24 @@ import type {
   TicketRef,
   WorkspaceRef,
 } from "./domain.ts";
-import { evaluateFrontier, type FrontierScope } from "./frontier.ts";
+import { evaluateFrontier, type FrontierScope, reconcileDependencyStatuses } from "./frontier.ts";
 import { LifecycleCoordinator, Supervisor } from "./lifecycle.ts";
 import { databasePath } from "./paths.ts";
 import { ProcessLifecycleAdapter } from "./platform/process-lifecycle.ts";
 import { AdapterClient, PROTOCOL_VERSION } from "./protocol.ts";
 import { parseRef } from "./reference.ts";
 import { StateStore } from "./state.ts";
+import {
+  evaluateStatusRepairBatch,
+  type StatusRepairDisposition,
+  type StatusRepairOutcome,
+  StatusRepairPersistenceError,
+  type StatusRepairReceiptStore,
+  type StatusRepairRecoveryReceipt,
+  type StatusRepairService,
+  statusRepairAdapterBinding,
+  statusRepairAdapterMatches,
+} from "./status-repair.ts";
 
 export const VERSION = "0.1.0-dev";
 
@@ -35,6 +46,8 @@ export interface RuntimeServices {
     run: Run,
     evidence: unknown,
   ): Promise<{ observation: RunObservation; claim: Claim }>;
+  statusRepair?: StatusRepairService;
+  statusRepairReceipts?: StatusRepairReceiptStore;
 }
 
 export async function run(
@@ -60,6 +73,8 @@ export async function run(
       return resolve(rest, write);
     case "frontier":
       return frontier(rest, write);
+    case "reconcile":
+      return reconcile(rest, write, services);
     case "adapter":
       return adapter(rest, write);
     case "runs":
@@ -90,6 +105,8 @@ function usage(services: RuntimeServices): string {
     "wayfinder doctor",
     "wayfinder resolve <qualified-reference>",
     'wayfinder frontier --input <tickets.json> [--scope <ref>] [--available "To Do,Open"] [--json]',
+    'wayfinder reconcile statuses <scope> --input <workspace-tickets.json> [--available "To Do"] [--blocked "Blocked"] [--repair [--dry-run]] [--json]',
+    "wayfinder reconcile statuses <scope> --recover <receipt-ref> [--json]",
     "wayfinder adapter list",
     "wayfinder adapter describe <name>",
     "wayfinder adapter test <executable>",
@@ -112,6 +129,339 @@ function usage(services: RuntimeServices): string {
 
 Usage:
   ${commands.join("\n  ")}`;
+}
+
+async function reconcile(
+  args: string[],
+  write: (text: string) => void,
+  services: RuntimeServices,
+): Promise<void> {
+  const [subcommand, scopeReference, ...rest] = args;
+  if (subcommand !== "statuses") throw new Error("reconcile requires statuses <scope>");
+  if (!scopeReference || scopeReference.startsWith("--")) {
+    throw new Error("reconcile statuses requires a qualified <scope>");
+  }
+  const scope = parseScope(scopeReference);
+  const flags = parseFlags(rest);
+  const recoveryRef = value(flags, "recover");
+  if (flags.has("recover")) {
+    if (!recoveryRef) throw new Error("reconcile statuses --recover requires <receipt-ref>");
+    return recoverStatusRepair(recoveryRef, scopeReference, write, services);
+  }
+  const input = value(flags, "input");
+  if (!input) throw new Error("reconcile statuses currently requires --input <tickets.json>");
+  const tickets = JSON.parse(readFileSync(input, "utf8")) as Ticket[];
+  const ready = value(flags, "available") ?? "To Do";
+  const blocked = value(flags, "blocked") ?? "Blocked";
+  const result = reconcileDependencyStatuses(tickets, scope, {
+    ready,
+    blocked,
+    managedStatuses: new Set([ready, blocked]),
+    protectedStatuses: new Set(["In Progress", "In Review"]),
+  });
+  const repair = flags.has("repair");
+  const dryRun = flags.has("dry-run");
+  let repairOutcomes: StatusRepairOutcome[] | undefined;
+  if (dryRun && !repair) throw new Error("reconcile statuses --dry-run requires --repair");
+  if (repair && !dryRun) {
+    if (!services.statusRepair) {
+      throw unavailableRuntime(
+        "reconcile statuses --repair",
+        "conditional status mutation and verification service",
+      );
+    }
+    let evaluated = evaluateStatusRepairBatch(
+      result.transitions,
+      await services.statusRepair.repair(result.transitions),
+    );
+    const advertisedAdapter = statusRepairAdapterBinding(services.statusRepair.adapter);
+    if (!statusRepairAdapterMatches(advertisedAdapter, evaluated.adapter)) {
+      const request = result.transitions[0];
+      const diagnostic: StatusRepairOutcome = {
+        ticket: request?.ticket ?? ("status-repair:adapter" as TicketRef),
+        expectedVersion: request?.expectedVersion ?? "",
+        outcome: "ambiguous",
+        detail: {
+          reason: "status repair adapter binding mismatch",
+          expected: advertisedAdapter,
+          observed: evaluated.adapter,
+        },
+      };
+      evaluated = {
+        ...evaluated,
+        verified: false,
+        adapter: advertisedAdapter,
+        diagnostics: [...evaluated.diagnostics, diagnostic],
+      };
+    }
+    repairOutcomes = evaluated.dispositions;
+    if (!evaluated.verified) {
+      if (!services.statusRepairReceipts) {
+        throw new Error("Status repair requires a durable recovery receipt store");
+      }
+      let ref: string;
+      try {
+        ref = await services.statusRepairReceipts.allocateRef();
+      } catch (cause) {
+        throw new StatusRepairPersistenceError(
+          "Failed to allocate status repair recovery receipt",
+          evaluated,
+          { cause },
+        );
+      }
+      const recovery: StatusRepairRecoveryReceipt = {
+        ref,
+        version: 1,
+        action: "status_repair_recovery_required",
+        scope: scopeReference,
+        adapter: evaluated.adapter,
+        requested: result.transitions,
+        rawOutcomes: evaluated.rawOutcomes,
+        dispositions: evaluated.dispositions,
+        diagnostics: evaluated.diagnostics,
+        refreshEvidence: [],
+        recoveryArgv: ["reconcile", "statuses", scopeReference, "--recover", ref, "--json"],
+      };
+      try {
+        await services.statusRepairReceipts.create(ref, recovery);
+      } catch (cause) {
+        throw new StatusRepairPersistenceError(
+          "Failed to persist status repair recovery receipt",
+          evaluated,
+          { cause },
+        );
+      }
+      writeJson(write, recovery);
+      return;
+    }
+  }
+  const receipt = {
+    version: 1,
+    action: repair ? (dryRun ? "status_repair_planned" : "statuses_repaired") : "statuses_audited",
+    scope,
+    dryRun,
+    transitions: result.transitions,
+    drift: result.drift,
+    ...(repairOutcomes ? { repairOutcomes } : {}),
+    counts: { transitions: result.transitions.length, drift: result.drift.length },
+  };
+  if (flags.has("json")) return writeJson(write, receipt);
+  for (const transition of result.transitions) {
+    write(`${transition.ticket}\t${transition.from} -> ${transition.to}`);
+  }
+  for (const drift of result.drift)
+    write(`${drift.ticket}\tattention: ${drift.from} -> ${drift.to}`);
+}
+
+async function recoverStatusRepair(
+  ref: string,
+  scopeReference: string,
+  write: (text: string) => void,
+  services: RuntimeServices,
+): Promise<void> {
+  if (!services.statusRepair || !services.statusRepairReceipts) {
+    throw unavailableRuntime(
+      "reconcile statuses --recover",
+      "status repair and durable receipt services",
+    );
+  }
+  const statusRepair = services.statusRepair;
+  const receiptStore = services.statusRepairReceipts;
+  const prior = await receiptStore.load(ref);
+  if (!prior) throw new Error(`Status repair recovery receipt not found: ${ref}`);
+  if (prior.scope !== scopeReference) throw new Error("Status repair recovery scope mismatch");
+  const persistAdapterMismatch = async (
+    stage: "service" | "refresh" | "retry",
+    observed: ReturnType<typeof statusRepairAdapterBinding>,
+    refreshEvidence: StatusRepairRecoveryReceipt["refreshEvidence"],
+  ): Promise<void> => {
+    const diagnostic: StatusRepairOutcome = {
+      ticket: prior.requested[0]?.ticket ?? ("status-repair:adapter" as TicketRef),
+      expectedVersion: prior.requested[0]?.expectedVersion ?? "",
+      outcome: "ambiguous",
+      detail: {
+        reason: "status repair adapter binding mismatch",
+        stage,
+        expected: prior.adapter,
+        observed,
+      },
+    };
+    const receipt: StatusRepairRecoveryReceipt = {
+      ...prior,
+      action: "attention_required",
+      dispositions: prior.requested.map((request) => ({
+        ticket: request.ticket,
+        expectedVersion: request.expectedVersion,
+        outcome: "ambiguous",
+        detail: diagnostic.detail,
+      })),
+      diagnostics: [...prior.diagnostics, diagnostic],
+      refreshEvidence,
+      recoveryArgv: ["reconcile", "statuses", scopeReference, "--recover", ref, "--json"],
+    };
+    await receiptStore.update(ref, receipt);
+    writeJson(write, receipt);
+  };
+  const advertisedAdapter = statusRepairAdapterBinding(statusRepair.adapter);
+  if (!statusRepairAdapterMatches(prior.adapter, advertisedAdapter)) {
+    return persistAdapterMismatch("service", advertisedAdapter, prior.refreshEvidence);
+  }
+  const refresh = await statusRepair.refresh(prior.requested.map((item) => item.ticket));
+  const refreshEvidence = [
+    ...prior.refreshEvidence,
+    {
+      adapter: {
+        adapter: refresh.adapter.adapter,
+        instance: refresh.adapter.instance,
+        capabilities: { ...refresh.adapter.capabilities },
+        versionContract: refresh.adapter.versionContract.name,
+      },
+      observations: refresh.observations.map((item) => structuredClone(item)),
+    },
+  ];
+  if (!statusRepairAdapterMatches(prior.adapter, refresh.adapter)) {
+    return persistAdapterMismatch(
+      "refresh",
+      statusRepairAdapterBinding(refresh.adapter),
+      refreshEvidence,
+    );
+  }
+  const observations = new Map<string, (typeof refresh.observations)[number][]>();
+  const requestedTickets = new Set(prior.requested.map((item) => item.ticket));
+  let diagnostics = [...prior.diagnostics];
+  let attention = false;
+  for (const observation of refresh.observations) {
+    if (!requestedTickets.has(observation.ticket)) {
+      attention = true;
+      diagnostics.push({
+        ticket: observation.ticket,
+        expectedVersion: "",
+        outcome: "ambiguous",
+        detail: { reason: "unexpected refresh observation", observation },
+      });
+      continue;
+    }
+    const entries = observations.get(observation.ticket) ?? [];
+    entries.push(observation);
+    observations.set(observation.ticket, entries);
+  }
+  const dispositions: StatusRepairDisposition[] = [];
+  const retry: import("./frontier.ts").DependencyStatusTransition[] = [];
+  for (const request of prior.requested) {
+    const entries = observations.get(request.ticket) ?? [];
+    const observed = entries[0];
+    if (entries.length !== 1 || !observed || observed.outcome !== "observed") {
+      attention = true;
+      const diagnostic: StatusRepairDisposition = {
+        ticket: request.ticket,
+        expectedVersion: request.expectedVersion,
+        outcome: "ambiguous",
+        detail: { reason: "refresh was not exact and observable", observations: entries },
+      };
+      dispositions.push(diagnostic);
+      diagnostics.push(diagnostic);
+      continue;
+    }
+    if (!observed.version || !observed.status) {
+      attention = true;
+      const diagnostic: StatusRepairDisposition = {
+        ticket: request.ticket,
+        expectedVersion: request.expectedVersion,
+        outcome: "unverifiable",
+        detail: "refresh omitted status or version",
+      };
+      dispositions.push(diagnostic);
+      diagnostics.push(diagnostic);
+      continue;
+    }
+    if (observed.status === request.to) {
+      dispositions.push({
+        ticket: request.ticket,
+        expectedVersion: request.expectedVersion,
+        outcome: "verified",
+        reconciled: true,
+        detail: { observedStatus: observed.status, observedVersion: observed.version },
+      });
+      continue;
+    }
+    retry.push({
+      ...request,
+      from: observed.status,
+      expectedVersion: observed.version,
+    });
+  }
+  let rawOutcomes = [...prior.rawOutcomes];
+  if (retry.length > 0) {
+    const retryAdapter = statusRepairAdapterBinding(statusRepair.adapter);
+    if (!statusRepairAdapterMatches(prior.adapter, retryAdapter)) {
+      return persistAdapterMismatch("retry", retryAdapter, refreshEvidence);
+    }
+    const evaluated = evaluateStatusRepairBatch(retry, await statusRepair.repair(retry));
+    rawOutcomes = [...rawOutcomes, ...evaluated.rawOutcomes];
+    diagnostics = [...diagnostics, ...evaluated.diagnostics];
+    const adapterMatches = statusRepairAdapterMatches(prior.adapter, evaluated.adapter);
+    const retryDispositions = adapterMatches
+      ? evaluated.dispositions
+      : retry.map(
+          (request): StatusRepairDisposition => ({
+            ticket: request.ticket,
+            expectedVersion: request.expectedVersion,
+            outcome: "ambiguous",
+            detail: {
+              reason: "status repair adapter binding mismatch",
+              stage: "retry",
+              expected: prior.adapter,
+              observed: evaluated.adapter,
+            },
+          }),
+        );
+    const retryByTicket = new Map(retryDispositions.map((item) => [item.ticket, item]));
+    for (const request of retry) {
+      const disposition = retryByTicket.get(request.ticket);
+      if (disposition) dispositions.push(disposition);
+    }
+    if (!adapterMatches) {
+      attention = true;
+      const request = retry[0];
+      diagnostics.push({
+        ticket: request?.ticket ?? ("status-repair:adapter" as TicketRef),
+        expectedVersion: request?.expectedVersion ?? "",
+        outcome: "ambiguous",
+        detail: {
+          reason: "status repair adapter binding mismatch",
+          stage: "retry",
+          expected: prior.adapter,
+          observed: evaluated.adapter,
+        },
+      });
+    }
+    if (!evaluated.verified) attention = true;
+  }
+  // Preserve requested ordering in the durable result.
+  const byTicket = new Map(dispositions.map((item) => [item.ticket, item]));
+  const ordered = prior.requested.map((request) => {
+    const disposition = byTicket.get(request.ticket);
+    if (disposition) return disposition;
+    attention = true;
+    return {
+      ticket: request.ticket,
+      expectedVersion: request.expectedVersion,
+      outcome: "untouched" as const,
+      detail: "recovery omitted disposition",
+    };
+  });
+  const recovered = !attention && ordered.every((item) => item?.outcome === "verified");
+  const receipt: StatusRepairRecoveryReceipt = {
+    ...prior,
+    action: recovered ? "status_repair_recovered" : "attention_required",
+    rawOutcomes,
+    dispositions: ordered,
+    diagnostics,
+    refreshEvidence,
+    recoveryArgv: ["reconcile", "statuses", scopeReference, "--recover", ref, "--json"],
+  };
+  await receiptStore.update(ref, receipt);
+  writeJson(write, receipt);
 }
 
 function doctor(write: (text: string) => void): void {
@@ -375,10 +725,10 @@ function unavailableRuntime(command: string, requirement: string): Error {
 function parseScope(raw: string | undefined): FrontierScope {
   if (!raw) return {};
   const parsed = parseRef(raw);
-  if (parsed.kind === "workspace") return { workspace: raw as WorkspaceRef };
-  if (parsed.kind === "group") return { group: raw as GroupRef };
-  if (parsed.kind === "map") return { map: raw as MapRef };
-  if (parsed.kind === "ticket") return { ticket: raw as TicketRef };
+  if (parsed.kind === "workspace") return { workspace: parsed.raw as WorkspaceRef };
+  if (parsed.kind === "group") return { group: parsed.raw as GroupRef };
+  if (parsed.kind === "map") return { map: parsed.raw as MapRef };
+  if (parsed.kind === "ticket") return { ticket: parsed.raw as TicketRef };
   throw new Error(`${raw} is not a frontier scope`);
 }
 

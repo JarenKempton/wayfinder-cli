@@ -236,7 +236,8 @@ function normalizeLinearTicket(
     order,
     metadata: {
       identifier: string(node.identifier, "issue identifier"),
-      updatedAt: string(node.updatedAt, "issue updatedAt"),
+      version: string(node.updatedAt, "issue updatedAt"),
+      versionSource: "linear.updatedAt",
     },
   };
 }

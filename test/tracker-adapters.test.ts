@@ -7,7 +7,7 @@ import {
   type ReleaseClaimRequest,
 } from "../src/contracts.ts";
 import type { ActorRef, ClaimRef, MapRef, RunRef, TicketRef } from "../src/domain.ts";
-import { evaluateFrontier } from "../src/frontier.ts";
+import { evaluateFrontier, reconcileDependencyStatuses } from "../src/frontier.ts";
 import { GitHubIssuesTrackerAdapter, GitHubWorkspaceBoundaryError } from "../src/github-adapter.ts";
 import { LinearTrackerAdapter } from "../src/linear-adapter.ts";
 import type { HttpResponse, HttpTransport } from "../src/tracker-http.ts";
@@ -168,6 +168,31 @@ describe("Linear tracker adapter", () => {
     });
     const tickets = await adapter.listMapTickets("linear:api:team:map:map" as MapRef);
     expect(String(tickets[1]?.dependencies?.[0]?.blocking)).toBe("linear:api:team:ticket:1");
+    expect(
+      reconcileDependencyStatuses(
+        tickets,
+        {},
+        {
+          ready: "Todo",
+          blocked: "Blocked",
+          managedStatuses: new Set(["Todo", "Blocked"]),
+        },
+      ).transitions[0],
+    ).toMatchObject({ ticket: tickets[1]?.ref, expectedVersion: blocked.updatedAt });
+    const withoutToken = tickets.map((ticket, index) =>
+      index === 1 ? { ...ticket, metadata: { versionSource: "missing-provider-token" } } : ticket,
+    );
+    expect(() =>
+      reconcileDependencyStatuses(
+        withoutToken,
+        {},
+        {
+          ready: "Todo",
+          blocked: "Blocked",
+          managedStatuses: new Set(["Todo", "Blocked"]),
+        },
+      ),
+    ).toThrow("lacks a tracker version guard");
     expect(evaluateFrontier(tickets, {}, { availableStatuses: new Set(["Todo"]) })).toEqual([
       required(tickets, 0),
     ]);
@@ -241,7 +266,7 @@ describe("GitHub Issues tracker adapter", () => {
           headers: { link: '<https://api.github.test/page2>; rel="next"' },
         }),
         response([{ ...githubIssue(99), pull_request: {} }, githubIssue(2)]),
-        response([githubIssue(10)]),
+        response([githubIssue(2)]),
         response([]),
       ]),
     });
@@ -250,8 +275,19 @@ describe("GitHub Issues tracker adapter", () => {
       "github:github.com:o/r:ticket:1",
       "github:github.com:o/r:ticket:2",
     ]);
-    expect(String(tickets[0]?.dependencies?.[0]?.blocking)).toBe("github:github.com:o/r:ticket:10");
+    expect(String(tickets[0]?.dependencies?.[0]?.blocking)).toBe("github:github.com:o/r:ticket:2");
     expect(tickets[1]?.order).toBe(2);
+    expect(
+      reconcileDependencyStatuses(
+        tickets,
+        {},
+        {
+          ready: "open",
+          blocked: "blocked",
+          managedStatuses: new Set(["open", "blocked"]),
+        },
+      ).transitions[0],
+    ).toMatchObject({ ticket: tickets[0]?.ref, expectedVersion: githubIssue(1).updated_at });
   });
 
   test("rejects cross-repository children and blockers at the v1 workspace boundary", async () => {

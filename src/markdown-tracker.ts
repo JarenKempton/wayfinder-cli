@@ -149,7 +149,17 @@ export class MarkdownTrackerAdapter implements TrackerAdapter {
   }
 
   async listTickets(): Promise<Ticket[]> {
-    return structuredClone((await this.read()).tickets);
+    const document = await this.read();
+    return structuredClone(
+      document.tickets.map((ticket) => ({
+        ...ticket,
+        metadata: {
+          ...ticket.metadata,
+          version: String(document.version),
+          versionSource: "markdown.document.version",
+        },
+      })),
+    );
   }
 
   async frontier(scope: FrontierScope = {}): Promise<Ticket[]> {

@@ -268,6 +268,7 @@ export class JiraTrackerAdapter implements FrontierTrackerAdapter {
       metadata: {
         nativeKey: issue.key,
         version: issue.fields.updated,
+        versionSource: "jira.fields.updated",
         rank,
         priorityName,
       },
