@@ -10,7 +10,6 @@ export interface FrontierScope {
 
 export interface FrontierOptions {
   availableStatuses: ReadonlySet<string>;
-  includeStaleClaims?: boolean;
 }
 
 export function evaluateFrontier(
@@ -145,7 +144,7 @@ function isInScope(ticket: Ticket, scope: FrontierScope): boolean {
   return true;
 }
 
-function requireKind(reference: string, expected: "group" | "map" | "ticket"): void {
+function requireKind(reference: string, expected: "workspace" | "group" | "map" | "ticket"): void {
   const actual = parseRef(reference).kind;
   if (actual !== expected) {
     throw new Error(`Expected ${expected} reference, received ${actual}: ${reference}`);
@@ -177,9 +176,24 @@ function normalizeScope(scope: FrontierScope): FrontierScope {
   return {
     ...(scope.workspace === undefined
       ? {}
-      : { workspace: parseRef(scope.workspace).raw as WorkspaceRef }),
-    ...(scope.group === undefined ? {} : { group: parseRef(scope.group).raw as GroupRef }),
-    ...(scope.map === undefined ? {} : { map: parseRef(scope.map).raw as MapRef }),
-    ...(scope.ticket === undefined ? {} : { ticket: parseRef(scope.ticket).raw as TicketRef }),
+      : { workspace: normalizeScopeRef(scope.workspace, "workspace") as WorkspaceRef }),
+    ...(scope.group === undefined
+      ? {}
+      : { group: normalizeScopeRef(scope.group, "group") as GroupRef }),
+    ...(scope.map === undefined ? {} : { map: normalizeScopeRef(scope.map, "map") as MapRef }),
+    ...(scope.ticket === undefined
+      ? {}
+      : { ticket: normalizeScopeRef(scope.ticket, "ticket") as TicketRef }),
   };
+}
+
+function normalizeScopeRef(
+  reference: string,
+  expected: "workspace" | "group" | "map" | "ticket",
+): string {
+  const parsed = parseRef(reference);
+  if (parsed.kind !== expected) {
+    throw new Error(`Expected ${expected} scope reference, received ${parsed.kind}: ${parsed.raw}`);
+  }
+  return parsed.raw;
 }

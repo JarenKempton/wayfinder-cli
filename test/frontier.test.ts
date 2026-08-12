@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { Ticket, TicketRef } from "../src/domain.ts";
 import {
   evaluateFrontier,
+  type FrontierScope,
   normalizeTrackerTickets,
   selectFrontierTicket,
 } from "../src/frontier.ts";
@@ -126,6 +127,20 @@ describe("frontier", () => {
     expect(evaluateFrontier([ticket], { map: ` ${ticket.map} ` as never }, options)).toEqual([
       ticket,
     ]);
+  });
+
+  test.each([
+    ["workspace", { workspace: "jira:x:W:map:M1" }],
+    ["group", { group: "jira:x:W:ticket:A" }],
+    ["map", { map: "jira:x:W" }],
+    ["ticket", { ticket: "jira:x:W:group:G1" }],
+  ] as const)("rejects the wrong qualified kind for %s scope", (kind, scope) => {
+    const ticket = base("jira:x:W:ticket:A", 0);
+    expect(() =>
+      evaluateFrontier([ticket], scope as FrontierScope, {
+        availableStatuses: new Set(["To Do"]),
+      }),
+    ).toThrow(`Expected ${kind} scope reference`);
   });
 
   test("noninteractive selection requires a policy", () => {
