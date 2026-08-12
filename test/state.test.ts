@@ -100,3 +100,42 @@ test("SQLite store additively migrates legacy run routing columns", () => {
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("SQLite store atomically records recovery-required run, step, and evidence", () => {
+  const directory = mkdtempSync(join(tmpdir(), "wayfinder-test-"));
+  const store = new StateStore(join(directory, "wayfinder.db"));
+  const now = new Date().toISOString();
+  const run: Run = {
+    ref: "wayfinder-run:recovery",
+    ticket: "jira:x:W:ticket:A" as Run["ticket"],
+    harness: "codex" as Run["harness"],
+    workspace: { path: "/tmp/work" },
+    capabilities: capabilities("process_launch"),
+    status: "planning",
+    createdAt: now,
+    updatedAt: now,
+  };
+  try {
+    store.saveRun(run);
+    const recoveryRun = { ...run, status: "recovery_required" as const };
+    const receipt = { state: "recovery_required", recoveryCommand: "wayfinder recover" };
+    const evidence = { tracker: "verification_required", session: "not_started" };
+
+    store.saveRecoveryRequired(recoveryRun, receipt, new Error("ambiguous"), evidence);
+
+    expect(store.run(run.ref).status).toBe("recovery_required");
+    expect(store.steps(run.ref)).toHaveLength(1);
+    expect(store.steps(run.ref)[0]).toMatchObject({
+      state: "recovery_required",
+      error_text: "ambiguous",
+    });
+    expect(store.recoveryEvidence(run.ref)).toHaveLength(1);
+    expect(store.recoveryEvidence(run.ref)[0]).toMatchObject({
+      outcome: "verification_required",
+      evidence_json: JSON.stringify(evidence),
+    });
+  } finally {
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

@@ -28,6 +28,8 @@ import { PickupCoordinator, PickupResultError } from "../src/pickup.ts";
 
 class FakeLedger implements Ledger {
   readonly steps: string[] = [];
+  recordStepError?: Error;
+  recordStepErrorState?: string;
   saveClaim(_claim: import("../src/domain.ts").Claim): void {}
   commitClaim(_claim: import("../src/domain.ts").Claim): void {
     this.steps.push("claimed");
@@ -42,6 +44,9 @@ class FakeLedger implements Ledger {
     this.steps.push(state);
   }
   recordStep(_run: RunRef, state: string): void {
+    if (state === this.recordStepErrorState && this.recordStepError) {
+      throw this.recordStepError;
+    }
     this.steps.push(state);
   }
   saveRecoveryRequired(run: Run): void {
@@ -323,6 +328,20 @@ describe("pickup coordinator", () => {
     const { coordinator: subject, tracker } = coordinator(new FakeTracker(), workspace);
     expect((await failure(subject)).receipt.state).toBe("compensated");
     expect(tracker.restoreCalls).toBe(1);
+  });
+
+  test("ledger failure while entering compensation does not strand the tracker claim", async () => {
+    const workspace = new FakeWorkspace();
+    workspace.prepareError = new Error("prepare failed");
+    const item = coordinator(new FakeTracker(), workspace);
+    item.ledger.recordStepErrorState = "compensating";
+    item.ledger.recordStepError = new Error("ledger unavailable");
+
+    const result = await failure(item.coordinator);
+
+    expect(item.tracker.restoreCalls).toBe(1);
+    expect(result.receipt.state).toBe("recovery_required");
+    expect(item.ledger.recoveryRun?.status).toBe("recovery_required");
   });
 
   test("restoration verification failure requires recovery", async () => {

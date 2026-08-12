@@ -212,8 +212,14 @@ export class PickupCoordinator {
   ): Promise<never> {
     receipt.ok = false;
     receipt.state = "compensating";
-    await this.#options.ledger.recordStep(receipt.run, "compensating", receipt, cause);
     const recoveryErrors: unknown[] = [];
+    try {
+      await this.#options.ledger.recordStep(receipt.run, "compensating", receipt, cause);
+    } catch (error) {
+      // A local persistence failure must never prevent best-effort reversal of
+      // remote side effects that may already have happened.
+      recoveryErrors.push(error);
+    }
     if (receipt.launch?.sessionId !== undefined || receipt.launch?.pid !== undefined) {
       try {
         await this.#options.harness.stop(receipt.launch);
@@ -246,11 +252,21 @@ export class PickupCoordinator {
     );
     run.status = "recovery_required";
     run.updatedAt = this.#options.clock.now().toISOString();
-    await this.#options.ledger.saveRecoveryRequired(run, receipt, combined, {
-      command: receipt.recoveryCommand,
-      tracker: "verification_required",
-      session: receipt.launch ? "verification_required" : "not_started",
-    });
+    try {
+      await this.#options.ledger.saveRecoveryRequired(run, receipt, combined, {
+        command: receipt.recoveryCommand,
+        tracker: "verification_required",
+        session: receipt.launch ? "verification_required" : "not_started",
+      });
+    } catch (error) {
+      throw new PickupResultError(
+        receipt,
+        new AggregateError(
+          [combined, error],
+          "Pickup requires recovery and its recovery ledger could not be persisted",
+        ),
+      );
+    }
     throw new PickupResultError(receipt, combined);
   }
 }
