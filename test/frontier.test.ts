@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type { Ticket, TicketRef } from "../src/domain.ts";
-import { evaluateFrontier, selectFrontierTicket } from "../src/frontier.ts";
+import {
+  evaluateFrontier,
+  type FrontierScope,
+  normalizeTrackerTickets,
+  selectFrontierTicket,
+} from "../src/frontier.ts";
 
 const ref = (value: string) => value as TicketRef;
 const base = (value: string, order: number): Ticket => ({
@@ -25,6 +30,33 @@ describe("frontier", () => {
     ).toEqual([c.ref, a.ref]);
   });
 
+  test("preserves tracker input order when order values tie", () => {
+    const z = base("jira:x:W:ticket:Z", 1);
+    const a = base("jira:x:W:ticket:A", 1);
+    expect(
+      evaluateFrontier([z, a], {}, { availableStatuses: new Set(["To Do"]) }).map(
+        (item) => item.ref,
+      ),
+    ).toEqual([z.ref, a.ref]);
+  });
+
+  test("honors qualified workspace, group, map, and ticket scopes", () => {
+    const a = {
+      ...base("jira:x:W:ticket:A", 0),
+      group: "jira:x:W:group:G1" as NonNullable<Ticket["group"]>,
+    };
+    const b = {
+      ...base("jira:x:W:ticket:B", 1),
+      map: "jira:x:W:map:M2" as Ticket["map"],
+      group: "jira:x:W:group:G2" as NonNullable<Ticket["group"]>,
+    };
+    const options = { availableStatuses: new Set(["To Do"]) };
+    expect(evaluateFrontier([a, b], { workspace: "jira:x:W" as never }, options)).toHaveLength(2);
+    expect(evaluateFrontier([a, b], { group: a.group }, options)).toEqual([a]);
+    expect(evaluateFrontier([a, b], { map: b.map }, options)).toEqual([b]);
+    expect(evaluateFrontier([a, b], { ticket: a.ref }, options)).toEqual([a]);
+  });
+
   test("closed blockers unblock and assignees exclude", () => {
     const a = { ...base("jira:x:W:ticket:A", 0), state: "closed" as const, status: "Done" };
     const b = base("jira:x:W:ticket:B", 1);
@@ -44,6 +76,71 @@ describe("frontier", () => {
     expect(() => evaluateFrontier([ticket], {}, { availableStatuses: new Set(["To Do"]) })).toThrow(
       "unknown blocker",
     );
+  });
+
+  test("normalization rejects partial dependency graphs before scope filtering", () => {
+    const assigned = {
+      ...base("jira:x:W:ticket:B", 0),
+      assignee: "human" as NonNullable<Ticket["assignee"]>,
+    };
+    assigned.dependencies = [
+      { blocking: ref("jira:x:W:ticket:A"), blocked: assigned.ref, kind: "blocks" },
+    ];
+    expect(() =>
+      evaluateFrontier(
+        [assigned],
+        { map: assigned.map },
+        { availableStatuses: new Set(["To Do"]) },
+      ),
+    ).toThrow("unknown blocker");
+  });
+
+  test("rejects cross-workspace and malformed tracker inputs", () => {
+    const a = base("jira:x:W:ticket:A", 0);
+    const other = {
+      ...base("jira:x:OTHER:ticket:B", 1),
+      map: "jira:x:OTHER:map:M2" as Ticket["map"],
+    };
+    expect(() => normalizeTrackerTickets([a, other])).toThrow("Cross-workspace frontier");
+
+    const malformed = base("jira:x:W:ticket:B", 1);
+    malformed.dependencies = [{ blocking: a.ref, blocked: a.ref, kind: "blocks" }];
+    expect(() => normalizeTrackerTickets([a, malformed])).toThrow("dependency owned by");
+
+    expect(() => normalizeTrackerTickets([a, { ...a }])).toThrow("Duplicate ticket");
+
+    expect(() => normalizeTrackerTickets([{ ...a, state: "Open" as never }])).toThrow(
+      "unsupported state",
+    );
+    expect(() => normalizeTrackerTickets([{ ...a, kind: "bug" as never }])).toThrow(
+      "unsupported kind",
+    );
+    expect(() => normalizeTrackerTickets([{ ...a, status: "" }])).toThrow("invalid status");
+  });
+
+  test("canonicalizes parseable scope references", () => {
+    const ticket = base("jira:x:W:ticket:A", 0);
+    const options = { availableStatuses: new Set(["To Do"]) };
+    expect(evaluateFrontier([ticket], { workspace: " jira:x:W " as never }, options)).toEqual([
+      ticket,
+    ]);
+    expect(evaluateFrontier([ticket], { map: ` ${ticket.map} ` as never }, options)).toEqual([
+      ticket,
+    ]);
+  });
+
+  test.each([
+    ["workspace", { workspace: "jira:x:W:map:M1" }],
+    ["group", { group: "jira:x:W:ticket:A" }],
+    ["map", { map: "jira:x:W" }],
+    ["ticket", { ticket: "jira:x:W:group:G1" }],
+  ] as const)("rejects the wrong qualified kind for %s scope", (kind, scope) => {
+    const ticket = base("jira:x:W:ticket:A", 0);
+    expect(() =>
+      evaluateFrontier([ticket], scope as FrontierScope, {
+        availableStatuses: new Set(["To Do"]),
+      }),
+    ).toThrow(`Expected ${kind} scope reference`);
   });
 
   test("noninteractive selection requires a policy", () => {

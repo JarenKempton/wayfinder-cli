@@ -9,6 +9,8 @@ export interface ParsedRef {
   raw: string;
 }
 
+export type WorkspaceEntityKind = "workspace" | "group" | "map" | "ticket";
+
 export function parseRef(input: string): ParsedRef {
   const raw = input.trim();
   if (raw.startsWith("wayfinder-run:")) {
@@ -42,6 +44,19 @@ export function parseRef(input: string): ParsedRef {
     throw new Error(`Unknown reference kind: ${JSON.stringify(kind)}`);
   }
   return { kind, adapter, instance, workspace, nativeId, raw };
+}
+
+/** Returns the qualified workspace boundary for a workspace-owned reference. */
+export function workspaceRefOf(input: string): string {
+  const parsed = parseRef(input);
+  if (!isWorkspaceEntity(parsed.kind)) {
+    throw new Error(`${input} is not owned by a workspace`);
+  }
+  return `${parsed.adapter}:${parsed.instance}:${parsed.workspace}`;
+}
+
+export function isWorkspaceEntity(kind: RefKind): kind is WorkspaceEntityKind {
+  return kind === "workspace" || kind === "group" || kind === "map" || kind === "ticket";
 }
 
 function terminalRef(raw: string, prefix: string, kind: "run" | "claim"): ParsedRef {
