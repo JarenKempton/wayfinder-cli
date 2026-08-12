@@ -15,18 +15,18 @@ import type {
   TicketRef,
   WorkspaceRef,
 } from "./domain.ts";
-import {
-  type DependencyStatusTransition,
-  evaluateFrontier,
-  type FrontierScope,
-  reconcileDependencyStatuses,
-} from "./frontier.ts";
+import { evaluateFrontier, type FrontierScope, reconcileDependencyStatuses } from "./frontier.ts";
 import { LifecycleCoordinator, Supervisor } from "./lifecycle.ts";
 import { databasePath } from "./paths.ts";
 import { ProcessLifecycleAdapter } from "./platform/process-lifecycle.ts";
 import { AdapterClient, PROTOCOL_VERSION } from "./protocol.ts";
 import { parseRef } from "./reference.ts";
 import { StateStore } from "./state.ts";
+import {
+  type StatusRepairOutcome,
+  type StatusRepairService,
+  verifyStatusRepairOutcomes,
+} from "./status-repair.ts";
 
 export const VERSION = "0.1.0-dev";
 
@@ -40,7 +40,7 @@ export interface RuntimeServices {
     run: Run,
     evidence: unknown,
   ): Promise<{ observation: RunObservation; claim: Claim }>;
-  repairStatuses?(transitions: readonly DependencyStatusTransition[]): Promise<void>;
+  statusRepair?: StatusRepairService;
 }
 
 export async function run(
@@ -148,15 +148,19 @@ async function reconcile(
   });
   const repair = flags.has("repair");
   const dryRun = flags.has("dry-run");
+  let repairOutcomes: StatusRepairOutcome[] | undefined;
   if (dryRun && !repair) throw new Error("reconcile statuses --dry-run requires --repair");
   if (repair && !dryRun) {
-    if (!services.repairStatuses) {
+    if (!services.statusRepair) {
       throw unavailableRuntime(
         "reconcile statuses --repair",
         "conditional status mutation and verification service",
       );
     }
-    await services.repairStatuses(result.transitions);
+    repairOutcomes = verifyStatusRepairOutcomes(
+      result.transitions,
+      await services.statusRepair.repair(result.transitions),
+    );
   }
   const receipt = {
     version: 1,
@@ -165,6 +169,7 @@ async function reconcile(
     dryRun,
     transitions: result.transitions,
     drift: result.drift,
+    ...(repairOutcomes ? { repairOutcomes } : {}),
     counts: { transitions: result.transitions.length, drift: result.drift.length },
   };
   if (flags.has("json")) return writeJson(write, receipt);

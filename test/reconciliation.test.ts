@@ -17,6 +17,7 @@ const ticket = (id: string, order: number, status = "To Do"): Ticket => ({
   state: "open",
   status,
   order,
+  metadata: { version: `v-${id}` },
 });
 
 describe("dependency status reconciliation", () => {
@@ -33,7 +34,13 @@ describe("dependency status reconciliation", () => {
     const result = reconcileDependencyStatuses(input, {}, policy);
 
     expect(result.transitions).toEqual([
-      { ticket: blocked.ref, from: "To Do", to: "Blocked", unresolvedBlockers: [blocker.ref] },
+      {
+        ticket: blocked.ref,
+        from: "To Do",
+        to: "Blocked",
+        expectedVersion: "v-B",
+        unresolvedBlockers: [blocker.ref],
+      },
     ]);
     expect(result.tickets.map((item) => item.status)).toEqual(["To Do", "Blocked", "Blocked"]);
     expect(input[1]?.status).toBe("To Do");
@@ -149,6 +156,63 @@ describe("closeout frontier handoff", () => {
         {},
         policy,
       ),
-    ).toThrow("same dependency graph");
+    ).toThrow("Closeout snapshot graph changed");
+  });
+
+  test.each([
+    ["changed edge", (item: Ticket) => ({ ...item, dependencies: [] })],
+    [
+      "changed map ownership",
+      (item: Ticket) => ({ ...item, map: "jira:x:W:map:OTHER" as Ticket["map"] }),
+    ],
+    [
+      "changed group ownership",
+      (item: Ticket) => ({ ...item, group: "jira:x:W:group:G" as NonNullable<Ticket["group"]> }),
+    ],
+    ["changed kind", (item: Ticket) => ({ ...item, kind: "research" as const })],
+    ["changed order", (item: Ticket) => ({ ...item, order: item.order + 1 })],
+    ["unrelated status", (item: Ticket) => ({ ...item, status: "To Do" })],
+    [
+      "unrelated tracker version",
+      (item: Ticket) => ({ ...item, metadata: { version: "changed" } }),
+    ],
+    [
+      "unrelated assignee",
+      (item: Ticket) => ({ ...item, assignee: "human" as NonNullable<Ticket["assignee"]> }),
+    ],
+  ])("rejects %s between closeout snapshots", (_label, change) => {
+    const closing = ticket("A", 0, "In Progress");
+    const dependent = ticket("B", 1, "Blocked");
+    dependent.dependencies = [{ blocking: closing.ref, blocked: dependent.ref, kind: "blocks" }];
+    expect(() =>
+      deriveCloseoutFrontierHandoff(
+        [closing, dependent],
+        [{ ...closing, state: "closed", status: "Done" }, change(dependent)],
+        closing.ref,
+        {},
+        policy,
+      ),
+    ).toThrow("Closeout snapshot");
+  });
+
+  test("rejects malformed and duplicate closeout graphs", () => {
+    const closing = ticket("A", 0, "In Progress");
+    const closed = { ...closing, state: "closed" as const, status: "Done" };
+    expect(() =>
+      deriveCloseoutFrontierHandoff([closing, closing], [closed], closing.ref, {}, policy),
+    ).toThrow("Duplicate ticket");
+    const malformed = ticket("B", 1);
+    malformed.dependencies = [
+      { blocking: ref("jira:x:W:ticket:Z"), blocked: malformed.ref, kind: "blocks" },
+    ];
+    expect(() =>
+      deriveCloseoutFrontierHandoff(
+        [closing, malformed],
+        [closed, malformed],
+        closing.ref,
+        {},
+        policy,
+      ),
+    ).toThrow("unknown blocker");
   });
 });

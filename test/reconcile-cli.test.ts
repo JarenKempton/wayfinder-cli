@@ -17,11 +17,13 @@ function fixture(): string {
     state: "open",
     status: "To Do",
     order: 0,
+    metadata: { version: "v-A" },
   };
   const blocked: Ticket = {
     ...blocker,
     ref: "jira:x:W:ticket:B" as Ticket["ref"],
     order: 1,
+    metadata: { version: "v-B" },
     dependencies: [
       {
         blocking: blocker.ref,
@@ -83,8 +85,11 @@ describe("reconcile statuses CLI", () => {
       ["reconcile", "statuses", scope, "--input", fixture(), "--repair", "--dry-run", "--json"],
       output.push.bind(output),
       {
-        repairStatuses: async () => {
-          calls += 1;
+        statusRepair: {
+          repair: async () => {
+            calls += 1;
+            return [];
+          },
         },
       },
     );
@@ -97,12 +102,53 @@ describe("reconcile statuses CLI", () => {
 
   test("repair delegates the exact conditional transition plan", async () => {
     const repaired: unknown[] = [];
+    const output: string[] = [];
     await run(
       ["reconcile", "statuses", scope, "--input", fixture(), "--repair", "--json"],
-      () => undefined,
-      { repairStatuses: async (transitions) => void repaired.push(...transitions) },
+      output.push.bind(output),
+      {
+        statusRepair: {
+          repair: async (transitions) => {
+            repaired.push(...transitions);
+            return transitions.map((item) => ({
+              ticket: item.ticket,
+              expectedVersion: item.expectedVersion,
+              outcome: "verified" as const,
+              observedStatus: item.to,
+              observedVersion: `${item.expectedVersion}:next`,
+              evidence: { verified: true },
+            }));
+          },
+        },
+      },
     );
     expect(repaired).toHaveLength(1);
+    expect(JSON.parse(output[0] ?? "null")).toMatchObject({
+      action: "statuses_repaired",
+      repairOutcomes: [{ outcome: "verified", observedStatus: "Blocked" }],
+    });
+  });
+
+  test("does not report repaired when an outcome is ambiguous", async () => {
+    const output: string[] = [];
+    await expect(
+      run(
+        ["reconcile", "statuses", scope, "--input", fixture(), "--repair", "--json"],
+        output.push.bind(output),
+        {
+          statusRepair: {
+            repair: async (transitions) =>
+              transitions.map((item) => ({
+                ticket: item.ticket,
+                expectedVersion: item.expectedVersion,
+                outcome: "ambiguous" as const,
+                evidence: { response: "lost" },
+              })),
+          },
+        },
+      ),
+    ).rejects.toThrow("not verified");
+    expect(output).toEqual([]);
   });
 
   test("requires and validates the positional qualified scope", async () => {

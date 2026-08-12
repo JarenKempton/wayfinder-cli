@@ -25,10 +25,11 @@ export interface DependencyStatusTransition {
   ticket: TicketRef;
   from: string;
   to: string;
+  expectedVersion: string;
   unresolvedBlockers: TicketRef[];
 }
 
-export interface DependencyStatusDrift extends DependencyStatusTransition {
+export interface DependencyStatusDrift extends Omit<DependencyStatusTransition, "expectedVersion"> {
   reasons: ("assigned" | "protected_status")[];
 }
 
@@ -108,14 +109,19 @@ export function reconcileDependencyStatuses(
     if (status === ticket.status) return ticket;
     const protectedStatus = policy.protectedStatuses?.has(ticket.status) ?? false;
     if (!policy.managedStatuses.has(ticket.status) && !protectedStatus) return ticket;
-    const transition = { ticket: ticket.ref, from: ticket.status, to: status, unresolvedBlockers };
+    const candidate = { ticket: ticket.ref, from: ticket.status, to: status, unresolvedBlockers };
     const reasons: DependencyStatusDrift["reasons"] = [];
     if (ticket.assignee !== undefined) reasons.push("assigned");
     if (protectedStatus) reasons.push("protected_status");
     if (reasons.length > 0) {
-      drift.push({ ...transition, reasons });
+      drift.push({ ...candidate, reasons });
       return ticket;
     }
+    const expectedVersion = ticket.metadata?.version;
+    if (typeof expectedVersion !== "string" || expectedVersion.length === 0) {
+      throw new Error(`Ticket ${ticket.ref} lacks a tracker version guard for status repair`);
+    }
+    const transition = { ...candidate, expectedVersion };
     transitions.push(transition);
     return { ...ticket, status };
   });
@@ -133,22 +139,17 @@ export function deriveCloseoutFrontierHandoff(
   scope: FrontierScope,
   policy: DependencyStatusPolicy,
 ): CloseoutFrontierHandoff {
-  const prior = reconcileDependencyStatuses(before, scope, policy);
-  const next = reconcileDependencyStatuses(after, scope, policy);
+  const normalizedBefore = normalizeTrackerTickets(before).tickets;
+  const normalizedAfter = normalizeTrackerTickets(after).tickets;
+  validateCloseoutSnapshots(normalizedBefore, normalizedAfter, closedTicket);
+  const prior = reconcileDependencyStatuses(normalizedBefore, scope, policy);
+  const next = reconcileDependencyStatuses(normalizedAfter, scope, policy);
   const beforeByRef = new Map(prior.tickets.map((ticket) => [ticket.ref, ticket]));
   const closedBefore = beforeByRef.get(closedTicket);
   const closedAfter = next.tickets.find((ticket) => ticket.ref === closedTicket);
   if (!closedBefore || !closedAfter) throw new Error(`Closeout ticket is absent: ${closedTicket}`);
   if (closedBefore.state !== "open" || closedAfter.state !== "closed") {
     throw new Error(`Closeout transition is not verified: ${closedTicket}`);
-  }
-  const beforeRefs = new Set(prior.tickets.map((ticket) => ticket.ref));
-  const afterRefs = new Set(next.tickets.map((ticket) => ticket.ref));
-  if (
-    beforeRefs.size !== afterRefs.size ||
-    [...beforeRefs].some((ticket) => !afterRefs.has(ticket))
-  ) {
-    throw new Error("Closeout snapshots do not describe the same dependency graph");
   }
   const frontierOptions = { availableStatuses: new Set([policy.ready]) };
   const priorFrontier = new Set(
@@ -160,6 +161,54 @@ export function deriveCloseoutFrontierHandoff(
     frontier,
     newlyEligible: frontier.filter((ticket) => !priorFrontier.has(ticket.ref)),
   };
+}
+
+function validateCloseoutSnapshots(
+  before: readonly Ticket[],
+  after: readonly Ticket[],
+  closing: TicketRef,
+): void {
+  const afterByRef = new Map(after.map((ticket) => [ticket.ref, ticket]));
+  if (before.length !== after.length) throw new Error("Closeout snapshot graph changed");
+  for (const prior of before) {
+    const next = afterByRef.get(prior.ref);
+    if (!next) throw new Error(`Closeout snapshot ticket changed: ${prior.ref}`);
+    if (stableTicketShape(prior) !== stableTicketShape(next)) {
+      throw new Error(`Closeout snapshot graph changed for ${prior.ref}`);
+    }
+    if (prior.ref === closing) {
+      if (prior.state !== "open" || next.state !== "closed") {
+        throw new Error(`Closeout transition is not verified: ${closing}`);
+      }
+      continue;
+    }
+    if (
+      prior.state !== next.state ||
+      prior.status !== next.status ||
+      prior.assignee !== next.assignee ||
+      prior.metadata?.version !== next.metadata?.version
+    ) {
+      throw new Error(`Closeout snapshot eligibility changed for ${prior.ref}`);
+    }
+  }
+}
+
+function stableTicketShape(ticket: Ticket): string {
+  return JSON.stringify({
+    ref: ticket.ref,
+    map: ticket.map,
+    group: ticket.group ?? null,
+    kind: ticket.kind,
+    order: ticket.order,
+    priority: ticket.priority ?? null,
+    dependencies: (ticket.dependencies ?? [])
+      .map(({ blocking, blocked, kind }) => ({ blocking, blocked, kind }))
+      .toSorted((left, right) =>
+        `${left.blocking}\0${left.blocked}\0${left.kind}`.localeCompare(
+          `${right.blocking}\0${right.blocked}\0${right.kind}`,
+        ),
+      ),
+  });
 }
 
 export interface NormalizedTrackerTickets {
