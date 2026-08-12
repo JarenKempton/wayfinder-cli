@@ -60,6 +60,47 @@ function fixture() {
 }
 
 describe("generic command harness", () => {
+  test("registry distinguishes bundled support from configured launch availability", () => {
+    const platform = new FakePlatform();
+    expect(builtInAdapters(platform).find((adapter) => adapter.name === "command")).toEqual({
+      name: "command",
+      kind: "harness",
+      bundled: true,
+      available: false,
+      capabilities: {},
+    });
+
+    const configuration = {
+      command: { argv: ["custom-agent", "--model", "{model}", "{prompt}"] },
+    } as const;
+    expect(
+      builtInAdapters(platform, configuration).find((adapter) => adapter.name === "command"),
+    ).toEqual({
+      name: "command",
+      kind: "harness",
+      bundled: true,
+      available: false,
+      executable: "custom-agent",
+      capabilities: { prompt_generation: true },
+    });
+
+    platform.found.add("custom-agent");
+    expect(
+      builtInAdapters(platform, configuration).find((adapter) => adapter.name === "command"),
+    ).toEqual({
+      name: "command",
+      kind: "harness",
+      bundled: true,
+      available: true,
+      executable: "custom-agent",
+      capabilities: {
+        prompt_generation: true,
+        process_launch: true,
+        model_selection: true,
+      },
+    });
+  });
+
   test("advertises only detected and explicitly templated capabilities", async () => {
     const platform = new FakePlatform();
     const adapter = new CommandHarnessAdapter({

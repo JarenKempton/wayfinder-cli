@@ -57,7 +57,19 @@ export interface AdapterClientOptions {
   timeoutMs?: number;
   maxMessageSize?: number;
   environment?: Record<string, string>;
+  deadlineScheduler?: AdapterDeadlineScheduler;
 }
+
+export interface AdapterDeadlineScheduler {
+  schedule(callback: () => void, delayMs: number): () => void;
+}
+
+const systemDeadlineScheduler: AdapterDeadlineScheduler = {
+  schedule(callback, delayMs) {
+    const timer = setTimeout(callback, delayMs);
+    return () => clearTimeout(timer);
+  },
+};
 
 export interface AdapterCallOptions {
   signal?: AbortSignal;
@@ -68,6 +80,7 @@ export class AdapterClient {
   readonly #timeoutMs: number;
   readonly #maxMessageSize: number;
   readonly #environment: Record<string, string>;
+  readonly #deadlineScheduler: AdapterDeadlineScheduler;
 
   constructor(command: string | readonly string[], options: AdapterClientOptions = {}) {
     const normalized = typeof command === "string" ? [command] : [...command];
@@ -78,6 +91,7 @@ export class AdapterClient {
     this.#timeoutMs = options.timeoutMs ?? 15_000;
     this.#maxMessageSize = options.maxMessageSize ?? DEFAULT_MAX_MESSAGE_SIZE;
     this.#environment = options.environment ?? {};
+    this.#deadlineScheduler = options.deadlineScheduler ?? systemDeadlineScheduler;
   }
 
   async initialize(
@@ -126,7 +140,7 @@ export class AdapterClient {
       failure = next;
       child.kill();
     };
-    const timer = setTimeout(
+    const cancelDeadline = this.#deadlineScheduler.schedule(
       () => stop(new AdapterProtocolError("timeout", `Adapter call exceeded ${this.#timeoutMs}ms`)),
       this.#timeoutMs,
     );
@@ -184,7 +198,7 @@ export class AdapterClient {
       }
       return response.result as T;
     } finally {
-      clearTimeout(timer);
+      cancelDeadline();
       options.signal?.removeEventListener("abort", onAbort);
     }
   }

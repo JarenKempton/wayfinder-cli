@@ -191,3 +191,26 @@ export function namedHarnessAvailable(
   const supported = !profile.platforms || profile.platforms.includes(platform.platform);
   return supported && platform.which(profile.argv[0] as string) !== null;
 }
+
+export function commandHarnessCapabilities(
+  argv: readonly CommandToken[] | undefined,
+  platform: Pick<HarnessPlatform, "which">,
+): CapabilitySet {
+  if (!argv?.[0]) return capabilities();
+  const prepare = argv.includes("{prompt}") ? (["prompt_generation"] as const) : [];
+  if (!platform.which(argv[0])) return capabilities(...prepare);
+  return capabilities(
+    ...prepare,
+    "process_launch",
+    ...(argv.includes("{model}") ? (["model_selection"] as const) : []),
+    ...(argv.includes("{effort}") ? (["reasoning_selection"] as const) : []),
+    ...(argv.includes("{context}") ? (["context_selection"] as const) : []),
+  );
+}
+
+export function commandHarnessAvailable(
+  argv: readonly CommandToken[] | undefined,
+  platform: Pick<HarnessPlatform, "which">,
+): boolean {
+  return Boolean(argv?.[0] && platform.which(argv[0]));
+}

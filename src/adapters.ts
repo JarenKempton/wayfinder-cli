@@ -1,5 +1,8 @@
 import { type CapabilitySet, capabilities } from "./domain.ts";
 import {
+  type CommandToken,
+  commandHarnessAvailable,
+  commandHarnessCapabilities,
   type NamedHarnessName,
   namedHarnessAvailable,
   namedHarnessCapabilities,
@@ -23,12 +26,15 @@ const harnessExecutables = {
   codex: namedHarnessExecutable("codex"),
   cursor: namedHarnessExecutable("cursor"),
   opencode: namedHarnessExecutable("opencode"),
-  command: undefined,
 };
 
 export interface AdapterDiscoveryPlatform {
   which(executable: string): string | null;
   platform: NodeJS.Platform;
+}
+
+export interface AdapterRegistryConfiguration {
+  command?: { argv: readonly CommandToken[] };
 }
 
 const bunDiscoveryPlatform: AdapterDiscoveryPlatform = {
@@ -38,6 +44,7 @@ const bunDiscoveryPlatform: AdapterDiscoveryPlatform = {
 
 export function builtInAdapters(
   platform: AdapterDiscoveryPlatform = bunDiscoveryPlatform,
+  configuration: AdapterRegistryConfiguration = {},
 ): AdapterDescriptor[] {
   const trackers = ["jira", "linear", "github", "markdown"].map<AdapterDescriptor>((name) => ({
     name,
@@ -47,25 +54,31 @@ export function builtInAdapters(
     capabilities: {},
   }));
 
-  const commandHarnesses = Object.entries(harnessExecutables).map<AdapterDescriptor>(
+  const namedCommandHarnesses = Object.entries(harnessExecutables).map<AdapterDescriptor>(
     ([name, executable]) => {
-      const available =
-        name === "command" ? true : namedHarnessAvailable(name as NamedHarnessName, platform);
+      const available = namedHarnessAvailable(name as NamedHarnessName, platform);
       return {
         name,
         kind: "harness",
         bundled: true,
         available,
         ...(executable ? { executable } : {}),
-        capabilities:
-          name === "command"
-            ? capabilities()
-            : namedHarnessCapabilities(name as NamedHarnessName, platform),
+        capabilities: namedHarnessCapabilities(name as NamedHarnessName, platform),
       };
     },
   );
+  const commandArgv = configuration.command?.argv;
+  const commandExecutable = commandArgv?.[0];
   const harnesses: AdapterDescriptor[] = [
-    ...commandHarnesses,
+    ...namedCommandHarnesses,
+    {
+      name: "command",
+      kind: "harness",
+      bundled: true,
+      available: commandHarnessAvailable(commandArgv, platform),
+      ...(commandExecutable ? { executable: commandExecutable } : {}),
+      capabilities: commandHarnessCapabilities(commandArgv, platform),
+    },
     {
       name: "t3",
       kind: "harness",
