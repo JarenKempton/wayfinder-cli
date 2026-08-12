@@ -1,4 +1,5 @@
 import { type CapabilitySet, capabilities } from "./domain.ts";
+import { namedHarnessCapabilities, namedHarnessExecutable } from "./harness-adapters.ts";
 
 export type AdapterKind = "tracker" | "harness" | "workspace" | "environment";
 
@@ -11,13 +12,13 @@ export interface AdapterDescriptor {
   capabilities: CapabilitySet;
 }
 
-const harnessExecutables: Record<string, string | undefined> = {
-  t3: undefined,
-  pi: "pi",
-  claude: "claude",
-  codex: "codex",
-  cursor: "cursor",
-  opencode: "opencode",
+const harnessExecutables = {
+  t3: namedHarnessExecutable("t3"),
+  pi: namedHarnessExecutable("pi"),
+  claude: namedHarnessExecutable("claude"),
+  codex: namedHarnessExecutable("codex"),
+  cursor: namedHarnessExecutable("cursor"),
+  opencode: namedHarnessExecutable("opencode"),
   command: undefined,
 };
 
@@ -39,9 +40,10 @@ export function builtInAdapters(): AdapterDescriptor[] {
         bundled: true,
         available,
         ...(executable ? { executable } : {}),
-        capabilities: available
-          ? capabilities("prompt_generation", "process_launch")
-          : capabilities("prompt_generation"),
+        capabilities:
+          name === "command"
+            ? capabilities()
+            : namedHarnessCapabilities(name as Exclude<keyof typeof harnessExecutables, "command">),
       };
     },
   );
