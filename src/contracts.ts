@@ -35,6 +35,8 @@ export interface RenewLeaseRequest {
 export interface ReleaseClaimRequest {
   claim: ClaimRef;
   ticket: TicketRef;
+  /** Persisted owner installed by the claim; required by guarded release implementations. */
+  claimedOwner?: ActorRef;
   originalSnapshot: TrackerSnapshot;
   expectedVersion: string;
   authorizedBy: ActorRef;
@@ -55,6 +57,8 @@ export interface ReclaimRequest {
 export interface RestoreClaimRequest {
   ticket: TicketRef;
   claim: ClaimRef;
+  /** Persisted owner installed by the claim; required for restart-safe restoration. */
+  claimedOwner?: ActorRef;
   originalSnapshot: TrackerSnapshot;
 }
 
@@ -91,6 +95,11 @@ export interface TrackerAdapter {
   verifyReleased(request: ReleaseClaimRequest): Promise<void>;
   reclaim(request: ReclaimRequest): Promise<void>;
   verifyReclaimed(request: ReclaimRequest): Promise<void>;
+}
+
+/** Optional read surface implemented by adapters that can hydrate a complete map frontier. */
+export interface FrontierTrackerAdapter extends TrackerAdapter {
+  listMapTickets(map: import("./domain.ts").MapRef): Promise<Ticket[]>;
 }
 
 export interface WorkspacePlan {

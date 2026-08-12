@@ -51,7 +51,7 @@ renamed or repurposed within the major version.
 | Boundary | Capabilities |
 | --- | --- |
 | Tracker structure | `native_maps`, `native_groups`, `native_dependencies`, `cross_map_dependencies`, `native_properties` |
-| Tracker mutation | `atomic_assignment`, `workflow_transition`, `conditional_update`, `claim_comments`, `lease_metadata`, `resolution_comments`, `artifact_links` |
+| Tracker mutation | `atomic_assignment`, `workflow_transition`, `conditional_update`, `claim_comments`, `claim_identity`, `lease_metadata`, `resolution_comments`, `artifact_links` |
 | Harness preparation and launch | `prompt_generation`, `workspace_open`, `process_launch`, `session_create` |
 | Harness lifecycle | `session_resume`, `session_status`, `session_interrupt`, `session_close` |
 | Harness controls | `model_selection`, `reasoning_selection`, `tool_configuration`, `visible_multi_session` |

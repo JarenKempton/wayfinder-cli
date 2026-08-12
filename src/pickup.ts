@@ -15,8 +15,17 @@ import {
   type PreparedWorkspace,
   type Run,
   type RunRef,
+  requireCapabilities,
 } from "./domain.ts";
 import { validateExecutionRoute } from "./routing.ts";
+
+const MUTATING_PICKUP_TRACKER_CAPABILITIES = capabilities(
+  "atomic_assignment",
+  "conditional_update",
+  "claim_comments",
+  "claim_identity",
+  "lease_metadata",
+);
 
 export type PickupState =
   | "planning"
@@ -99,7 +108,8 @@ export class PickupCoordinator {
     if (ticket.state !== "open" || ticket.assignee !== undefined) {
       throw new Error("Ticket is not claimable");
     }
-    await this.#options.tracker.describe();
+    const trackerCapabilities = await this.#options.tracker.describe();
+    requireCapabilities(trackerCapabilities, MUTATING_PICKUP_TRACKER_CAPABILITIES);
     await this.#options.tracker.preflight(request.ticket);
     await this.#options.workspace.preflight(ticket);
     const plan = await this.#options.workspace.plan(ticket);
@@ -136,7 +146,7 @@ export class PickupCoordinator {
           await this.#options.ledger.recordStep(runRef, "collision", receipt, error);
           throw new PickupResultError(receipt, error);
         }
-        return this.#compensate(run, receipt, snapshot, error);
+        return this.#compensate(run, receipt, snapshot, request.owner, error);
       }
       await this.#options.tracker.verifyClaim(claimRequest);
       const verifiedSnapshot = await this.#options.tracker.snapshotClaimState(request.ticket);
@@ -189,7 +199,7 @@ export class PickupCoordinator {
       if (error instanceof HarnessLaunchError && error.receipt) {
         receipt.launch = error.receipt;
       }
-      return this.#compensate(run, receipt, snapshot, error);
+      return this.#compensate(run, receipt, snapshot, request.owner, error);
     }
   }
 
@@ -197,6 +207,7 @@ export class PickupCoordinator {
     run: Run,
     receipt: PickupReceipt,
     snapshot: Awaited<ReturnType<TrackerAdapter["snapshotClaimState"]>>,
+    claimedOwner: PickupRequest["owner"],
     cause: unknown,
   ): Promise<never> {
     receipt.ok = false;
@@ -213,6 +224,7 @@ export class PickupCoordinator {
     const restoreRequest = {
       ticket: receipt.ticket,
       claim: receipt.claim,
+      claimedOwner,
       originalSnapshot: snapshot,
     };
     try {

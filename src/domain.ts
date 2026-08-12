@@ -19,6 +19,7 @@ export const CAPABILITIES = [
   "conditional_update",
   "native_properties",
   "claim_comments",
+  "claim_identity",
   "lease_metadata",
   "resolution_comments",
   "artifact_links",

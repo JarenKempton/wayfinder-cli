@@ -15,9 +15,31 @@ stays in the MCP/skill layer and what belongs to this CLI runtime.
 Wayfinder CLI is a TypeScript/Bun pre-release. This repository currently defines and implements the stable
 foundation: qualified references, portable ticket and capability types, frontier
 evaluation, adapter protocol discovery, layered execution routing, SQLite run,
-claim, lease, observation, and recovery state, and the lifecycle CLI. Hosted tracker mutations and product-specific
-session lifecycle adapters must pass their conformance suites before being
-advertised as supported.
+claim, lease, observation, and recovery state, and the lifecycle CLI. Bundled
+Linear and GitHub Issues adapters normalize
+native map children and blockers and exhaust provider pagination. Their hosted
+assignment APIs do not satisfy mutating pickup's capability gate, so they remain
+read-only in pickup coordination. Product-specific session lifecycle adapters
+must pass their conformance suites before being advertised as supported.
+
+## Tracker credentials
+
+The Linear adapter accepts a scoped API token and the GitHub adapter accepts a
+token with repository Issues access. Tokens are passed in request headers and
+are never placed in process arguments or logs. The registry leaves both adapters
+unavailable until credential validation and CLI composition are proven; merely
+setting an environment variable does not advertise a usable adapter.
+
+Both adapters intentionally omit `conditional_update`, `atomic_assignment`, and
+`lease_metadata` from their advertised capabilities. Their public assignment APIs
+do not provide a verified compare-and-swap, durable claim identity, or native
+expiring lease. Mutating pickup requires all of those capabilities and fails
+before snapshot or mutation when they are absent. Direct compensation helpers
+retain the persisted claimed-owner guard and never overwrite a concurrent owner.
+
+The GitHub adapter uses the documented REST API version `2026-03-10`, pins
+authenticated pagination to the configured API origin, and rejects
+cross-repository sub-issues or blockers at the v1 workspace boundary.
 
 ## Develop from source
 
