@@ -1,4 +1,9 @@
-import { AdapterClient, AdapterProtocolError, type AdapterProtocolErrorCode } from "./protocol.ts";
+import {
+  AdapterClient,
+  type AdapterDeadlineScheduler,
+  AdapterProtocolError,
+  type AdapterProtocolErrorCode,
+} from "./protocol.ts";
 
 export interface ConformanceCheck {
   name: string;
@@ -48,9 +53,7 @@ export async function runAdapterConformance(
       },
       -32601,
     ),
-    await expectFailure("deadline terminates subprocess", "timeout", async () => {
-      await client(executable, "hang", { timeoutMs: 30 }).call("conformance.probe");
-    }),
+    await deterministicTimeoutCheck(executable),
     await expectFailure("message limit terminates subprocess", "message_too_large", async () => {
       await client(executable, "oversized", { maxMessageSize: 256 }).call("conformance.probe");
     }),
@@ -59,15 +62,7 @@ export async function runAdapterConformance(
     }),
   );
 
-  const controller = new AbortController();
-  setTimeout(() => controller.abort(), 20);
-  checks.push(
-    await expectFailure("cancellation terminates subprocess", "cancelled", async () => {
-      await client(executable, "hang", { timeoutMs: 1_000 }).call("conformance.probe", undefined, {
-        signal: controller.signal,
-      });
-    }),
-  );
+  checks.push(await deterministicCancellationCheck(executable));
 
   const credential = await client(executable, "credential", {
     environment: { WAYFINDER_CREDENTIAL_HANDLE: CREDENTIAL_HANDLE },
@@ -99,12 +94,62 @@ function client(
     timeoutMs?: number;
     maxMessageSize?: number;
     environment?: Record<string, string>;
+    deadlineScheduler?: AdapterDeadlineScheduler;
   } = {},
 ) {
   const command = executable.endsWith(".ts") ? [process.execPath, executable] : executable;
   return new AdapterClient(command, {
     ...options,
     environment: { ...options.environment, WAYFINDER_CONFORMANCE_SCENARIO: scenario },
+  });
+}
+
+class ManualDeadlineScheduler implements AdapterDeadlineScheduler {
+  callback?: () => void;
+  delayMs?: number;
+  cancelled = false;
+
+  schedule(callback: () => void, delayMs: number): () => void {
+    this.callback = callback;
+    this.delayMs = delayMs;
+    return () => {
+      this.cancelled = true;
+    };
+  }
+
+  expire(): void {
+    if (!this.callback) throw new Error("Adapter deadline was not scheduled");
+    this.callback();
+  }
+}
+
+async function deterministicTimeoutCheck(executable: string): Promise<ConformanceCheck> {
+  const scheduler = new ManualDeadlineScheduler();
+  const operation = client(executable, "hang", {
+    timeoutMs: 30,
+    deadlineScheduler: scheduler,
+  }).call("conformance.probe");
+  scheduler.expire();
+  const check = await expectFailure("deadline terminates subprocess", "timeout", async () => {
+    await operation;
+  });
+  return {
+    ...check,
+    ok: check.ok && scheduler.delayMs === 30 && scheduler.cancelled,
+    evidence: check.ok
+      ? `observed timeout through the scheduled ${scheduler.delayMs}ms deadline`
+      : check.evidence,
+  };
+}
+
+async function deterministicCancellationCheck(executable: string): Promise<ConformanceCheck> {
+  const controller = new AbortController();
+  const operation = client(executable, "hang").call("conformance.probe", undefined, {
+    signal: controller.signal,
+  });
+  controller.abort();
+  return expectFailure("cancellation terminates subprocess", "cancelled", async () => {
+    await operation;
   });
 }
 

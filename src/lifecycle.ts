@@ -18,9 +18,21 @@ export interface SupervisorOptions {
   supervisorId?: string;
   supervisorLockMs?: number;
   lockClock?: () => Date;
+  heartbeatScheduler?: SupervisorHeartbeatScheduler;
   /** Test/crash injection after remote verification and before the local transaction. */
   afterRenewVerified?: (run: Run) => void;
 }
+
+export interface SupervisorHeartbeatScheduler {
+  start(callback: () => void, intervalMs: number): () => void;
+}
+
+const systemHeartbeatScheduler: SupervisorHeartbeatScheduler = {
+  start(callback, intervalMs) {
+    const heartbeat = setInterval(callback, intervalMs);
+    return () => clearInterval(heartbeat);
+  },
+};
 
 export class Supervisor {
   readonly #instanceId: string;
@@ -56,7 +68,7 @@ export class Supervisor {
         throw new Error("Supervisor lease ownership was lost");
       }
     };
-    const heartbeat = setInterval(
+    const stopHeartbeat = (this.options.heartbeatScheduler ?? systemHeartbeatScheduler).start(
       () => {
         try {
           renewLock();
@@ -80,7 +92,7 @@ export class Supervisor {
       }
       return results;
     } finally {
-      clearInterval(heartbeat);
+      stopHeartbeat();
       this.options.store.releaseSupervisor(owner);
     }
   }

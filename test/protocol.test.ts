@@ -14,6 +14,17 @@ test("subprocess adapter protocol passes the safety conformance suite", async ()
   expect(report.ok).toBe(true);
   expect(report.checks).toHaveLength(9);
   expect(report.checks.every((check) => check.ok)).toBe(true);
+  expect(report.checks.find((check) => check.name === "deadline terminates subprocess")).toEqual({
+    name: "deadline terminates subprocess",
+    ok: true,
+    evidence: "observed timeout through the scheduled 30ms deadline",
+  });
+  expect(
+    report.checks.find((check) => check.name === "cancellation terminates subprocess"),
+  ).toMatchObject({ ok: true, evidence: "observed cancelled" });
+  expect(
+    report.checks.find((check) => check.name === "message limit terminates subprocess"),
+  ).toMatchObject({ ok: true, evidence: "observed message_too_large" });
 });
 
 test("adapter test remains a non-destructive initialization smoke test", async () => {

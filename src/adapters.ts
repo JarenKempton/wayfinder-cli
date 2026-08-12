@@ -1,4 +1,13 @@
 import { type CapabilitySet, capabilities } from "./domain.ts";
+import {
+  type CommandToken,
+  commandHarnessAvailable,
+  commandHarnessCapabilities,
+  type NamedHarnessName,
+  namedHarnessAvailable,
+  namedHarnessCapabilities,
+  namedHarnessExecutable,
+} from "./harness-adapters.ts";
 
 export type AdapterKind = "tracker" | "harness" | "workspace" | "environment";
 
@@ -11,17 +20,32 @@ export interface AdapterDescriptor {
   capabilities: CapabilitySet;
 }
 
-const harnessExecutables: Record<string, string | undefined> = {
-  t3: undefined,
-  pi: "pi",
-  claude: "claude",
-  codex: "codex",
-  cursor: "cursor",
-  opencode: "opencode",
-  command: undefined,
+const harnessExecutables = {
+  pi: namedHarnessExecutable("pi"),
+  claude: namedHarnessExecutable("claude"),
+  codex: namedHarnessExecutable("codex"),
+  cursor: namedHarnessExecutable("cursor"),
+  opencode: namedHarnessExecutable("opencode"),
 };
 
-export function builtInAdapters(): AdapterDescriptor[] {
+export interface AdapterDiscoveryPlatform {
+  which(executable: string): string | null;
+  platform: NodeJS.Platform;
+}
+
+export interface AdapterRegistryConfiguration {
+  command?: { argv: readonly CommandToken[] };
+}
+
+const bunDiscoveryPlatform: AdapterDiscoveryPlatform = {
+  which: Bun.which,
+  platform: process.platform,
+};
+
+export function builtInAdapters(
+  platform: AdapterDiscoveryPlatform = bunDiscoveryPlatform,
+  configuration: AdapterRegistryConfiguration = {},
+): AdapterDescriptor[] {
   const trackers = ["jira", "linear", "github", "markdown"].map<AdapterDescriptor>((name) => ({
     name,
     kind: "tracker",
@@ -30,21 +54,39 @@ export function builtInAdapters(): AdapterDescriptor[] {
     capabilities: {},
   }));
 
-  const harnesses = Object.entries(harnessExecutables).map<AdapterDescriptor>(
+  const namedCommandHarnesses = Object.entries(harnessExecutables).map<AdapterDescriptor>(
     ([name, executable]) => {
-      const available = name === "command" || (executable ? Bun.which(executable) !== null : false);
+      const available = namedHarnessAvailable(name as NamedHarnessName, platform);
       return {
         name,
         kind: "harness",
         bundled: true,
         available,
         ...(executable ? { executable } : {}),
-        capabilities: available
-          ? capabilities("prompt_generation", "process_launch")
-          : capabilities("prompt_generation"),
+        capabilities: namedHarnessCapabilities(name as NamedHarnessName, platform),
       };
     },
   );
+  const commandArgv = configuration.command?.argv;
+  const commandExecutable = commandArgv?.[0];
+  const harnesses: AdapterDescriptor[] = [
+    ...namedCommandHarnesses,
+    {
+      name: "command",
+      kind: "harness",
+      bundled: true,
+      available: commandHarnessAvailable(commandArgv, platform),
+      ...(commandExecutable ? { executable: commandExecutable } : {}),
+      capabilities: commandHarnessCapabilities(commandArgv, platform),
+    },
+    {
+      name: "t3",
+      kind: "harness",
+      bundled: false,
+      available: false,
+      capabilities: capabilities(),
+    },
+  ];
 
   return [
     ...trackers,
