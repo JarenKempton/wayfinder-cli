@@ -26,9 +26,12 @@ import {
   evaluateStatusRepairBatch,
   type StatusRepairDisposition,
   type StatusRepairOutcome,
+  StatusRepairPersistenceError,
   type StatusRepairReceiptStore,
   type StatusRepairRecoveryReceipt,
   type StatusRepairService,
+  statusRepairAdapterBinding,
+  statusRepairAdapterMatches,
 } from "./status-repair.ts";
 
 export const VERSION = "0.1.0-dev";
@@ -167,33 +170,67 @@ async function reconcile(
         "conditional status mutation and verification service",
       );
     }
-    const evaluated = evaluateStatusRepairBatch(
+    let evaluated = evaluateStatusRepairBatch(
       result.transitions,
       await services.statusRepair.repair(result.transitions),
     );
+    const advertisedAdapter = statusRepairAdapterBinding(services.statusRepair.adapter);
+    if (!statusRepairAdapterMatches(advertisedAdapter, evaluated.adapter)) {
+      const request = result.transitions[0];
+      const diagnostic: StatusRepairOutcome = {
+        ticket: request?.ticket ?? ("status-repair:adapter" as TicketRef),
+        expectedVersion: request?.expectedVersion ?? "",
+        outcome: "ambiguous",
+        detail: {
+          reason: "status repair adapter binding mismatch",
+          expected: advertisedAdapter,
+          observed: evaluated.adapter,
+        },
+      };
+      evaluated = {
+        ...evaluated,
+        verified: false,
+        adapter: advertisedAdapter,
+        diagnostics: [...evaluated.diagnostics, diagnostic],
+      };
+    }
     repairOutcomes = evaluated.dispositions;
     if (!evaluated.verified) {
       if (!services.statusRepairReceipts) {
         throw new Error("Status repair requires a durable recovery receipt store");
       }
-      const pending: Omit<StatusRepairRecoveryReceipt, "ref"> = {
+      let ref: string;
+      try {
+        ref = await services.statusRepairReceipts.allocateRef();
+      } catch (cause) {
+        throw new StatusRepairPersistenceError(
+          "Failed to allocate status repair recovery receipt",
+          evaluated,
+          { cause },
+        );
+      }
+      const recovery: StatusRepairRecoveryReceipt = {
+        ref,
         version: 1,
         action: "status_repair_recovery_required",
         scope: scopeReference,
+        adapter: evaluated.adapter,
         requested: result.transitions,
         rawOutcomes: evaluated.rawOutcomes,
         dispositions: evaluated.dispositions,
         diagnostics: evaluated.diagnostics,
         refreshEvidence: [],
-        recoveryArgv: [],
-      };
-      const ref = await services.statusRepairReceipts.create(pending);
-      const recovery: StatusRepairRecoveryReceipt = {
-        ...pending,
-        ref,
         recoveryArgv: ["reconcile", "statuses", scopeReference, "--recover", ref, "--json"],
       };
-      await services.statusRepairReceipts.update(ref, recovery);
+      try {
+        await services.statusRepairReceipts.create(ref, recovery);
+      } catch (cause) {
+        throw new StatusRepairPersistenceError(
+          "Failed to persist status repair recovery receipt",
+          evaluated,
+          { cause },
+        );
+      }
       writeJson(write, recovery);
       return;
     }
@@ -228,10 +265,48 @@ async function recoverStatusRepair(
       "status repair and durable receipt services",
     );
   }
-  const prior = await services.statusRepairReceipts.load(ref);
+  const statusRepair = services.statusRepair;
+  const receiptStore = services.statusRepairReceipts;
+  const prior = await receiptStore.load(ref);
   if (!prior) throw new Error(`Status repair recovery receipt not found: ${ref}`);
   if (prior.scope !== scopeReference) throw new Error("Status repair recovery scope mismatch");
-  const refresh = await services.statusRepair.refresh(prior.requested.map((item) => item.ticket));
+  const persistAdapterMismatch = async (
+    stage: "service" | "refresh" | "retry",
+    observed: ReturnType<typeof statusRepairAdapterBinding>,
+    refreshEvidence: StatusRepairRecoveryReceipt["refreshEvidence"],
+  ): Promise<void> => {
+    const diagnostic: StatusRepairOutcome = {
+      ticket: prior.requested[0]?.ticket ?? ("status-repair:adapter" as TicketRef),
+      expectedVersion: prior.requested[0]?.expectedVersion ?? "",
+      outcome: "ambiguous",
+      detail: {
+        reason: "status repair adapter binding mismatch",
+        stage,
+        expected: prior.adapter,
+        observed,
+      },
+    };
+    const receipt: StatusRepairRecoveryReceipt = {
+      ...prior,
+      action: "attention_required",
+      dispositions: prior.requested.map((request) => ({
+        ticket: request.ticket,
+        expectedVersion: request.expectedVersion,
+        outcome: "ambiguous",
+        detail: diagnostic.detail,
+      })),
+      diagnostics: [...prior.diagnostics, diagnostic],
+      refreshEvidence,
+      recoveryArgv: ["reconcile", "statuses", scopeReference, "--recover", ref, "--json"],
+    };
+    await receiptStore.update(ref, receipt);
+    writeJson(write, receipt);
+  };
+  const advertisedAdapter = statusRepairAdapterBinding(statusRepair.adapter);
+  if (!statusRepairAdapterMatches(prior.adapter, advertisedAdapter)) {
+    return persistAdapterMismatch("service", advertisedAdapter, prior.refreshEvidence);
+  }
+  const refresh = await statusRepair.refresh(prior.requested.map((item) => item.ticket));
   const refreshEvidence = [
     ...prior.refreshEvidence,
     {
@@ -244,6 +319,13 @@ async function recoverStatusRepair(
       observations: refresh.observations.map((item) => structuredClone(item)),
     },
   ];
+  if (!statusRepairAdapterMatches(prior.adapter, refresh.adapter)) {
+    return persistAdapterMismatch(
+      "refresh",
+      statusRepairAdapterBinding(refresh.adapter),
+      refreshEvidence,
+    );
+  }
   const observations = new Map<string, (typeof refresh.observations)[number][]>();
   const requestedTickets = new Set(prior.requested.map((item) => item.ticket));
   let diagnostics = [...prior.diagnostics];
@@ -310,13 +392,48 @@ async function recoverStatusRepair(
   }
   let rawOutcomes = [...prior.rawOutcomes];
   if (retry.length > 0) {
-    const evaluated = evaluateStatusRepairBatch(retry, await services.statusRepair.repair(retry));
+    const retryAdapter = statusRepairAdapterBinding(statusRepair.adapter);
+    if (!statusRepairAdapterMatches(prior.adapter, retryAdapter)) {
+      return persistAdapterMismatch("retry", retryAdapter, refreshEvidence);
+    }
+    const evaluated = evaluateStatusRepairBatch(retry, await statusRepair.repair(retry));
     rawOutcomes = [...rawOutcomes, ...evaluated.rawOutcomes];
     diagnostics = [...diagnostics, ...evaluated.diagnostics];
-    const retryByTicket = new Map(evaluated.dispositions.map((item) => [item.ticket, item]));
+    const adapterMatches = statusRepairAdapterMatches(prior.adapter, evaluated.adapter);
+    const retryDispositions = adapterMatches
+      ? evaluated.dispositions
+      : retry.map(
+          (request): StatusRepairDisposition => ({
+            ticket: request.ticket,
+            expectedVersion: request.expectedVersion,
+            outcome: "ambiguous",
+            detail: {
+              reason: "status repair adapter binding mismatch",
+              stage: "retry",
+              expected: prior.adapter,
+              observed: evaluated.adapter,
+            },
+          }),
+        );
+    const retryByTicket = new Map(retryDispositions.map((item) => [item.ticket, item]));
     for (const request of retry) {
       const disposition = retryByTicket.get(request.ticket);
       if (disposition) dispositions.push(disposition);
+    }
+    if (!adapterMatches) {
+      attention = true;
+      const request = retry[0];
+      diagnostics.push({
+        ticket: request?.ticket ?? ("status-repair:adapter" as TicketRef),
+        expectedVersion: request?.expectedVersion ?? "",
+        outcome: "ambiguous",
+        detail: {
+          reason: "status repair adapter binding mismatch",
+          stage: "retry",
+          expected: prior.adapter,
+          observed: evaluated.adapter,
+        },
+      });
     }
     if (!evaluated.verified) attention = true;
   }
@@ -343,7 +460,7 @@ async function recoverStatusRepair(
     refreshEvidence,
     recoveryArgv: ["reconcile", "statuses", scopeReference, "--recover", ref, "--json"],
   };
-  await services.statusRepairReceipts.update(ref, receipt);
+  await receiptStore.update(ref, receipt);
   writeJson(write, receipt);
 }
 

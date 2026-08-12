@@ -14,6 +14,13 @@ export interface StatusRepairAdapterIdentity {
   versionContract: TrackerVersionContract;
 }
 
+export interface StatusRepairAdapterBinding {
+  adapter: string;
+  instance: string;
+  capabilities: CapabilitySet;
+  versionContract: string;
+}
+
 export interface VerifiedStatusRepairProof {
   conditionalGuard: { expectedVersion: string; applied: true };
   mutation: { acknowledged: true; version: string };
@@ -43,6 +50,7 @@ export interface StatusRepairBatchResult {
 }
 
 export interface StatusRepairService {
+  readonly adapter: StatusRepairAdapterIdentity;
   repair(transitions: readonly DependencyStatusTransition[]): Promise<StatusRepairBatchResult>;
   refresh(tickets: readonly TicketRef[]): Promise<StatusRefreshResult>;
 }
@@ -61,7 +69,7 @@ export interface StatusRefreshResult {
 }
 
 export interface StatusRefreshEvidence {
-  adapter: Omit<StatusRepairAdapterIdentity, "versionContract"> & { versionContract: string };
+  adapter: StatusRepairAdapterBinding;
   observations: StatusRefreshObservation[];
 }
 
@@ -71,6 +79,7 @@ export interface StatusRepairDisposition extends StatusRepairOutcome {
 
 export interface StatusRepairEvaluation {
   verified: boolean;
+  adapter: StatusRepairAdapterBinding;
   rawOutcomes: StatusRepairOutcome[];
   dispositions: StatusRepairDisposition[];
   diagnostics: StatusRepairOutcome[];
@@ -81,6 +90,7 @@ export interface StatusRepairRecoveryReceipt {
   version: 1;
   action: "status_repair_recovery_required" | "status_repair_recovered" | "attention_required";
   scope: string;
+  adapter: StatusRepairAdapterBinding;
   requested: DependencyStatusTransition[];
   rawOutcomes: StatusRepairOutcome[];
   dispositions: StatusRepairDisposition[];
@@ -90,9 +100,24 @@ export interface StatusRepairRecoveryReceipt {
 }
 
 export interface StatusRepairReceiptStore {
-  create(receipt: Omit<StatusRepairRecoveryReceipt, "ref">): string | Promise<string>;
+  /** Allocates an identifier without creating a durable receipt row. */
+  allocateRef(): string | Promise<string>;
+  /** Atomically creates the complete receipt or leaves no row at `ref`. */
+  create(ref: string, receipt: StatusRepairRecoveryReceipt): void | Promise<void>;
   load(ref: string): StatusRepairRecoveryReceipt | Promise<StatusRepairRecoveryReceipt | undefined>;
   update(ref: string, receipt: StatusRepairRecoveryReceipt): void | Promise<void>;
+}
+
+export class StatusRepairPersistenceError extends Error {
+  readonly name = "StatusRepairPersistenceError";
+
+  constructor(
+    message: string,
+    readonly evidence: StatusRepairEvaluation,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+  }
 }
 
 export function evaluateStatusRepairBatch(
@@ -166,10 +191,43 @@ export function evaluateStatusRepairBatch(
       diagnostics.length === 0 &&
       result.outcomes.length === requested.length &&
       dispositions.every((item) => item.outcome === "verified"),
+    adapter: statusRepairAdapterBinding(result.adapter),
     rawOutcomes: result.outcomes.map((item) => structuredClone(item)),
     dispositions,
     diagnostics,
   };
+}
+
+export function statusRepairAdapterBinding(
+  adapter: StatusRepairAdapterIdentity,
+): StatusRepairAdapterBinding {
+  return {
+    adapter: adapter.adapter,
+    instance: adapter.instance,
+    capabilities: { ...adapter.capabilities },
+    versionContract: adapter.versionContract.name,
+  };
+}
+
+export function statusRepairAdapterMatches(
+  expected: StatusRepairAdapterBinding,
+  actual: StatusRepairAdapterIdentity | StatusRepairAdapterBinding,
+): boolean {
+  const binding: StatusRepairAdapterBinding =
+    typeof actual.versionContract === "string"
+      ? {
+          adapter: actual.adapter,
+          instance: actual.instance,
+          capabilities: actual.capabilities,
+          versionContract: actual.versionContract,
+        }
+      : statusRepairAdapterBinding(actual as StatusRepairAdapterIdentity);
+  return (
+    expected.adapter === binding.adapter &&
+    expected.instance === binding.instance &&
+    expected.versionContract === binding.versionContract &&
+    canonicalCapabilities(expected.capabilities) === canonicalCapabilities(binding.capabilities)
+  );
 }
 
 function proofVerifies(
