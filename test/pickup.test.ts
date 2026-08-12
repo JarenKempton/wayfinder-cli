@@ -30,6 +30,7 @@ class FakeLedger implements Ledger {
   readonly steps: string[] = [];
   recordStepError?: Error;
   recordStepErrorState?: string;
+  saveRecoveryRequiredError?: Error;
   saveClaim(_claim: import("../src/domain.ts").Claim): void {}
   commitClaim(_claim: import("../src/domain.ts").Claim): void {
     this.steps.push("claimed");
@@ -50,6 +51,7 @@ class FakeLedger implements Ledger {
     this.steps.push(state);
   }
   saveRecoveryRequired(run: Run): void {
+    if (this.saveRecoveryRequiredError) throw this.saveRecoveryRequiredError;
     this.recoveryRun = structuredClone(run);
     this.steps.push("recovery_required");
   }
@@ -356,6 +358,36 @@ describe("pickup coordinator", () => {
       `wayfinder recover wayfinder-run:test --evidence '{"tracker":"verify","session":"verify"}'`,
     );
     expect(item.ledger.recoveryRun?.status).toBe("recovery_required");
+  });
+
+  test("recovery ledger failure remains explicit after best-effort remote compensation", async () => {
+    const tracker = new FakeTracker();
+    tracker.verifyRestoreError = new Error("cannot verify restoration");
+    const workspace = new FakeWorkspace();
+    workspace.prepareError = new Error("prepare failed");
+    const item = coordinator(tracker, workspace);
+    const ledgerError = new Error("recovery ledger unavailable");
+    item.ledger.saveRecoveryRequiredError = ledgerError;
+
+    const result = await failure(item.coordinator);
+
+    expect(item.tracker.restoreCalls).toBe(1);
+    expect(result.receipt.state).toBe("recovery_required");
+    expect(result.cause).toBeInstanceOf(AggregateError);
+    const outer = result.cause as AggregateError;
+    expect(outer.message).toBe(
+      "Pickup requires recovery and its recovery ledger could not be persisted",
+    );
+    expect(outer.errors).toHaveLength(2);
+    expect(outer.errors[0]).toBeInstanceOf(AggregateError);
+    expect((outer.errors[0] as AggregateError).message).toBe(
+      "Pickup compensation could not be fully verified",
+    );
+    expect((outer.errors[0] as AggregateError).errors).toEqual([
+      workspace.prepareError,
+      tracker.verifyRestoreError,
+    ]);
+    expect(outer.errors[1]).toBe(ledgerError);
   });
 
   test("concurrent change during restoration requires recovery", async () => {

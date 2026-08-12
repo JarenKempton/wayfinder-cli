@@ -139,3 +139,46 @@ test("SQLite store atomically records recovery-required run, step, and evidence"
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test("SQLite recovery-required transaction rolls back every row on a mid-transaction failure", () => {
+  const directory = mkdtempSync(join(tmpdir(), "wayfinder-test-"));
+  const path = join(directory, "wayfinder.db");
+  const store = new StateStore(path);
+  const now = new Date().toISOString();
+  const run: Run = {
+    ref: "wayfinder-run:rollback",
+    ticket: "jira:x:W:ticket:A" as Run["ticket"],
+    harness: "codex" as Run["harness"],
+    workspace: { path: "/tmp/work" },
+    capabilities: capabilities("process_launch"),
+    status: "planning",
+    createdAt: now,
+    updatedAt: now,
+  };
+  try {
+    store.saveRun(run);
+    const injector = new Database(path);
+    injector.exec(`CREATE TRIGGER fail_recovery_evidence
+      BEFORE INSERT ON recovery_evidence
+      BEGIN
+        SELECT RAISE(ABORT, 'injected recovery evidence failure');
+      END`);
+    injector.close();
+
+    expect(() =>
+      store.saveRecoveryRequired(
+        { ...run, status: "recovery_required" },
+        { state: "recovery_required" },
+        new Error("ambiguous"),
+        { tracker: "verification_required" },
+      ),
+    ).toThrow("injected recovery evidence failure");
+
+    expect(store.run(run.ref).status).toBe("planning");
+    expect(store.steps(run.ref)).toEqual([]);
+    expect(store.recoveryEvidence(run.ref)).toEqual([]);
+  } finally {
+    store.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
