@@ -213,16 +213,21 @@ export class PickupCoordinator {
     receipt.ok = false;
     receipt.state = "compensating";
     const recoveryErrors: unknown[] = [];
+    let sessionEvidence = receipt.launch ? "verification_required" : "not_started";
+    let trackerEvidence = "verification_required";
+    let ledgerEvidence = "recorded";
     try {
       await this.#options.ledger.recordStep(receipt.run, "compensating", receipt, cause);
     } catch (error) {
       // A local persistence failure must never prevent best-effort reversal of
       // remote side effects that may already have happened.
       recoveryErrors.push(error);
+      ledgerEvidence = "compensating_step_persistence_failed";
     }
     if (receipt.launch?.sessionId !== undefined || receipt.launch?.pid !== undefined) {
       try {
         await this.#options.harness.stop(receipt.launch);
+        sessionEvidence = "stopped_verified";
       } catch (error) {
         recoveryErrors.push(error);
       }
@@ -236,13 +241,19 @@ export class PickupCoordinator {
     try {
       await this.#options.tracker.restoreClaimState(restoreRequest);
       await this.#options.tracker.verifyRestored(restoreRequest);
+      trackerEvidence = "restored_verified";
     } catch (error) {
       recoveryErrors.push(error);
     }
     if (recoveryErrors.length === 0) {
       receipt.state = "compensated";
-      await this.#options.ledger.recordStep(receipt.run, "compensated", receipt, cause);
-      throw new PickupResultError(receipt, cause);
+      try {
+        await this.#options.ledger.recordStep(receipt.run, "compensated", receipt, cause);
+      } catch (error) {
+        recoveryErrors.push(error);
+        ledgerEvidence = "compensated_step_persistence_failed";
+      }
+      if (recoveryErrors.length === 0) throw new PickupResultError(receipt, cause);
     }
     receipt.state = "recovery_required";
     receipt.recoveryCommand = `wayfinder recover ${receipt.run} --evidence '{"tracker":"verify","session":"verify"}'`;
@@ -255,8 +266,9 @@ export class PickupCoordinator {
     try {
       await this.#options.ledger.saveRecoveryRequired(run, receipt, combined, {
         command: receipt.recoveryCommand,
-        tracker: "verification_required",
-        session: receipt.launch ? "verification_required" : "not_started",
+        tracker: trackerEvidence,
+        session: sessionEvidence,
+        ledger: ledgerEvidence,
       });
     } catch (error) {
       throw new PickupResultError(

@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   AmbiguousTrackerResultError,
   ClaimCollisionError,
@@ -25,6 +28,16 @@ import {
   type TrackerSnapshot,
 } from "../src/domain.ts";
 import { PickupCoordinator, PickupResultError } from "../src/pickup.ts";
+import { StateStore } from "../src/state.ts";
+
+class FailingCompensatedStateStore extends StateStore {
+  readonly compensatedStepError = new Error("cannot persist compensated step");
+
+  override recordStep(run: RunRef, state: string, receipt?: unknown, error?: unknown): void {
+    if (state === "compensated") throw this.compensatedStepError;
+    super.recordStep(run, state, receipt, error);
+  }
+}
 
 class FakeLedger implements Ledger {
   readonly steps: string[] = [];
@@ -344,6 +357,59 @@ describe("pickup coordinator", () => {
     expect(item.tracker.restoreCalls).toBe(1);
     expect(result.receipt.state).toBe("recovery_required");
     expect(item.ledger.recoveryRun?.status).toBe("recovery_required");
+  });
+
+  test("final compensated-step persistence failure is durably recovery-required", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "wayfinder-test-"));
+    const store = new FailingCompensatedStateStore(join(directory, "wayfinder.db"));
+    const tracker = new FakeTracker();
+    const workspace = new FakeWorkspace();
+    workspace.prepareError = new Error("prepare failed");
+    const subject = new PickupCoordinator({
+      tracker,
+      workspace,
+      harness: new FakeHarness(),
+      ledger: store,
+      ids: {
+        run: () => "wayfinder-run:test" as RunRef,
+        claim: () => "wayfinder-claim:test" as ClaimRef,
+      },
+      clock: { now: () => new Date("2026-08-10T12:00:00Z") },
+    });
+
+    try {
+      const result = await failure(subject);
+
+      expect(tracker.restoreCalls).toBe(1);
+      expect(result.receipt).toMatchObject({
+        state: "recovery_required",
+        recoveryCommand: `wayfinder recover wayfinder-run:test --evidence '{"tracker":"verify","session":"verify"}'`,
+      });
+      expect(result.cause).toBeInstanceOf(AggregateError);
+      const error = result.cause as AggregateError;
+      expect(error.message).toBe("Pickup compensation could not be fully verified");
+      expect(error.errors).toEqual([workspace.prepareError, store.compensatedStepError]);
+      expect(store.run("wayfinder-run:test" as RunRef).status).toBe("recovery_required");
+      expect(store.claim("wayfinder-claim:test" as ClaimRef).status).toBe("active");
+      expect(store.steps("wayfinder-run:test" as RunRef).at(-1)).toMatchObject({
+        state: "recovery_required",
+        error_text: "Pickup compensation could not be fully verified",
+      });
+      expect(store.recoveryEvidence("wayfinder-run:test" as RunRef)).toEqual([
+        expect.objectContaining({
+          outcome: "verification_required",
+          evidence_json: JSON.stringify({
+            command: `wayfinder recover wayfinder-run:test --evidence '{"tracker":"verify","session":"verify"}'`,
+            tracker: "restored_verified",
+            session: "not_started",
+            ledger: "compensated_step_persistence_failed",
+          }),
+        }),
+      ]);
+    } finally {
+      store.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   test("restoration verification failure requires recovery", async () => {
