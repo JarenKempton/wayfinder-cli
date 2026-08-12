@@ -10,6 +10,12 @@ const policy = {
   managedStatuses: new Set(["To Do", "Blocked"]),
   protectedStatuses: new Set(["In Progress", "In Review"]),
 };
+const closeVerification = {
+  beforeVersion: "v-A",
+  afterVersion: "v-A-closed",
+  fromStatus: "In Progress",
+  toStatus: "Done",
+};
 const ticket = (id: string, order: number, status = "To Do"): Ticket => ({
   ref: ref(`jira:x:W:ticket:${id}`),
   map,
@@ -125,12 +131,18 @@ describe("closeout frontier handoff", () => {
     for (const item of [later, first]) {
       item.dependencies = [{ blocking: closing.ref, blocked: item.ref, kind: "blocks" }];
     }
-    const afterClosing = { ...closing, state: "closed" as const, status: "Done" };
+    const afterClosing = {
+      ...closing,
+      state: "closed" as const,
+      status: "Done",
+      metadata: { version: "v-A-closed" },
+    };
 
     const result = deriveCloseoutFrontierHandoff(
       [closing, later, first],
       [afterClosing, later, first],
       closing.ref,
+      closeVerification,
       { map },
       policy,
     );
@@ -146,13 +158,29 @@ describe("closeout frontier handoff", () => {
   test("refuses a handoff until close is observed and snapshots match", () => {
     const closing = ticket("A", 0, "In Progress");
     expect(() =>
-      deriveCloseoutFrontierHandoff([closing], [closing], closing.ref, {}, policy),
+      deriveCloseoutFrontierHandoff(
+        [closing],
+        [closing],
+        closing.ref,
+        closeVerification,
+        {},
+        policy,
+      ),
     ).toThrow("not verified");
     expect(() =>
       deriveCloseoutFrontierHandoff(
         [closing],
-        [{ ...closing, state: "closed", status: "Done" }, ticket("B", 1)],
+        [
+          {
+            ...closing,
+            state: "closed",
+            status: "Done",
+            metadata: { version: "v-A-closed" },
+          },
+          ticket("B", 1),
+        ],
         closing.ref,
+        closeVerification,
         {},
         policy,
       ),
@@ -187,8 +215,17 @@ describe("closeout frontier handoff", () => {
     expect(() =>
       deriveCloseoutFrontierHandoff(
         [closing, dependent],
-        [{ ...closing, state: "closed", status: "Done" }, change(dependent)],
+        [
+          {
+            ...closing,
+            state: "closed",
+            status: "Done",
+            metadata: { version: "v-A-closed" },
+          },
+          change(dependent),
+        ],
         closing.ref,
+        closeVerification,
         {},
         policy,
       ),
@@ -197,9 +234,21 @@ describe("closeout frontier handoff", () => {
 
   test("rejects malformed and duplicate closeout graphs", () => {
     const closing = ticket("A", 0, "In Progress");
-    const closed = { ...closing, state: "closed" as const, status: "Done" };
+    const closed = {
+      ...closing,
+      state: "closed" as const,
+      status: "Done",
+      metadata: { version: "v-A-closed" },
+    };
     expect(() =>
-      deriveCloseoutFrontierHandoff([closing, closing], [closed], closing.ref, {}, policy),
+      deriveCloseoutFrontierHandoff(
+        [closing, closing],
+        [closed],
+        closing.ref,
+        closeVerification,
+        {},
+        policy,
+      ),
     ).toThrow("Duplicate ticket");
     const malformed = ticket("B", 1);
     malformed.dependencies = [
@@ -210,9 +259,37 @@ describe("closeout frontier handoff", () => {
         [closing, malformed],
         [closed, malformed],
         closing.ref,
+        closeVerification,
         {},
         policy,
       ),
     ).toThrow("unknown blocker");
+  });
+
+  test.each([
+    ["assignee drift", { assignee: "other" }],
+    ["metadata drift", { metadata: { version: "v-A-closed", extra: true } }],
+    ["unexpected status", { status: "Canceled" }],
+    ["unevidenced version", { metadata: { version: "different" } }],
+  ])("rejects closing-ticket %s", (_label, change) => {
+    const closing = ticket("A", 0, "In Progress");
+    closing.assignee = "human" as NonNullable<Ticket["assignee"]>;
+    const closed = {
+      ...closing,
+      state: "closed" as const,
+      status: "Done",
+      metadata: { version: "v-A-closed" },
+      ...change,
+    } as Ticket;
+    expect(() =>
+      deriveCloseoutFrontierHandoff(
+        [closing],
+        [closed],
+        closing.ref,
+        closeVerification,
+        {},
+        policy,
+      ),
+    ).toThrow("not verified");
   });
 });

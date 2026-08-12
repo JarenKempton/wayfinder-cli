@@ -164,7 +164,8 @@ export class GitHubIssuesTrackerAdapter
       order,
       metadata: {
         number: issue.number,
-        updatedAt: string(issue.updated_at, "issue updated_at"),
+        version: string(issue.updated_at, "issue updated_at"),
+        versionSource: "github.updated_at",
         url: string(issue.html_url, "issue html_url"),
       },
     };

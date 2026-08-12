@@ -23,9 +23,11 @@ import { AdapterClient, PROTOCOL_VERSION } from "./protocol.ts";
 import { parseRef } from "./reference.ts";
 import { StateStore } from "./state.ts";
 import {
+  evaluateStatusRepairBatch,
   type StatusRepairOutcome,
+  type StatusRepairReceiptStore,
+  type StatusRepairRecoveryReceipt,
   type StatusRepairService,
-  verifyStatusRepairOutcomes,
 } from "./status-repair.ts";
 
 export const VERSION = "0.1.0-dev";
@@ -41,6 +43,7 @@ export interface RuntimeServices {
     evidence: unknown,
   ): Promise<{ observation: RunObservation; claim: Claim }>;
   statusRepair?: StatusRepairService;
+  statusRepairReceipts?: StatusRepairReceiptStore;
 }
 
 export async function run(
@@ -157,10 +160,26 @@ async function reconcile(
         "conditional status mutation and verification service",
       );
     }
-    repairOutcomes = verifyStatusRepairOutcomes(
+    const evaluated = evaluateStatusRepairBatch(
       result.transitions,
       await services.statusRepair.repair(result.transitions),
     );
+    repairOutcomes = evaluated.outcomes;
+    if (!evaluated.verified) {
+      const recovery: StatusRepairRecoveryReceipt = {
+        version: 1,
+        action: "status_repair_recovery_required",
+        requested: result.transitions,
+        outcomes: evaluated.outcomes,
+        recoveryCommand: `wayfinder reconcile statuses ${scopeReference} --repair --json`,
+      };
+      if (!services.statusRepairReceipts) {
+        throw new Error("Status repair requires a durable recovery receipt store");
+      }
+      await services.statusRepairReceipts.persist(recovery);
+      writeJson(write, recovery);
+      return;
+    }
   }
   const receipt = {
     version: 1,
