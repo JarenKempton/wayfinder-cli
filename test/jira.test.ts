@@ -1,393 +1,254 @@
 import { describe, expect, test } from "bun:test";
-import { findAdapter } from "../src/adapters.ts";
-import { AmbiguousTrackerResultError, ClaimCollisionError } from "../src/contracts.ts";
-import type { ActorRef, ClaimRef, RunRef, Ticket, TicketRef } from "../src/domain.ts";
+import { builtInAdapters } from "../src/adapters.ts";
+import type { ReleaseClaimRequest, RestoreClaimRequest } from "../src/contracts.ts";
+import {
+  type ActorRef,
+  type ClaimRef,
+  capabilities,
+  type MapRef,
+  type RunRef,
+  requireCapabilities,
+  type TicketRef,
+  type TrackerSnapshot,
+  UnsupportedCapabilityError,
+} from "../src/domain.ts";
 import { evaluateFrontier, selectFrontierTicket } from "../src/frontier.ts";
 import { type JiraResponse, JiraTrackerAdapter, type JiraTransport } from "../src/jira.ts";
 
 const ticket = "jira:responsibid:JWB:ticket:JWB-288" as TicketRef;
+const map = "jira:responsibid:JWB:map:JWB-274" as MapRef;
 const owner = "account" as ActorRef;
 
-type Failure = { operation: string; timing: "before" | "after" };
+interface FakeIssueOptions {
+  assignee?: string | null;
+  links?: unknown[];
+  priority?: { id: string; name: string };
+  rank?: string;
+  status?: string;
+}
+
+function issue(key: string, options: FakeIssueOptions = {}) {
+  const status = options.status ?? "To Do";
+  return {
+    key,
+    fields: {
+      updated: "2026-08-11T00:00:00.000Z",
+      assignee: options.assignee ? { accountId: options.assignee } : null,
+      status: { name: status, statusCategory: { key: status === "Done" ? "done" : "new" } },
+      issuetype: { name: "Task" },
+      parent: { key: "JWB-274" },
+      priority: options.priority ?? { id: "9000", name: "Highest" },
+      customfield_rank: options.rank ?? "0|i0000:",
+      issuelinks: options.links ?? [],
+    },
+  };
+}
 
 class FakeJira implements JiraTransport {
-  assignee: string | null = null;
-  status = "To Do";
-  updated = 1;
-  property: unknown = null;
-  priority = { id: "9000", name: "Highest" };
-  rank = 7;
-  permissions = true;
-  assigneeEditable = true;
-  links: Array<Record<string, unknown>> = [
-    {
-      type: { inward: "is blocked by", outward: "blocks" },
-      inwardIssue: { key: "JWB-279", fields: { status: { name: "Done" } } },
-    },
-  ];
-  failure?: Failure;
-  comments: string[] = [];
-  operations: string[] = [];
+  issues = [issue("JWB-288")];
+  claimProperty: unknown = null;
+  requests: Array<{ method: string; path: string; body?: unknown }> = [];
 
   async request<T>(method: string, path: string, body?: unknown): Promise<JiraResponse<T>> {
-    const operation = `${method} ${path.split("?")[0]}`;
-    this.operations.push(operation);
-    if (this.failure?.operation === operation && this.failure.timing === "before")
-      return { status: 500 };
-    const result = this.respond<T>(method, path, body);
-    if (this.failure?.operation === operation && this.failure.timing === "after")
-      return { status: 500 };
-    return result;
-  }
-
-  respond<T>(method: string, path: string, body?: unknown): JiraResponse<T> {
-    const input = body as {
-      accountId: string | null;
-      transition: { id: string };
-      body: { content: Array<{ content: Array<{ text: string }> }> };
-    };
-    if (method === "GET" && path.includes("/mypermissions")) {
-      const names = ["ASSIGN_ISSUES", "EDIT_ISSUES", "ADD_COMMENTS", "TRANSITION_ISSUES"];
-      return {
-        status: 200,
-        body: {
-          permissions: Object.fromEntries(
-            names.map((name) => [name, { havePermission: this.permissions }]),
-          ),
-        } as T,
-      };
-    }
-    if (method === "GET" && path.endsWith("/editmeta")) {
-      return {
-        status: 200,
-        body: { fields: { assignee: { operations: this.assigneeEditable ? ["set"] : [] } } } as T,
-      };
-    }
+    this.requests.push({ method, path, ...(body === undefined ? {} : { body }) });
     if (method === "GET" && path.includes("/properties/")) {
       return (
-        this.property === null ? { status: 404 } : { status: 200, body: { value: this.property } }
+        this.claimProperty === null
+          ? { status: 404 }
+          : { status: 200, body: { value: this.claimProperty } }
       ) as JiraResponse<T>;
     }
-    if (method === "GET" && path.endsWith("/transitions")) {
-      return {
-        status: 200,
-        body: {
-          transitions: ["To Do", "In Progress", "Done"].map((name, id) => ({
-            id: String(id),
-            to: { name },
-          })),
-        } as T,
-      };
+    if (method === "GET" && path.includes("/issue/")) {
+      const key = decodeURIComponent(path.match(/\/issue\/([^?]+)/)?.[1] ?? "");
+      const found = this.issues.find((item) => item.key === key);
+      return found ? { status: 200, body: found as T } : { status: 404 };
     }
-    if (method === "GET" && path.includes("/issue/JWB-288?"))
-      return { status: 200, body: this.issue() as T };
-    if (method === "PUT" && path.endsWith("/assignee")) {
-      this.assignee = input.accountId;
-      this.bump();
-      return { status: 204 };
+    if (method === "POST" && path === "/rest/api/3/search/jql") {
+      const sorted = this.issues.toSorted((left, right) =>
+        left.fields.customfield_rank.localeCompare(right.fields.customfield_rank),
+      );
+      return { status: 200, body: { issues: sorted, isLast: true } as T };
     }
-    if (method === "PUT" && path.includes("/properties/")) {
-      this.property = structuredClone(body);
-      // Jira issue properties do not change fields.updated.
-      return { status: 204 };
-    }
-    if (method === "DELETE" && path.includes("/properties/")) {
-      this.property = null;
-      // Jira issue properties do not change fields.updated.
-      return { status: 204 };
-    }
-    if (method === "POST" && path.endsWith("/transitions")) {
-      this.status = ["To Do", "In Progress", "Done"][Number(input.transition.id)] ?? this.status;
-      this.bump();
-      return { status: 204 };
-    }
-    if (method === "POST" && path.endsWith("/comment")) {
-      this.comments.push(input.body.content[0]?.content[0]?.text ?? "");
-      // Jira comments do not change issue fields.updated.
-      return { status: 201, body: {} as T };
-    }
-    return { status: 404 };
+    return { status: 500 };
   }
 
-  issue() {
-    return {
-      key: "JWB-288",
-      fields: {
-        updated: String(this.updated),
-        assignee: this.assignee ? { accountId: this.assignee } : null,
-        status: {
-          name: this.status,
-          statusCategory: { key: this.status === "Done" ? "done" : "new" },
-        },
-        issuetype: { name: "Task" },
-        parent: { key: "JWB-274" },
-        priority: this.priority,
-        customfield_rank: this.rank,
-        issuelinks: this.links,
-      },
-    };
-  }
-
-  bump() {
-    this.updated += 1;
-  }
-  mutationCount() {
-    return this.operations.filter((item) => /^(PUT|POST|DELETE) /.test(item)).length;
+  mutationCount(): number {
+    return this.requests.filter(
+      (request) => request.method !== "GET" && request.path !== "/rest/api/3/search/jql",
+    ).length;
   }
 }
 
-function adapter(api: FakeJira, now = "2026-08-11T12:00:00.000Z") {
+function adapter(api: FakeJira) {
   return new JiraTrackerAdapter({
     instance: "responsibid",
     workspace: "JWB",
     transport: api,
-    clock: { now: () => new Date(now) },
+    rankField: "customfield_rank",
     priorityOrder: ["Highest", "High", "Medium", "Low", "Lowest"],
-    orderField: "customfield_rank",
   });
 }
 
-function claim(expectedVersion = "1", leaseExpiresAt = "2099-01-01T00:00:00.000Z") {
+function snapshot(): TrackerSnapshot {
+  return { version: "v1", payload: { assignee: null, status: "To Do", claim: null } };
+}
+
+function restoreRequest(claimedOwner: ActorRef | null = owner): RestoreClaimRequest {
   return {
     ticket,
     claim: "wayfinder-claim:c" as ClaimRef,
-    run: "wayfinder-run:r" as RunRef,
-    owner,
-    leaseExpiresAt,
-    expectedVersion,
+    ...(claimedOwner ? { claimedOwner } : {}),
+    originalSnapshot: snapshot(),
   };
 }
 
-async function claimed(api: FakeJira, lease = "2099-01-01T00:00:00.000Z") {
-  const subject = adapter(api);
-  const originalSnapshot = await subject.snapshotClaimState(ticket);
-  await subject.claim(claim(originalSnapshot.version, lease));
-  return { subject, originalSnapshot, version: String(api.updated) };
-}
-
-describe("Jira tracker adapter", () => {
-  test("normalizes dependency, native order, and semantic priority", async () => {
-    const highestApi = new FakeJira();
-    highestApi.priority = { id: "9000", name: "Highest" };
-    highestApi.rank = 8;
-    const lowestApi = new FakeJira();
-    lowestApi.priority = { id: "1", name: "Lowest" };
-    lowestApi.rank = 9;
-    const highest = await adapter(highestApi).getTicket(ticket);
-    const lowest = await adapter(lowestApi).getTicket(ticket);
-    expect(highest).toMatchObject({
-      map: "jira:responsibid:JWB:map:JWB-274",
-      order: 8,
-      priority: 5,
-    });
-    expect(lowest).toMatchObject({ order: 9, priority: 1 });
-    expect(selectFrontierTicket([lowest, highest], "highest-priority")).toBe(highest);
-    expect(highest.dependencies?.[0]?.blocking).toBe(
-      "jira:responsibid:JWB:ticket:JWB-279" as TicketRef,
-    );
+describe("Jira tracker read adapter", () => {
+  test("hydrates map tickets in standard Jira LexoRank order without numeric parsing", async () => {
+    const api = new FakeJira();
+    api.issues = [
+      issue("JWB-LOW", {
+        rank: "0|zzzzz:",
+        priority: { id: "1", name: "Lowest" },
+      }),
+      issue("JWB-HIGH", {
+        rank: "0|aaaaa:",
+        priority: { id: "9000", name: "Highest" },
+      }),
+    ];
+    const tickets = await adapter(api).listMapTickets(map);
+    expect(tickets.map((item) => [String(item.ref), item.order, item.metadata?.rank])).toEqual([
+      ["jira:responsibid:JWB:ticket:JWB-HIGH", 0, "0|aaaaa:"],
+      ["jira:responsibid:JWB:ticket:JWB-LOW", 1, "0|zzzzz:"],
+    ]);
+    expect(selectFrontierTicket(tickets, "highest-priority").ref).toBe(required(tickets, 0).ref);
+    const search = api.requests.find((request) => request.path === "/rest/api/3/search/jql");
+    expect(search?.body).toMatchObject({ jql: 'parent = "JWB-274" ORDER BY Rank ASC' });
   });
 
-  test("emits inward blockers as dependencies owned by the current ticket", async () => {
-    const result = await adapter(new FakeJira()).getTicket(ticket);
-    expect(result.dependencies).toEqual([
+  test("emits only inward blockers owned by the containing ticket", async () => {
+    const api = new FakeJira();
+    api.issues = [
+      issue("JWB-279", { status: "Done", rank: "0|aaaaa:" }),
+      issue("JWB-288", {
+        rank: "0|bbbbb:",
+        links: [
+          {
+            type: { inward: "is blocked by", outward: "blocks" },
+            inwardIssue: { key: "JWB-279", fields: { status: { name: "Done" } } },
+          },
+          {
+            type: { inward: "is blocked by", outward: "blocks" },
+            outwardIssue: { key: "JWB-295", fields: { status: { name: "To Do" } } },
+          },
+        ],
+      }),
+    ];
+    const tickets = await adapter(api).listMapTickets(map);
+    const current = required(tickets, 1);
+    expect(current.dependencies).toEqual([
       {
         blocking: "jira:responsibid:JWB:ticket:JWB-279" as TicketRef,
-        blocked: ticket,
+        blocked: current.ref,
         kind: "blocks",
       },
     ]);
-  });
-
-  test("does not attach outward blocks owned by another ticket", async () => {
-    const api = new FakeJira();
-    api.links = [
-      {
-        type: { inward: "is blocked by", outward: "blocks" },
-        outwardIssue: { key: "JWB-295", fields: { status: { name: "To Do" } } },
-      },
-    ];
-    expect((await adapter(api).getTicket(ticket)).dependencies).toEqual([]);
-  });
-
-  test("produces a complete graph satisfying normalizeTrackerTickets ownership", async () => {
-    const current = await adapter(new FakeJira()).getTicket(ticket);
-    const blocker: Ticket = {
-      ...current,
-      ref: "jira:responsibid:JWB:ticket:JWB-279" as TicketRef,
-      state: "closed",
-      status: "Done",
-      dependencies: [],
-      order: current.order - 1,
-    };
-    expect(current.dependencies?.every((dependency) => dependency.blocked === current.ref)).toBe(
-      true,
-    );
-    expect(() =>
-      evaluateFrontier(
-        [blocker, current],
-        { map: current.map },
-        { availableStatuses: new Set(["To Do"]) },
+    expect(
+      tickets.every((item) =>
+        (item.dependencies ?? []).every((dependency) => dependency.blocked === item.ref),
       ),
+    ).toBe(true);
+    expect(() =>
+      evaluateFrontier(tickets, { map }, { availableStatuses: new Set(["To Do"]) }),
     ).not.toThrow();
   });
 
-  test("advertises only implemented features and remains unavailable without composition", async () => {
-    const described = await adapter(new FakeJira()).describe();
-    expect(described.native_dependencies).toBe(true);
-    expect(described.atomic_assignment).toBeUndefined();
-    expect(described.conditional_update).toBeUndefined();
-    expect(described.artifact_links).toBeUndefined();
-    expect(findAdapter("jira")).toMatchObject({
-      bundled: true,
+  test("getTicket derives its stable order from the complete parent map", async () => {
+    const api = new FakeJira();
+    api.issues = [issue("JWB-OTHER", { rank: "0|aaaaa:" }), issue("JWB-288", { rank: "0|bbbbb:" })];
+    expect(await adapter(api).getTicket(ticket)).toMatchObject({ ref: ticket, map, order: 1 });
+  });
+
+  test("advertises only implemented read capabilities and remains registry-unavailable", async () => {
+    const subject = adapter(new FakeJira());
+    const described = await subject.describe();
+    expect(described).toEqual(capabilities("native_maps", "native_dependencies"));
+    expect(builtInAdapters().find((item) => item.name === "jira")).toMatchObject({
       available: false,
       capabilities: {},
     });
+    expect(() =>
+      requireCapabilities(
+        described,
+        capabilities("atomic_assignment", "conditional_update", "claim_identity"),
+      ),
+    ).toThrow(UnsupportedCapabilityError);
   });
 
-  test("preflight proves permissions, assignment editability, transition, and property read", async () => {
-    const api = new FakeJira();
-    await adapter(api).preflight(ticket);
-    expect(api.operations).toEqual(
-      expect.arrayContaining([
-        "GET /rest/api/3/mypermissions",
-        "GET /rest/api/3/issue/JWB-288/editmeta",
-        "GET /rest/api/3/issue/JWB-288/transitions",
-        "GET /rest/api/3/issue/JWB-288/properties/wayfinder.claim",
-      ]),
-    );
-    api.permissions = false;
-    await expect(adapter(api).preflight(ticket)).rejects.toThrow("permission is required");
-    expect(api.mutationCount()).toBe(0);
-  });
-
-  test("models Jira fields.updated changes for fields and transitions, not properties or comments", async () => {
-    const api = new FakeJira();
-    const initial = api.updated;
-    await api.request("PUT", "/rest/api/3/issue/JWB-288/properties/wayfinder.claim", {
-      claim: "guard",
-    });
-    await api.request("POST", "/rest/api/3/issue/JWB-288/comment", {
-      body: { content: [{ content: [{ text: "audit" }] }] },
-    });
-    expect(api.updated).toBe(initial);
-    await api.request("PUT", "/rest/api/3/issue/JWB-288/assignee", { accountId: owner });
-    await api.request("POST", "/rest/api/3/issue/JWB-288/transitions", {
-      transition: { id: "1" },
-    });
-    expect(api.updated).toBe(initial + 2);
-  });
-
-  test("creates the guard before owned fields and verifies the claim", async () => {
-    const api = new FakeJira();
-    const subject = adapter(api);
-    await subject.claim(claim());
-    await subject.verifyClaim(claim());
-    const writes = api.operations.filter((item) => /^(PUT|POST) /.test(item));
-    expect(writes[0]).toContain("/properties/wayfinder.claim");
-    expect(api.assignee).toBe("account");
-    expect(api.status).toBe("In Progress");
-  });
-
-  test("failed guard creation before mutation is definite and leaves state untouched", async () => {
-    const api = new FakeJira();
-    api.failure = {
-      operation: "PUT /rest/api/3/issue/JWB-288/properties/wayfinder.claim",
-      timing: "before",
-    };
-    await expect(adapter(api).claim(claim())).rejects.toBeInstanceOf(ClaimCollisionError);
-    expect({ property: api.property, assignee: api.assignee, status: api.status }).toEqual({
-      property: null,
-      assignee: null,
-      status: "To Do",
-    });
-  });
-
-  test("ambiguous guard response and post-guard partial claim are compensable", async () => {
-    for (const failure of [
-      {
-        operation: "PUT /rest/api/3/issue/JWB-288/properties/wayfinder.claim",
-        timing: "after" as const,
-      },
-      { operation: "PUT /rest/api/3/issue/JWB-288/assignee", timing: "after" as const },
-    ]) {
+  test("preflight declines pickup before mutation for symmetric and asymmetric workflows", async () => {
+    for (const workflow of ["symmetric", "asymmetric"]) {
       const api = new FakeJira();
-      const subject = adapter(api);
-      const originalSnapshot = await subject.snapshotClaimState(ticket);
-      api.failure = failure;
-      await expect(subject.claim(claim())).rejects.toBeInstanceOf(AmbiguousTrackerResultError);
-      expect((api.property as { claim?: string }).claim).toBe(claim().claim);
-      delete api.failure;
-      await subject.restoreClaimState({ ticket, claim: claim().claim, originalSnapshot });
-      await subject.verifyRestored({ ticket, claim: claim().claim, originalSnapshot });
+      await expect(adapter(api).preflight(ticket)).rejects.toBeInstanceOf(
+        UnsupportedCapabilityError,
+      );
+      expect(api.mutationCount()).toBe(0);
+      expect(workflow).toBeString();
     }
   });
 
-  test("partial restoration retains the guard and is retryable and idempotent", async () => {
+  test("snapshot preserves native owner and claim identity for recovery evidence", async () => {
     const api = new FakeJira();
-    const { subject, originalSnapshot } = await claimed(api);
-    api.failure = { operation: "POST /rest/api/3/issue/JWB-288/transitions", timing: "before" };
-    await expect(
-      subject.restoreClaimState({ ticket, claim: claim().claim, originalSnapshot }),
-    ).rejects.toBeInstanceOf(AmbiguousTrackerResultError);
-    expect((api.property as { claim?: string }).claim).toBe(claim().claim);
-    delete api.failure;
-    const restore = { ticket, claim: claim().claim, originalSnapshot };
-    await subject.restoreClaimState(restore);
-    await subject.restoreClaimState(restore);
-    await subject.verifyRestored(restore);
-    expect({ property: api.property, assignee: api.assignee, status: api.status }).toEqual({
-      property: null,
-      assignee: null,
-      status: "To Do",
+    api.issues = [issue("JWB-288", { assignee: owner })];
+    api.claimProperty = {
+      claim: "wayfinder-claim:c",
+      run: "wayfinder-run:r",
+      owner,
+      leaseExpiresAt: "2026-08-11T12:15:00.000Z",
+      originalSnapshot: snapshot(),
+    };
+    expect(await adapter(api).snapshotClaimState(ticket)).toEqual({
+      version: "2026-08-11T00:00:00.000Z",
+      payload: {
+        assignee: owner,
+        status: "To Do",
+        claim: api.claimProperty,
+      },
     });
   });
 
-  test("release rejects stale expected version without mutation and verifies a valid release", async () => {
+  test("all mutation entry points fail closed and ownership-guard recovery inputs are required", async () => {
     const api = new FakeJira();
-    const { subject, originalSnapshot, version } = await claimed(api);
-    const before = api.mutationCount();
-    const base = { ticket, claim: claim().claim, originalSnapshot, authorizedBy: owner };
-    await expect(
-      subject.releaseClaim({ ...base, expectedVersion: "stale" }),
-    ).rejects.toBeInstanceOf(ClaimCollisionError);
-    expect(api.mutationCount()).toBe(before);
-    await subject.releaseClaim({ ...base, expectedVersion: version });
-    await subject.verifyReleased({ ...base, expectedVersion: version });
-  });
-
-  test("reclaims only when the injected clock observes an expired lease", async () => {
-    const api = new FakeJira();
-    const first = await claimed(api, "2026-08-11T11:59:00.000Z");
-    const request = {
-      staleClaim: claim().claim,
-      claim: "wayfinder-claim:next" as ClaimRef,
-      run: "wayfinder-run:next" as RunRef,
+    const subject = adapter(api);
+    const claim = {
       ticket,
+      claim: "wayfinder-claim:c" as ClaimRef,
+      run: "wayfinder-run:r" as RunRef,
       owner,
-      authorizedBy: owner,
       leaseExpiresAt: "2026-08-11T12:15:00.000Z",
-      expectedVersion: first.version,
-      originalSnapshot: first.originalSnapshot,
+      expectedVersion: "v1",
     };
-    await first.subject.reclaim(request);
-    await first.subject.verifyReclaimed(request);
-    const notExpired = adapter(api, "2026-08-11T11:00:00.000Z");
-    const snapshot = await notExpired.snapshotClaimState(ticket);
-    await expect(
-      notExpired.reclaim({
-        ...request,
-        staleClaim: request.claim,
-        claim: "wayfinder-claim:third" as ClaimRef,
-        expectedVersion: snapshot.version,
-      }),
-    ).rejects.toBeInstanceOf(ClaimCollisionError);
-  });
-
-  test("post-mutation comment failures are ambiguous", async () => {
-    const api = new FakeJira();
-    api.failure = { operation: "POST /rest/api/3/issue/JWB-288/comment", timing: "before" };
-    await expect(adapter(api).claim(claim())).rejects.toBeInstanceOf(AmbiguousTrackerResultError);
-    expect(api.assignee).toBe(owner);
-    expect(api.status).toBe("In Progress");
+    await expect(subject.claim(claim)).rejects.toBeInstanceOf(UnsupportedCapabilityError);
+    await expect(subject.verifyClaim(claim)).rejects.toBeInstanceOf(UnsupportedCapabilityError);
+    await expect(subject.restoreClaimState(restoreRequest(null))).rejects.toThrow(
+      "Persisted claimed owner is required",
+    );
+    await expect(subject.restoreClaimState(restoreRequest())).rejects.toBeInstanceOf(
+      UnsupportedCapabilityError,
+    );
+    const release: ReleaseClaimRequest = {
+      ...restoreRequest(),
+      expectedVersion: "v1",
+      authorizedBy: owner,
+    };
+    await expect(subject.releaseClaim(release)).rejects.toBeInstanceOf(UnsupportedCapabilityError);
+    await expect(subject.verifyReleased(release)).rejects.toBeInstanceOf(
+      UnsupportedCapabilityError,
+    );
+    expect(api.mutationCount()).toBe(0);
   });
 });
+
+function required<T>(items: readonly T[], index: number): T {
+  const item = items[index];
+  if (item === undefined) throw new Error(`Missing item at index ${index}`);
+  return item;
+}

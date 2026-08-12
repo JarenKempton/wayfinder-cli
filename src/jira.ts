@@ -1,12 +1,10 @@
-import {
-  AmbiguousTrackerResultError,
-  ClaimCollisionError,
-  type ClaimRequest,
-  type ReclaimRequest,
-  type ReleaseClaimRequest,
-  type RenewLeaseRequest,
-  type RestoreClaimRequest,
-  type TrackerAdapter,
+import type {
+  ClaimRequest,
+  FrontierTrackerAdapter,
+  ReclaimRequest,
+  ReleaseClaimRequest,
+  RenewLeaseRequest,
+  RestoreClaimRequest,
 } from "./contracts.ts";
 import {
   type ActorRef,
@@ -17,6 +15,7 @@ import {
   type TicketKind,
   type TicketRef,
   type TrackerSnapshot,
+  UnsupportedCapabilityError,
 } from "./domain.ts";
 import { parseRef } from "./reference.ts";
 
@@ -30,13 +29,6 @@ export interface JiraTransport {
   request<T = unknown>(method: string, path: string, body?: unknown): Promise<JiraResponse<T>>;
 }
 
-export interface JiraClock {
-  now(): Date;
-}
-
-interface JiraUser {
-  accountId: string;
-}
 interface JiraStatus {
   name: string;
   statusCategory?: { key?: string };
@@ -54,7 +46,7 @@ interface JiraIssue {
   key: string;
   fields: Record<string, unknown> & {
     updated: string;
-    assignee: JiraUser | null;
+    assignee: { accountId: string } | null;
     status: JiraStatus;
     issuetype: { name: string };
     parent?: { key: string };
@@ -75,102 +67,180 @@ interface JiraClaimSnapshot {
   status: string;
   claim: JiraClaimProperty | null;
 }
+interface JiraSearchPage {
+  issues?: JiraIssue[];
+  nextPageToken?: string;
+  isLast?: boolean;
+}
 
 export interface JiraTrackerOptions {
   instance: string;
   workspace: string;
   transport: JiraTransport;
-  clock: JiraClock;
+  /** Jira's site-specific field id for the standard LexoRank Rank field. */
+  rankField: string;
   /** Highest-priority name first; Jira numeric IDs have no portable semantic ordering. */
   priorityOrder: readonly string[];
-  /** A configured numeric field that preserves the map's native stable order. */
-  orderField: string;
   claimProperty?: string;
-  activeStatus?: string;
-  availableStatuses?: readonly string[];
+  pageSize?: number;
 }
+
+const MUTATION_CAPABILITIES = [
+  "atomic_assignment",
+  "conditional_update",
+  "claim_identity",
+  "claim_comments",
+  "lease_metadata",
+] as const;
 
 export function jiraCapabilities() {
-  return capabilities(
-    "native_maps",
-    "native_dependencies",
-    "cross_map_dependencies",
-    "workflow_transition",
-    "native_properties",
-    "claim_comments",
-    "lease_metadata",
-    "resolution_comments",
-  );
+  return capabilities("native_maps", "native_dependencies");
 }
 
-export class JiraTrackerAdapter implements TrackerAdapter {
+/**
+ * Jira Cloud read adapter. Mutating claim methods intentionally fail closed because Jira's
+ * assignment, transition, and property APIs do not expose one atomic conditional transaction.
+ */
+export class JiraTrackerAdapter implements FrontierTrackerAdapter {
   readonly #transport: JiraTransport;
-  readonly #clock: JiraClock;
   readonly #prefix: string;
   readonly #claimProperty: string;
-  readonly #activeStatus: string;
-  readonly #availableStatuses: ReadonlySet<string>;
   readonly #priorityOrder: readonly string[];
-  readonly #orderField: string;
+  readonly #rankField: string;
+  readonly #pageSize: number;
 
   constructor(options: JiraTrackerOptions) {
+    if (!options.rankField) throw new Error("Jira Rank field id is required");
     if (options.priorityOrder.length === 0) throw new Error("Jira priority order is required");
-    if (!options.orderField) throw new Error("Jira native order field is required");
+    if (
+      options.pageSize !== undefined &&
+      (!Number.isInteger(options.pageSize) || options.pageSize < 1 || options.pageSize > 100)
+    )
+      throw new Error("Jira page size must be an integer from 1 to 100");
     this.#transport = options.transport;
-    this.#clock = options.clock;
     this.#prefix = `jira:${options.instance}:${options.workspace}`;
     this.#claimProperty = options.claimProperty ?? "wayfinder.claim";
-    this.#activeStatus = options.activeStatus ?? "In Progress";
-    this.#availableStatuses = new Set(options.availableStatuses ?? ["To Do", "Open"]);
     this.#priorityOrder = options.priorityOrder;
-    this.#orderField = options.orderField;
+    this.#rankField = options.rankField;
+    this.#pageSize = options.pageSize ?? 100;
   }
 
   async describe() {
-    // Jira has no server-side CAS spanning assignment, status, and properties.
     return jiraCapabilities();
   }
 
   async preflight(ticket: TicketRef): Promise<void> {
-    const key = this.#key(ticket);
-    await this.#issue(ticket);
-    const permissions = await this.#required<{
-      permissions?: Record<string, { havePermission?: boolean }>;
-    }>(
-      "GET",
-      `/rest/api/3/mypermissions?issueKey=${key}&permissions=ASSIGN_ISSUES,EDIT_ISSUES,ADD_COMMENTS,TRANSITION_ISSUES`,
-      undefined,
-      "read permissions",
-    );
-    for (const permission of [
-      "ASSIGN_ISSUES",
-      "EDIT_ISSUES",
-      "ADD_COMMENTS",
-      "TRANSITION_ISSUES",
-    ]) {
-      if (!permissions.permissions?.[permission]?.havePermission)
-        throw new Error(`Jira permission is required: ${permission}`);
-    }
-    const edit = await this.#required<{ fields?: { assignee?: { operations?: string[] } } }>(
-      "GET",
-      `/rest/api/3/issue/${key}/editmeta`,
-      undefined,
-      "read edit metadata",
-    );
-    if (!edit.fields?.assignee?.operations?.includes("set"))
-      throw new Error("Jira assignee is not editable");
-    const transitions = await this.#transitions(ticket);
-    if (!transitions.some((item) => item.to.name === this.#activeStatus))
-      throw new Error(`Jira status is not reachable: ${this.#activeStatus}`);
-    // A readable property endpoint plus EDIT_ISSUES is Jira's non-mutating property preflight.
-    await this.#readClaim(ticket);
+    await this.getTicket(ticket);
+    // Decline before the mutation window: neither a claim CAS nor exact restoration CAS exists.
+    this.#mutationUnavailable();
   }
 
   async getTicket(ticket: TicketRef): Promise<Ticket> {
     const issue = await this.#issue(ticket);
-    const order = issue.fields[this.#orderField];
-    if (typeof order !== "number" || !Number.isFinite(order))
-      throw new Error(`Jira native order field is not numeric: ${this.#orderField}`);
+    const parent = issue.fields.parent?.key;
+    if (!parent) throw new Error("Jira Wayfinder ticket has no parent map");
+    const map = `${this.#prefix}:map:${parent}` as MapRef;
+    const tickets = await this.listMapTickets(map);
+    const found = tickets.find((item) => item.ref === ticket);
+    if (!found) throw new Error(`Jira ticket is not a child of its reported map: ${ticket}`);
+    return found;
+  }
+
+  async listMapTickets(map: MapRef): Promise<Ticket[]> {
+    const mapKey = this.#mapKey(map);
+    const issues: JiraIssue[] = [];
+    let nextPageToken: string | undefined;
+    do {
+      const page = await this.#required<JiraSearchPage>(
+        "POST",
+        "/rest/api/3/search/jql",
+        {
+          jql: `parent = ${JSON.stringify(mapKey)} ORDER BY Rank ASC`,
+          fields: this.#fields(),
+          maxResults: this.#pageSize,
+          ...(nextPageToken ? { nextPageToken } : {}),
+        },
+        "search map tickets",
+      );
+      if (!Array.isArray(page.issues)) throw new Error("Invalid Jira search page");
+      issues.push(...page.issues);
+      if (page.isLast === true || !page.nextPageToken) break;
+      if (page.nextPageToken === nextPageToken) throw new Error("Jira search page token repeated");
+      nextPageToken = page.nextPageToken;
+    } while (nextPageToken !== undefined);
+    return issues.map((issue, order) =>
+      this.#normalize(issue, this.#ticketRef(issue.key), map, order),
+    );
+  }
+
+  async snapshotClaimState(ticket: TicketRef): Promise<TrackerSnapshot> {
+    const issue = await this.#issue(ticket);
+    return {
+      version: issue.fields.updated,
+      payload: {
+        assignee: issue.fields.assignee?.accountId ?? null,
+        status: issue.fields.status.name,
+        claim: await this.#readClaim(ticket),
+      } satisfies JiraClaimSnapshot,
+    };
+  }
+
+  async claim(_request: ClaimRequest): Promise<void> {
+    this.#mutationUnavailable();
+  }
+
+  async verifyClaim(_request: ClaimRequest): Promise<void> {
+    this.#mutationUnavailable();
+  }
+
+  async restoreClaimState(request: RestoreClaimRequest): Promise<void> {
+    requireClaimedOwner(request.claimedOwner);
+    this.#mutationUnavailable();
+  }
+
+  async verifyRestored(request: RestoreClaimRequest): Promise<void> {
+    requireClaimedOwner(request.claimedOwner);
+    this.#mutationUnavailable();
+  }
+
+  async renewLease(_request: RenewLeaseRequest): Promise<void> {
+    this.#mutationUnavailable();
+  }
+
+  async verifyLease(_request: RenewLeaseRequest): Promise<void> {
+    this.#mutationUnavailable();
+  }
+
+  async releaseClaim(request: ReleaseClaimRequest): Promise<void> {
+    requireClaimedOwner(request.claimedOwner);
+    this.#mutationUnavailable();
+  }
+
+  async verifyReleased(request: ReleaseClaimRequest): Promise<void> {
+    requireClaimedOwner(request.claimedOwner);
+    this.#mutationUnavailable();
+  }
+
+  async reclaim(_request: ReclaimRequest): Promise<void> {
+    this.#mutationUnavailable();
+  }
+
+  async verifyReclaimed(_request: ReclaimRequest): Promise<void> {
+    this.#mutationUnavailable();
+  }
+
+  async addComment(_ticket: TicketRef, _text: string): Promise<void> {
+    this.#mutationUnavailable();
+  }
+
+  async resolve(_ticket: TicketRef, _status = "Done"): Promise<void> {
+    this.#mutationUnavailable();
+  }
+
+  #normalize(issue: JiraIssue, ref: TicketRef, map: MapRef, order: number): Ticket {
+    const rank = issue.fields[this.#rankField];
+    if (typeof rank !== "string" || rank.length === 0)
+      throw new Error(`Jira Rank field is missing or invalid: ${this.#rankField}`);
     const priorityName = issue.fields.priority?.name;
     const priorityIndex = priorityName ? this.#priorityOrder.indexOf(priorityName) : -1;
     if (priorityName && priorityIndex < 0)
@@ -180,14 +250,14 @@ export class JiraTrackerAdapter implements TrackerAdapter {
       if (link.inwardIssue && link.type.inward.toLowerCase().includes("blocked by")) {
         dependencies.push({
           blocking: this.#ticketRef(link.inwardIssue.key),
-          blocked: ticket,
+          blocked: ref,
           kind: "blocks",
         });
       }
     }
     return {
-      ref: ticket,
-      map: `${this.#prefix}:map:${issue.fields.parent?.key ?? issue.key}` as MapRef,
+      ref,
+      map,
       kind: this.#kind(issue.fields.issuetype.name),
       state: issue.fields.status.statusCategory?.key === "done" ? "closed" : "open",
       status: issue.fields.status.name,
@@ -195,226 +265,36 @@ export class JiraTrackerAdapter implements TrackerAdapter {
       dependencies,
       order,
       ...(priorityIndex >= 0 ? { priority: this.#priorityOrder.length - priorityIndex } : {}),
-      metadata: { nativeKey: issue.key, version: issue.fields.updated, priorityName },
-    };
-  }
-
-  async snapshotClaimState(ticket: TicketRef): Promise<TrackerSnapshot> {
-    const issue = await this.#issue(ticket);
-    return { version: issue.fields.updated, payload: await this.#snapshot(issue, ticket) };
-  }
-
-  async claim(request: ClaimRequest): Promise<void> {
-    const issue = await this.#issue(request.ticket);
-    const original = await this.#snapshot(issue, request.ticket);
-    if (
-      issue.fields.updated !== request.expectedVersion ||
-      original.assignee !== null ||
-      original.claim !== null ||
-      !this.#availableStatuses.has(original.status)
-    )
-      throw new ClaimCollisionError();
-    const guard: JiraClaimProperty = {
-      claim: request.claim,
-      run: request.run,
-      owner: request.owner,
-      leaseExpiresAt: request.leaseExpiresAt,
-      originalSnapshot: { version: request.expectedVersion, payload: original },
-    };
-    try {
-      await this.#putClaim(request.ticket, guard);
-    } catch (error) {
-      const observed = await this.#current(request.ticket);
-      if (ownedEqual(observed, original))
-        throw new ClaimCollisionError(`Jira claim guard was not established: ${message(error)}`);
-      throw new AmbiguousTrackerResultError(
-        `Jira claim guard result is ambiguous: ${message(error)}`,
-      );
-    }
-    try {
-      await this.#assign(request.ticket, String(request.owner));
-      await this.#transition(request.ticket, this.#activeStatus);
-      await this.addComment(
-        request.ticket,
-        `Wayfinder claim ${request.claim} for ${request.run}; lease ${request.leaseExpiresAt}.`,
-      );
-    } catch (error) {
-      throw new AmbiguousTrackerResultError(`Jira guarded claim may be partial: ${message(error)}`);
-    }
-  }
-
-  async verifyClaim(request: ClaimRequest): Promise<void> {
-    const current = await this.#current(request.ticket);
-    if (
-      current.assignee !== String(request.owner) ||
-      current.status !== this.#activeStatus ||
-      !claimEqual(current.claim, {
-        claim: request.claim,
-        run: request.run,
-        owner: request.owner,
-        leaseExpiresAt: request.leaseExpiresAt,
-      })
-    )
-      throw new AmbiguousTrackerResultError("Jira claim verification failed");
-  }
-
-  async restoreClaimState(request: RestoreClaimRequest): Promise<void> {
-    const original = snapshotPayload(request.originalSnapshot);
-    let current = await this.#current(request.ticket);
-    if (ownedEqual(current, original)) return;
-    if (current.claim?.claim !== request.claim)
-      throw new ClaimCollisionError("Claim changed before restoration");
-    try {
-      if (current.assignee !== original.assignee)
-        await this.#assign(request.ticket, original.assignee);
-      current = await this.#current(request.ticket);
-      if (current.status !== original.status)
-        await this.#transition(request.ticket, original.status);
-      current = await this.#current(request.ticket);
-      if (original.claim) await this.#putClaim(request.ticket, original.claim);
-      else await this.#deleteClaim(request.ticket);
-    } catch (error) {
-      throw new AmbiguousTrackerResultError(`Jira restoration may be partial: ${message(error)}`);
-    }
-  }
-
-  async verifyRestored(request: RestoreClaimRequest): Promise<void> {
-    if (!ownedEqual(await this.#current(request.ticket), snapshotPayload(request.originalSnapshot)))
-      throw new AmbiguousTrackerResultError("Jira owned fields do not match the original snapshot");
-  }
-
-  async renewLease(request: RenewLeaseRequest): Promise<void> {
-    const issue = await this.#issue(request.ticket);
-    const current = await this.#snapshot(issue, request.ticket);
-    if (issue.fields.updated !== request.expectedVersion || current.claim?.claim !== request.claim)
-      throw new ClaimCollisionError("Claim changed before renewal");
-    await this.#putClaim(request.ticket, {
-      ...current.claim,
-      leaseExpiresAt: request.leaseExpiresAt,
-    });
-  }
-
-  async verifyLease(request: RenewLeaseRequest): Promise<void> {
-    const current = await this.#current(request.ticket);
-    if (
-      current.claim?.claim !== request.claim ||
-      current.claim.leaseExpiresAt !== request.leaseExpiresAt
-    )
-      throw new AmbiguousTrackerResultError("Jira lease verification failed");
-  }
-
-  async releaseClaim(request: ReleaseClaimRequest): Promise<void> {
-    const issue = await this.#issue(request.ticket);
-    const current = await this.#snapshot(issue, request.ticket);
-    if (issue.fields.updated !== request.expectedVersion || current.claim?.claim !== request.claim)
-      throw new ClaimCollisionError("Claim or Jira revision changed before release");
-    await this.restoreClaimState(request);
-    try {
-      await this.addComment(
-        request.ticket,
-        `Wayfinder claim ${request.claim} released by ${request.authorizedBy}.`,
-      );
-    } catch (error) {
-      throw new AmbiguousTrackerResultError(
-        `Jira release comment result is ambiguous: ${message(error)}`,
-      );
-    }
-  }
-
-  async verifyReleased(request: ReleaseClaimRequest): Promise<void> {
-    await this.verifyRestored(request);
-  }
-
-  async reclaim(request: ReclaimRequest): Promise<void> {
-    const issue = await this.#issue(request.ticket);
-    const current = await this.#snapshot(issue, request.ticket);
-    if (
-      issue.fields.updated !== request.expectedVersion ||
-      current.claim?.claim !== request.staleClaim ||
-      Date.parse(current.claim.leaseExpiresAt) > this.#clock.now().getTime()
-    )
-      throw new ClaimCollisionError("Claim is not reclaimable");
-    const next: JiraClaimProperty = {
-      claim: request.claim,
-      run: request.run,
-      owner: request.owner,
-      leaseExpiresAt: request.leaseExpiresAt,
-      originalSnapshot: request.originalSnapshot,
-      supersedes: request.staleClaim,
-    };
-    try {
-      await this.#putClaim(request.ticket, next);
-      await this.#assign(request.ticket, String(request.owner));
-      await this.addComment(
-        request.ticket,
-        `Wayfinder claim ${request.claim} supersedes stale ${request.staleClaim}; authorized by ${request.authorizedBy}.`,
-      );
-    } catch (error) {
-      throw new AmbiguousTrackerResultError(
-        `Jira guarded reclaim may be partial: ${message(error)}`,
-      );
-    }
-  }
-
-  async verifyReclaimed(request: ReclaimRequest): Promise<void> {
-    const current = await this.#current(request.ticket);
-    if (
-      current.assignee !== String(request.owner) ||
-      !claimEqual(current.claim, {
-        claim: request.claim,
-        run: request.run,
-        owner: request.owner,
-        leaseExpiresAt: request.leaseExpiresAt,
-        supersedes: request.staleClaim,
-      })
-    )
-      throw new AmbiguousTrackerResultError("Jira reclaim verification failed");
-  }
-
-  async addComment(ticket: TicketRef, text: string): Promise<void> {
-    await this.#required(
-      "POST",
-      `/rest/api/3/issue/${this.#key(ticket)}/comment`,
-      {
-        body: {
-          type: "doc",
-          version: 1,
-          content: [{ type: "paragraph", content: [{ type: "text", text }] }],
-        },
+      metadata: {
+        nativeKey: issue.key,
+        version: issue.fields.updated,
+        rank,
+        priorityName,
       },
-      "add comment",
-    );
-  }
-
-  async resolve(ticket: TicketRef, status = "Done"): Promise<void> {
-    await this.#transition(ticket, status);
-  }
-
-  async #current(ticket: TicketRef): Promise<JiraClaimSnapshot> {
-    const issue = await this.#issue(ticket);
-    return this.#snapshot(issue, ticket);
-  }
-
-  async #snapshot(issue: JiraIssue, ticket: TicketRef): Promise<JiraClaimSnapshot> {
-    return {
-      assignee: issue.fields.assignee?.accountId ?? null,
-      status: issue.fields.status.name,
-      claim: await this.#readClaim(ticket),
     };
+  }
+
+  async #issue(ticket: TicketRef): Promise<JiraIssue> {
+    return this.#required(
+      "GET",
+      `/rest/api/3/issue/${this.#ticketKey(ticket)}?fields=${this.#fields().join(",")}`,
+      undefined,
+      "read issue",
+    );
   }
 
   async #readClaim(ticket: TicketRef): Promise<JiraClaimProperty | null> {
     const property = await this.#transport.request<{ value?: JiraClaimProperty }>(
       "GET",
-      `/rest/api/3/issue/${this.#key(ticket)}/properties/${encodeURIComponent(this.#claimProperty)}`,
+      `/rest/api/3/issue/${this.#ticketKey(ticket)}/properties/${encodeURIComponent(this.#claimProperty)}`,
     );
     if (property.status !== 200 && property.status !== 404)
       throw new Error(`Jira property read failed (${property.status})`);
     return property.status === 200 ? (property.body?.value ?? null) : null;
   }
 
-  async #issue(ticket: TicketRef): Promise<JiraIssue> {
-    const fields = [
+  #fields(): string[] {
+    return [
       "updated",
       "assignee",
       "status",
@@ -422,62 +302,8 @@ export class JiraTrackerAdapter implements TrackerAdapter {
       "parent",
       "issuelinks",
       "priority",
-      this.#orderField,
-    ].join(",");
-    return this.#required(
-      "GET",
-      `/rest/api/3/issue/${this.#key(ticket)}?fields=${fields}`,
-      undefined,
-      "read issue",
-    );
-  }
-
-  async #assign(ticket: TicketRef, accountId: string | null): Promise<void> {
-    await this.#required(
-      "PUT",
-      `/rest/api/3/issue/${this.#key(ticket)}/assignee`,
-      { accountId },
-      "assign issue",
-    );
-  }
-
-  async #putClaim(ticket: TicketRef, claim: JiraClaimProperty): Promise<void> {
-    await this.#required(
-      "PUT",
-      `/rest/api/3/issue/${this.#key(ticket)}/properties/${encodeURIComponent(this.#claimProperty)}`,
-      claim,
-      "write claim property",
-    );
-  }
-
-  async #deleteClaim(ticket: TicketRef): Promise<void> {
-    const response = await this.#transport.request(
-      "DELETE",
-      `/rest/api/3/issue/${this.#key(ticket)}/properties/${encodeURIComponent(this.#claimProperty)}`,
-    );
-    if (response.status !== 204 && response.status !== 404)
-      throw new Error(`Jira claim property delete failed (${response.status})`);
-  }
-
-  async #transitions(ticket: TicketRef) {
-    const result = await this.#required<{
-      transitions: Array<{ id: string; to: { name: string } }>;
-    }>("GET", `/rest/api/3/issue/${this.#key(ticket)}/transitions`, undefined, "read transitions");
-    return result.transitions;
-  }
-
-  async #transition(ticket: TicketRef, status: string): Promise<void> {
-    const transition = (await this.#transitions(ticket)).find((item) => item.to.name === status);
-    if (!transition) {
-      if ((await this.#issue(ticket)).fields.status.name === status) return;
-      throw new Error(`Jira status is not reachable: ${status}`);
-    }
-    await this.#required(
-      "POST",
-      `/rest/api/3/issue/${this.#key(ticket)}/transitions`,
-      { transition: { id: transition.id } },
-      "transition issue",
-    );
+      this.#rankField,
+    ];
   }
 
   async #required<T>(method: string, path: string, body: unknown, operation: string): Promise<T> {
@@ -487,16 +313,24 @@ export class JiraTrackerAdapter implements TrackerAdapter {
     return response.body as T;
   }
 
-  #key(ref: TicketRef): string {
+  #ticketKey(ref: TicketRef): string {
+    return encodeURIComponent(this.#nativeKey(ref, "ticket"));
+  }
+
+  #mapKey(ref: MapRef): string {
+    return this.#nativeKey(ref, "map");
+  }
+
+  #nativeKey(ref: TicketRef | MapRef, kind: "ticket" | "map"): string {
     const parsed = parseRef(ref);
     if (
-      parsed.kind !== "ticket" ||
+      parsed.kind !== kind ||
       parsed.adapter !== "jira" ||
-      parsed.nativeId === undefined ||
+      !parsed.nativeId ||
       `${parsed.adapter}:${parsed.instance}:${parsed.workspace}` !== this.#prefix
     )
-      throw new Error(`Ticket is outside Jira workspace: ${ref}`);
-    return encodeURIComponent(parsed.nativeId);
+      throw new Error(`${kind} is outside Jira workspace: ${ref}`);
+    return parsed.nativeId;
   }
 
   #ticketRef(key: string): TicketRef {
@@ -507,45 +341,13 @@ export class JiraTrackerAdapter implements TrackerAdapter {
     const value = name.toLowerCase();
     return value === "research" || value === "prototype" || value === "decision" ? value : "task";
   }
+
+  #mutationUnavailable(): never {
+    throw new UnsupportedCapabilityError(MUTATION_CAPABILITIES);
+  }
 }
 
-function snapshotPayload(snapshot: TrackerSnapshot): JiraClaimSnapshot {
-  const value = snapshot.payload as Partial<JiraClaimSnapshot> | null;
-  if (!value || !("assignee" in value) || typeof value.status !== "string" || !("claim" in value))
-    throw new Error("Invalid Jira claim snapshot");
-  return value as JiraClaimSnapshot;
-}
-
-function ownedEqual(left: JiraClaimSnapshot, right: JiraClaimSnapshot): boolean {
-  return (
-    left.assignee === right.assignee &&
-    left.status === right.status &&
-    claimEqual(left.claim, right.claim)
-  );
-}
-
-function claimEqual(
-  left: JiraClaimProperty | null,
-  right: Partial<JiraClaimProperty> | null,
-): boolean {
-  if (left === null || right === null) return left === right;
-  return (
-    left.claim === right.claim &&
-    left.run === right.run &&
-    left.owner === right.owner &&
-    left.leaseExpiresAt === right.leaseExpiresAt &&
-    left.supersedes === right.supersedes &&
-    (right.originalSnapshot === undefined ||
-      snapshotEqual(left.originalSnapshot, right.originalSnapshot))
-  );
-}
-
-function snapshotEqual(left: TrackerSnapshot, right: TrackerSnapshot): boolean {
-  return (
-    left.version === right.version && ownedEqual(snapshotPayload(left), snapshotPayload(right))
-  );
-}
-
-function message(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+function requireClaimedOwner(owner: ActorRef | undefined): ActorRef {
+  if (!owner) throw new Error("Persisted claimed owner is required");
+  return owner;
 }
