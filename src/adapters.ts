@@ -1,6 +1,7 @@
 import { type CapabilitySet, capabilities } from "./domain.ts";
 import {
   type NamedHarnessName,
+  namedHarnessAvailable,
   namedHarnessCapabilities,
   namedHarnessExecutable,
 } from "./harness-adapters.ts";
@@ -25,7 +26,19 @@ const harnessExecutables = {
   command: undefined,
 };
 
-export function builtInAdapters(): AdapterDescriptor[] {
+export interface AdapterDiscoveryPlatform {
+  which(executable: string): string | null;
+  platform: NodeJS.Platform;
+}
+
+const bunDiscoveryPlatform: AdapterDiscoveryPlatform = {
+  which: Bun.which,
+  platform: process.platform,
+};
+
+export function builtInAdapters(
+  platform: AdapterDiscoveryPlatform = bunDiscoveryPlatform,
+): AdapterDescriptor[] {
   const trackers = ["jira", "linear", "github", "markdown"].map<AdapterDescriptor>((name) => ({
     name,
     kind: "tracker",
@@ -36,7 +49,8 @@ export function builtInAdapters(): AdapterDescriptor[] {
 
   const commandHarnesses = Object.entries(harnessExecutables).map<AdapterDescriptor>(
     ([name, executable]) => {
-      const available = name === "command" || (executable ? Bun.which(executable) !== null : false);
+      const available =
+        name === "command" ? true : namedHarnessAvailable(name as NamedHarnessName, platform);
       return {
         name,
         kind: "harness",
@@ -44,7 +58,9 @@ export function builtInAdapters(): AdapterDescriptor[] {
         available,
         ...(executable ? { executable } : {}),
         capabilities:
-          name === "command" ? capabilities() : namedHarnessCapabilities(name as NamedHarnessName),
+          name === "command"
+            ? capabilities()
+            : namedHarnessCapabilities(name as NamedHarnessName, platform),
       };
     },
   );

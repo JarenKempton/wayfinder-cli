@@ -182,3 +182,12 @@ export function namedHarnessCapabilities(
   if (!supported || !platform.which(profile.argv[0] as string)) return capabilities(...prepare);
   return capabilities(...prepare, "process_launch");
 }
+
+export function namedHarnessAvailable(
+  name: NamedHarnessName,
+  platform: Pick<HarnessPlatform, "which" | "platform"> = bunPlatform,
+): boolean {
+  const profile = namedHarnesses[name];
+  const supported = !profile.platforms || profile.platforms.includes(platform.platform);
+  return supported && platform.which(profile.argv[0] as string) !== null;
+}

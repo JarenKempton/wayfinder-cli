@@ -192,6 +192,34 @@ describe("named harnesses", () => {
     }
   });
 
+  test("registry availability uses the same injected executable and platform gate", () => {
+    for (const name of ["claude", "codex", "cursor"] as const) {
+      const platform = new FakePlatform();
+      platform.platform = "win32";
+      platform.found.add(profiles[name].executable);
+      const descriptor = builtInAdapters(platform).find((adapter) => adapter.name === name);
+      expect(descriptor).toMatchObject({
+        name,
+        available: false,
+        capabilities: { prompt_generation: true },
+      });
+
+      platform.platform = "linux";
+      expect(builtInAdapters(platform).find((adapter) => adapter.name === name)).toMatchObject({
+        name,
+        available: true,
+        capabilities: { prompt_generation: true, process_launch: true },
+      });
+
+      platform.found.clear();
+      expect(builtInAdapters(platform).find((adapter) => adapter.name === name)).toMatchObject({
+        name,
+        available: false,
+        capabilities: { prompt_generation: true },
+      });
+    }
+  });
+
   test("keeps T3 out of command discovery and advertises no unproven host capability", () => {
     const t3 = builtInAdapters().find((adapter) => adapter.name === "t3");
     expect(t3).toEqual({
