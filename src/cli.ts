@@ -3,6 +3,7 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { builtInAdapters, findAdapter } from "./adapters.ts";
+import { runAdapterConformance } from "./conformance.ts";
 import type { GroupRef, MapRef, Ticket, TicketRef, WorkspaceRef } from "./domain.ts";
 import { evaluateFrontier, type FrontierScope } from "./frontier.ts";
 import { databasePath } from "./paths.ts";
@@ -65,6 +66,7 @@ Usage:
   wayfinder adapter list
   wayfinder adapter describe <name>
   wayfinder adapter test <executable>
+  wayfinder adapter conformance <fixture>
   wayfinder runs list
   wayfinder runs show <run-id>
   wayfinder runs export <run-id>
@@ -114,14 +116,23 @@ async function adapter(args: string[], write: (text: string) => void): Promise<v
   if (subcommand === "list") return writeJson(write, builtInAdapters());
   if (subcommand === "describe" && target) return writeJson(write, findAdapter(target));
   if (subcommand === "test" && target) {
-    const description = await new AdapterClient(target).initialize(
+    const description = await new AdapterClient(adapterCommand(target)).initialize(
       "tracker",
       "conformance:test",
       VERSION,
     );
     return writeJson(write, { ok: true, adapter: description });
   }
-  throw new Error("adapter requires list, describe <name>, or test <executable>");
+  if (subcommand === "conformance" && target) {
+    return writeJson(write, await runAdapterConformance(target, VERSION));
+  }
+  throw new Error(
+    "adapter requires list, describe <name>, test <executable>, or conformance <fixture>",
+  );
+}
+
+function adapterCommand(executable: string): string | string[] {
+  return executable.endsWith(".ts") ? [process.execPath, executable] : executable;
 }
 
 function runs(args: string[], write: (text: string) => void): void {

@@ -9,7 +9,22 @@ import type {
   WorkspaceAdapter,
 } from "./contracts.ts";
 import { ClaimCollisionError, HarnessLaunchError } from "./contracts.ts";
-import { capabilities, type PreparedWorkspace, type Run, type RunRef } from "./domain.ts";
+import {
+  capabilities,
+  type PreparedWorkspace,
+  type Run,
+  type RunRef,
+  requireCapabilities,
+} from "./domain.ts";
+import { validateExecutionRoute } from "./routing.ts";
+
+const MUTATING_PICKUP_TRACKER_CAPABILITIES = capabilities(
+  "atomic_assignment",
+  "conditional_update",
+  "claim_comments",
+  "claim_identity",
+  "lease_metadata",
+);
 
 export type PickupState =
   | "planning"
@@ -92,17 +107,20 @@ export class PickupCoordinator {
     if (ticket.state !== "open" || ticket.assignee !== undefined) {
       throw new Error("Ticket is not claimable");
     }
-    await this.#options.tracker.describe();
+    const trackerCapabilities = await this.#options.tracker.describe();
+    requireCapabilities(trackerCapabilities, MUTATING_PICKUP_TRACKER_CAPABILITIES);
     await this.#options.tracker.preflight(request.ticket);
     await this.#options.workspace.preflight(ticket);
     const plan = await this.#options.workspace.plan(ticket);
-    await this.#options.harness.describe();
+    const harnessCapabilities = await this.#options.harness.describe();
+    validateExecutionRoute(request, harnessCapabilities);
     await this.#options.harness.preflight({
       run: runRef,
       ticket,
       workspace: { path: plan.path, branch: plan.branch },
       ...(request.model ? { model: request.model } : {}),
       ...(request.effort ? { effort: request.effort } : {}),
+      ...(request.context ? { context: request.context } : {}),
     });
 
     const snapshot = await this.#options.tracker.snapshotClaimState(request.ticket);
@@ -127,7 +145,7 @@ export class PickupCoordinator {
           await this.#options.ledger.recordStep(runRef, "collision", receipt, error);
           throw new PickupResultError(receipt, error);
         }
-        return this.#compensate(receipt, snapshot, error);
+        return this.#compensate(receipt, snapshot, request.owner, error);
       }
       await this.#options.tracker.verifyClaim(claimRequest);
       receipt.state = "claimed";
@@ -144,6 +162,7 @@ export class PickupCoordinator {
         workspace: prepared,
         ...(request.model ? { model: request.model } : {}),
         ...(request.effort ? { effort: request.effort } : {}),
+        ...(request.context ? { context: request.context } : {}),
       };
       const launch = await this.#options.harness.launch(launchRequest);
       receipt.state = "launched";
@@ -154,6 +173,9 @@ export class PickupCoordinator {
       run.status = "active";
       run.updatedAt = this.#options.clock.now().toISOString();
       if (request.model) run.model = request.model;
+      if (request.effort) run.effort = request.effort;
+      if (request.context) run.context = request.context;
+      run.capabilities = harnessCapabilities;
       await this.#options.ledger.saveRun(run);
       receipt.ok = true;
       receipt.state = "committed";
@@ -164,13 +186,14 @@ export class PickupCoordinator {
       if (error instanceof HarnessLaunchError && error.receipt) {
         receipt.launch = error.receipt;
       }
-      return this.#compensate(receipt, snapshot, error);
+      return this.#compensate(receipt, snapshot, request.owner, error);
     }
   }
 
   async #compensate(
     receipt: PickupReceipt,
     snapshot: Awaited<ReturnType<TrackerAdapter["snapshotClaimState"]>>,
+    claimedOwner: PickupRequest["owner"],
     cause: unknown,
   ): Promise<never> {
     receipt.ok = false;
@@ -187,6 +210,7 @@ export class PickupCoordinator {
     const restoreRequest = {
       ticket: receipt.ticket,
       claim: receipt.claim,
+      claimedOwner,
       originalSnapshot: snapshot,
     };
     try {

@@ -19,6 +19,7 @@ export const CAPABILITIES = [
   "conditional_update",
   "native_properties",
   "claim_comments",
+  "claim_identity",
   "lease_metadata",
   "resolution_comments",
   "artifact_links",
@@ -32,6 +33,7 @@ export const CAPABILITIES = [
   "session_close",
   "model_selection",
   "reasoning_selection",
+  "context_selection",
   "tool_configuration",
   "visible_multi_session",
   "workspace_prepare",
@@ -212,6 +214,8 @@ export interface Run {
   ticket: TicketRef;
   harness: AdapterRef;
   model?: string;
+  effort?: string;
+  context?: string;
   workspace: PreparedWorkspace;
   capabilities: CapabilitySet;
   status: RunStatus;

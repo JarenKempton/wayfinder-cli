@@ -28,13 +28,23 @@ import { PickupCoordinator, PickupResultError } from "../src/pickup.ts";
 
 class FakeLedger implements Ledger {
   readonly steps: string[] = [];
-  saveRun(_run: Run): void {}
+  savedRun?: Run;
+  saveRun(run: Run): void {
+    this.savedRun = structuredClone(run);
+  }
   recordStep(_run: RunRef, state: string): void {
     this.steps.push(state);
   }
 }
 
 class FakeTracker implements TrackerAdapter {
+  describedCapabilities = capabilities(
+    "atomic_assignment",
+    "conditional_update",
+    "claim_comments",
+    "claim_identity",
+    "lease_metadata",
+  );
   claimError?: Error;
   preflightError?: Error;
   restoreError?: Error;
@@ -44,9 +54,10 @@ class FakeTracker implements TrackerAdapter {
   restoreRequest?: RestoreClaimRequest;
   claimCalls = 0;
   restoreCalls = 0;
+  snapshotCalls = 0;
 
   async describe() {
-    return capabilities("conditional_update");
+    return this.describedCapabilities;
   }
   async preflight(_ticket: TicketRef) {
     if (this.preflightError) throw this.preflightError;
@@ -62,6 +73,7 @@ class FakeTracker implements TrackerAdapter {
     };
   }
   async snapshotClaimState(_ticket: TicketRef): Promise<TrackerSnapshot> {
+    this.snapshotCalls += 1;
     return { version: "1", payload: { assignee: null, status: "To Do" } };
   }
   async claim(request: ClaimRequest) {
@@ -104,11 +116,17 @@ class FakeHarness implements HarnessAdapter {
   launchError?: Error;
   stopError?: Error;
   stopped = false;
+  describedCapabilities = capabilities("process_launch");
+  preflightRequest?: Parameters<HarnessAdapter["preflight"]>[0];
+  launchRequest?: Parameters<HarnessAdapter["launch"]>[0];
   async describe() {
-    return capabilities("process_launch");
+    return this.describedCapabilities;
   }
-  async preflight() {}
-  async launch(): Promise<LaunchReceipt> {
+  async preflight(request: Parameters<HarnessAdapter["preflight"]>[0]) {
+    this.preflightRequest = request;
+  }
+  async launch(request: Parameters<HarnessAdapter["launch"]>[0]): Promise<LaunchReceipt> {
+    this.launchRequest = request;
     if (this.launchError) throw this.launchError;
     return { sessionId: "s", tier: "launch" };
   }
@@ -183,6 +201,79 @@ describe("pickup coordinator", () => {
     expect(tracker.restoreCalls).toBe(0);
   });
 
+  test("hosted-style weak tracker capabilities fail before snapshot or mutation", async () => {
+    const tracker = new FakeTracker();
+    tracker.describedCapabilities = capabilities("native_maps", "native_dependencies");
+    const { coordinator: subject } = coordinator(tracker);
+    await expect(subject.execute(request)).rejects.toThrow(
+      "Unsupported capabilities: atomic_assignment, conditional_update, claim_comments, claim_identity, lease_metadata",
+    );
+    expect(tracker.snapshotCalls).toBe(0);
+    expect(tracker.claimCalls).toBe(0);
+  });
+
+  test("requested routing capabilities are rejected before claim", async () => {
+    const harness = new FakeHarness();
+    harness.describedCapabilities = capabilities("process_launch", "model_selection");
+    const {
+      coordinator: subject,
+      tracker,
+      workspace,
+    } = coordinator(new FakeTracker(), new FakeWorkspace(), harness);
+    await expect(
+      subject.execute({
+        ...request,
+        model: "gpt",
+        effort: "high",
+        context: "repo",
+        requiredCapabilities: capabilities("session_resume"),
+      }),
+    ).rejects.toThrow(
+      "Unsupported capabilities: session_resume, reasoning_selection, context_selection",
+    );
+    expect(tracker.claimCalls).toBe(0);
+    expect(workspace).toBeDefined();
+    expect(harness.preflightRequest).toBeUndefined();
+  });
+
+  test("validated routing settings reach preflight, launch, and the run ledger", async () => {
+    const harness = new FakeHarness();
+    harness.describedCapabilities = capabilities(
+      "process_launch",
+      "model_selection",
+      "reasoning_selection",
+      "context_selection",
+    );
+    const { coordinator: subject, ledger } = coordinator(
+      new FakeTracker(),
+      new FakeWorkspace(),
+      harness,
+    );
+    await subject.execute({
+      ...request,
+      model: "gpt",
+      effort: "high",
+      context: "repo",
+    });
+    expect(harness.preflightRequest).toMatchObject({
+      model: "gpt",
+      effort: "high",
+      context: "repo",
+    });
+    expect(harness.launchRequest).toMatchObject({
+      model: "gpt",
+      effort: "high",
+      context: "repo",
+    });
+    expect(ledger.savedRun).toMatchObject({
+      model: "gpt",
+      effort: "high",
+      context: "repo",
+      capabilities: harness.describedCapabilities,
+      status: "active",
+    });
+  });
+
   test("definite claim collision does not compensate", async () => {
     const tracker = new FakeTracker();
     tracker.claimError = new ClaimCollisionError();
@@ -200,6 +291,7 @@ describe("pickup coordinator", () => {
     expect(tracker.restoreRequest).toEqual({
       ticket: request.ticket,
       claim: "wayfinder-claim:test",
+      claimedOwner: request.owner,
       originalSnapshot: { version: "1", payload: { assignee: null, status: "To Do" } },
     });
   });
