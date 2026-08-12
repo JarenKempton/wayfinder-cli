@@ -14,7 +14,11 @@ import type {
 } from "../src/contracts.ts";
 import type { Claim, Run, Ticket, TicketRef, TrackerSnapshot } from "../src/domain.ts";
 import { capabilities } from "../src/domain.ts";
-import { LifecycleCoordinator, Supervisor } from "../src/lifecycle.ts";
+import {
+  LifecycleCoordinator,
+  Supervisor,
+  type SupervisorHeartbeatScheduler,
+} from "../src/lifecycle.ts";
 import { ProcessLifecycleAdapter } from "../src/platform/process-lifecycle.ts";
 import { StateStore } from "../src/state.ts";
 
@@ -123,6 +127,33 @@ function supervisor(
     supervisorId: "test-supervisor",
     ...extra,
   });
+}
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
+
+class ManualHeartbeat implements SupervisorHeartbeatScheduler {
+  callback?: () => void;
+  intervalMs?: number;
+  stopped = false;
+
+  start(callback: () => void, intervalMs: number): () => void {
+    this.callback = callback;
+    this.intervalMs = intervalMs;
+    return () => {
+      this.stopped = true;
+    };
+  }
+
+  fire(): void {
+    if (!this.callback) throw new Error("Heartbeat has not started");
+    this.callback();
+  }
 }
 
 describe("supervisor", () => {
@@ -300,35 +331,57 @@ describe("supervisor", () => {
   test("heartbeat prevents a long tick from overlapping", async () => {
     const item = fixture();
     item.add("a");
-    let finish!: () => void;
-    const blocked = new Promise<void>((resolve) => {
-      finish = resolve;
-    });
+    const entered = deferred();
+    const blocked = deferred();
+    const heartbeat = new ManualHeartbeat();
+    let lockNow = new Date("2026-08-10T12:00:00.000Z");
+    let first: Promise<Array<{ run: Run["ref"]; outcome: string }>> | undefined;
     try {
-      const first = supervisor(
+      first = supervisor(
         item.store,
         new Tracker(),
         () =>
           lifecycle({
             observe: async () => {
-              await blocked;
+              entered.resolve();
+              await blocked.promise;
               return { state: "running", observedAt: new Date().toISOString() };
             },
           }),
-        { supervisorId: "first", supervisorLockMs: 30 },
+        {
+          supervisorId: "first",
+          supervisorLockMs: 30,
+          lockClock: () => lockNow,
+          heartbeatScheduler: heartbeat,
+        },
       ).tick();
-      await Bun.sleep(55);
+      await entered.promise;
+      expect(heartbeat.intervalMs).toBe(10);
+
+      lockNow = new Date("2026-08-10T12:00:00.020Z");
+      heartbeat.fire();
+      expect(item.store.supervisorStatus()).toEqual({
+        owner: "first",
+        heartbeat_at: "2026-08-10T12:00:00.020Z",
+        expires_at: "2026-08-10T12:00:00.050Z",
+      });
+
+      lockNow = new Date("2026-08-10T12:00:00.031Z");
       await expect(
         supervisor(item.store, new Tracker(), () => lifecycle(), {
           supervisorId: "second",
           supervisorLockMs: 30,
+          lockClock: () => lockNow,
+          heartbeatScheduler: new ManualHeartbeat(),
         }).tick(),
       ).rejects.toThrow("Another per-user supervisor");
-      finish();
+      blocked.resolve();
       await first;
+      expect(heartbeat.stopped).toBeTrue();
       expect(item.store.supervisorStatus()).toBeUndefined();
     } finally {
-      finish?.();
+      blocked.resolve();
+      await first?.catch(() => undefined);
       item.cleanup();
     }
   });
@@ -336,34 +389,35 @@ describe("supervisor", () => {
   test("same-process supervisor identity cannot overlap an unexpired tick", async () => {
     const item = fixture();
     item.add("a");
-    let finish!: () => void;
-    const blocked = new Promise<void>((resolve) => {
-      finish = resolve;
-    });
+    const entered = deferred();
+    const blocked = deferred();
+    let first: Promise<Array<{ run: Run["ref"]; outcome: string }>> | undefined;
     try {
-      const first = supervisor(
+      first = supervisor(
         item.store,
         new Tracker(),
         () =>
           lifecycle({
             observe: async () => {
-              await blocked;
+              entered.resolve();
+              await blocked.promise;
               return { state: "running", observedAt: "now" };
             },
           }),
         { supervisorId: "same-process", supervisorLockMs: 1_000 },
       ).tick();
-      await Bun.sleep(10);
+      await entered.promise;
       await expect(
         supervisor(item.store, new Tracker(), () => lifecycle(), {
           supervisorId: "same-process",
           supervisorLockMs: 1_000,
         }).tick(),
       ).rejects.toThrow("Another per-user supervisor");
-      finish();
+      blocked.resolve();
       await first;
     } finally {
-      finish?.();
+      blocked.resolve();
+      await first?.catch(() => undefined);
       item.cleanup();
     }
   });
