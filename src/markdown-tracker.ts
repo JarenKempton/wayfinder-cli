@@ -1,4 +1,4 @@
-import { mkdir, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, resolve } from "node:path";
 import type {
@@ -18,8 +18,10 @@ import {
   type Ticket,
   type TicketRef,
   type TrackerSnapshot,
+  type WorkspaceRef,
 } from "./domain.ts";
 import { evaluateFrontier, type FrontierScope } from "./frontier.ts";
+import { parseRef } from "./reference.ts";
 
 const FENCE = "wayfinder-tracker";
 const RENDERED_START = "<!-- wayfinder-rendered:start -->";
@@ -52,6 +54,7 @@ export interface MarkdownClaimRecord {
 export interface MarkdownTicketRecord extends Ticket {
   title: string;
   claim?: MarkdownClaimRecord;
+  claimHistory: MarkdownClaimRecord[];
   comments: string[];
   artifacts: string[];
 }
@@ -59,6 +62,7 @@ export interface MarkdownTicketRecord extends Ticket {
 export interface MarkdownTrackerDocument {
   format: "wayfinder-markdown-tracker";
   version: number;
+  workspace: WorkspaceRef;
   maps: MarkdownMapRecord[];
   tickets: MarkdownTicketRecord[];
 }
@@ -269,6 +273,7 @@ export class MarkdownTrackerAdapter implements TrackerAdapter {
       }
       prior.status = "superseded";
       prior.supersededBy = request.claim;
+      ticket.claimHistory.push(structuredClone(prior));
       ticket.assignee = request.owner;
       ticket.claim = {
         ref: request.claim,
@@ -421,13 +426,7 @@ export class MarkdownTrackerAdapter implements TrackerAdapter {
       document.version += 1;
       const next = replaceTrackerRegions(source, document);
       parseMarkdownTracker(next);
-      const temporary = `${this.path}.${process.pid}.${crypto.randomUUID()}.tmp`;
-      try {
-        await writeFile(temporary, next, "utf8");
-        await rename(temporary, this.path);
-      } finally {
-        await rm(temporary, { force: true });
-      }
+      await durableAtomicReplace(this.path, next);
     });
   }
 
@@ -537,6 +536,41 @@ export function formatMarkdownTracker(document: MarkdownTrackerDocument): string
   return `# Wayfinder tracker\n\n${renderGenerated(document)}\n\n\`\`\`${FENCE}\n${JSON.stringify(document, null, 2)}\n\`\`\`\n`;
 }
 
+/**
+ * Syncs complete temporary contents before replacement and parent-directory metadata afterward
+ * where the host supports directory handles. Replacement atomicity is exactly that provided by
+ * Node/libuv and the destination filesystem; no stronger power-loss guarantee is claimed.
+ */
+export async function durableAtomicReplace(path: string, contents: string): Promise<void> {
+  const temporary = `${path}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(temporary, "wx");
+    await handle.writeFile(contents, "utf8");
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await rename(temporary, path);
+    await syncDirectory(dirname(path));
+  } finally {
+    await handle?.close();
+    await rm(temporary, { force: true });
+  }
+}
+
+async function syncDirectory(path: string): Promise<void> {
+  let directory: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    directory = await open(path, "r");
+    await directory.sync();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (!new Set(["EINVAL", "ENOTSUP", "EISDIR", "EPERM", "EACCES"]).has(code ?? "")) throw error;
+  } finally {
+    await directory?.close();
+  }
+}
+
 function replaceTrackerRegions(source: string, document: MarkdownTrackerDocument): string {
   validateDocument(document);
   const block = locateStateBlock(source);
@@ -588,8 +622,11 @@ function locateStateBlock(source: string) {
 
 function validateDocument(value: unknown): MarkdownTrackerDocument {
   const item = object(value, "document");
+  exactKeys(item, ["format", "version", "workspace", "maps", "tickets"], "document");
   equal(item.format, "wayfinder-markdown-tracker", "document.format");
   integer(item.version, "document.version", 0);
+  const workspace = string(item.workspace, "document.workspace") as WorkspaceRef;
+  const workspaceParts = qualifiedRef(workspace, "workspace", "document.workspace");
   const maps = array(item.maps, "document.maps").map((value, index) => validateMap(value, index));
   const tickets = array(item.tickets, "document.tickets").map((value, index) =>
     validateTicket(value, index),
@@ -620,7 +657,53 @@ function validateDocument(value: unknown): MarkdownTrackerDocument {
         );
     }
   }
-  return { format: "wayfinder-markdown-tracker", version: item.version as number, maps, tickets };
+  for (const [index, map] of maps.entries()) {
+    sameWorkspace(
+      qualifiedRef(map.ref, "map", `document.maps[${index}].ref`),
+      workspaceParts,
+      `document.maps[${index}].ref`,
+    );
+  }
+  for (const [index, ticket] of tickets.entries()) {
+    sameWorkspace(
+      qualifiedRef(ticket.ref, "ticket", `document.tickets[${index}].ref`),
+      workspaceParts,
+      `document.tickets[${index}].ref`,
+    );
+    if (ticket.group)
+      sameWorkspace(
+        qualifiedRef(ticket.group, "group", `document.tickets[${index}].group`),
+        workspaceParts,
+        `document.tickets[${index}].group`,
+      );
+    for (const [dependencyIndex, dependency] of (ticket.dependencies ?? []).entries()) {
+      sameWorkspace(
+        qualifiedRef(
+          dependency.blocking,
+          "ticket",
+          `document.tickets[${index}].dependencies[${dependencyIndex}].blocking`,
+        ),
+        workspaceParts,
+        `document.tickets[${index}].dependencies[${dependencyIndex}].blocking`,
+      );
+      sameWorkspace(
+        qualifiedRef(
+          dependency.blocked,
+          "ticket",
+          `document.tickets[${index}].dependencies[${dependencyIndex}].blocked`,
+        ),
+        workspaceParts,
+        `document.tickets[${index}].dependencies[${dependencyIndex}].blocked`,
+      );
+    }
+  }
+  return {
+    format: "wayfinder-markdown-tracker",
+    version: item.version as number,
+    workspace,
+    maps,
+    tickets,
+  };
 }
 
 function validateMap(value: unknown, index: number): MarkdownMapRecord {
@@ -654,6 +737,7 @@ function validateTicket(value: unknown, index: number): MarkdownTicketRecord {
       "metadata",
       "title",
       "claim",
+      "claimHistory",
       "comments",
       "artifacts",
     ],
@@ -680,6 +764,29 @@ function validateTicket(value: unknown, index: number): MarkdownTicketRecord {
           };
         });
   const claim = item.claim === undefined ? undefined : validateClaim(item.claim, `${path}.claim`);
+  const claimHistory = array(item.claimHistory, `${path}.claimHistory`).map((entry, claimIndex) =>
+    validateClaim(entry, `${path}.claimHistory[${claimIndex}]`),
+  );
+  unique(
+    claimHistory.map((historicalClaim) => historicalClaim.ref),
+    `${path}.claimHistory[].ref`,
+  );
+  for (const [claimIndex, historicalClaim] of claimHistory.entries()) {
+    if (historicalClaim.status !== "superseded" || !historicalClaim.supersededBy) {
+      invalid(
+        `${path}.claimHistory[${claimIndex}]`,
+        "must be superseded and identify its successor",
+      );
+    }
+    const successor = claimHistory[claimIndex + 1] ?? claim;
+    if (
+      successor &&
+      (historicalClaim.supersededBy !== successor.ref ||
+        successor.supersedes !== historicalClaim.ref)
+    ) {
+      invalid(`${path}.claimHistory[${claimIndex}]`, "does not form a reciprocal claim chain");
+    }
+  }
   return {
     ref: string(item.ref, `${path}.ref`) as TicketRef,
     map: string(item.map, `${path}.map`) as MapRef,
@@ -700,9 +807,32 @@ function validateTicket(value: unknown, index: number): MarkdownTicketRecord {
     ...(item.metadata === undefined ? {} : { metadata: object(item.metadata, `${path}.metadata`) }),
     title: string(item.title, `${path}.title`),
     ...(claim ? { claim } : {}),
+    claimHistory,
     comments: stringArray(item.comments, `${path}.comments`),
     artifacts: stringArray(item.artifacts, `${path}.artifacts`),
   };
+}
+
+function qualifiedRef(value: string, kind: "workspace" | "group" | "map" | "ticket", path: string) {
+  let parsed: ReturnType<typeof parseRef>;
+  try {
+    parsed = parseRef(value);
+  } catch (error) {
+    invalid(path, error instanceof Error ? error.message : "must be a qualified reference");
+  }
+  if (parsed.kind !== kind) invalid(path, `must be a qualified ${kind} reference`);
+  if (parsed.adapter !== "markdown") invalid(path, 'adapter must be "markdown"');
+  return parsed;
+}
+
+function sameWorkspace(
+  value: ReturnType<typeof parseRef>,
+  workspace: ReturnType<typeof parseRef>,
+  path: string,
+): void {
+  if (value.instance !== workspace.instance || value.workspace !== workspace.workspace) {
+    invalid(path, `must belong to workspace ${workspace.raw}`);
+  }
 }
 
 function validateClaim(value: unknown, path: string): MarkdownClaimRecord {

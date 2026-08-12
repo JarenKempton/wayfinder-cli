@@ -1,22 +1,23 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { findAdapter } from "../src/adapters.ts";
 import { ClaimCollisionError } from "../src/contracts.ts";
-import type { ActorRef, MapRef, TicketRef } from "../src/domain.ts";
+import type { ActorRef, MapRef, TicketRef, WorkspaceRef } from "../src/domain.ts";
 import {
   formatMarkdownTracker,
   MarkdownTrackerAdapter,
   type MarkdownTrackerClock,
   type MarkdownTrackerDocument,
   MarkdownTrackerLockError,
-  type MarkdownTrackerValidationError,
+  MarkdownTrackerValidationError,
   parseMarkdownTracker,
 } from "../src/markdown-tracker.ts";
 
 const map = "markdown:local:fixtures:map:map-1" as MapRef;
 const otherMap = "markdown:local:fixtures:map:map-2" as MapRef;
+const workspace = "markdown:local:fixtures" as WorkspaceRef;
 const blocker = "markdown:local:fixtures:ticket:a" as TicketRef;
 const ticket = "markdown:local:fixtures:ticket:b" as TicketRef;
 const owner = "jaren" as ActorRef;
@@ -35,6 +36,7 @@ function document(): MarkdownTrackerDocument {
   return {
     format: "wayfinder-markdown-tracker",
     version: 1,
+    workspace,
     maps: [
       { ref: map, title: "Reference map", order: 0, context: [] },
       { ref: otherMap, title: "Other map", order: 1, context: [] },
@@ -50,6 +52,7 @@ function document(): MarkdownTrackerDocument {
         order: 0,
         comments: [],
         artifacts: [],
+        claimHistory: [],
       },
       {
         ref: ticket,
@@ -62,6 +65,7 @@ function document(): MarkdownTrackerDocument {
         dependencies: [{ blocking: blocker, blocked: ticket, kind: "blocks" }],
         comments: [],
         artifacts: [],
+        claimHistory: [],
       },
     ],
   };
@@ -120,6 +124,50 @@ describe("MarkdownTrackerAdapter", () => {
     );
   });
 
+  test.each([
+    [
+      "unqualified workspace",
+      (value: MarkdownTrackerDocument) => Object.assign(value, { workspace: "fixtures" }),
+    ],
+    [
+      "wrong adapter",
+      (value: MarkdownTrackerDocument) => {
+        const target = value.maps[0];
+        if (!target) throw new Error("fixture map missing");
+        target.ref = "jira:local:fixtures:map:map-1" as MapRef;
+      },
+    ],
+    [
+      "wrong kind",
+      (value: MarkdownTrackerDocument) => {
+        const target = value.tickets[0];
+        if (!target) throw new Error("fixture ticket missing");
+        target.ref = "markdown:local:fixtures:map:a" as TicketRef;
+      },
+    ],
+    [
+      "cross-workspace ticket",
+      (value: MarkdownTrackerDocument) => {
+        const target = value.tickets[0];
+        if (!target) throw new Error("fixture ticket missing");
+        target.ref = "markdown:local:elsewhere:ticket:a" as TicketRef;
+      },
+    ],
+    [
+      "cross-workspace dependency",
+      (value: MarkdownTrackerDocument) => {
+        const dependency = value.tickets[1]?.dependencies?.[0];
+        if (!dependency) throw new Error("fixture dependency missing");
+        dependency.blocking = "markdown:local:elsewhere:ticket:a" as TicketRef;
+      },
+    ],
+  ])("rejects %s references", (_name, mutate) => {
+    const value = document();
+    mutate(value);
+    const source = `\`\`\`wayfinder-tracker\n${JSON.stringify(value)}\n\`\`\``;
+    expect(() => parseMarkdownTracker(source)).toThrow(MarkdownTrackerValidationError);
+  });
+
   test("uses the injected clock for claim, renewal, and stale reclaim", async () => {
     let current = new Date(now);
     const adapter = await fixture("Human preface.\n\n", { now: () => new Date(current) });
@@ -151,7 +199,16 @@ describe("MarkdownTrackerAdapter", () => {
     };
     await adapter.reclaim(reclaim);
     await adapter.verifyReclaimed(reclaim);
-    expect((await adapter.read()).tickets[0]?.claim?.claimedAt).toBe(current.toISOString());
+    const reclaimed = (await adapter.read()).tickets[0];
+    expect(reclaimed?.claim?.claimedAt).toBe(current.toISOString());
+    expect(reclaimed?.claim).toMatchObject({ ref: reclaim.claim, supersedes: request.claim });
+    expect(reclaimed?.claimHistory).toEqual([
+      expect.objectContaining({
+        ref: request.claim,
+        status: "superseded",
+        supersededBy: reclaim.claim,
+      }),
+    ]);
   });
 
   test("restore is retry-safe, including compensation before the claim write lands", async () => {
@@ -238,6 +295,17 @@ describe("MarkdownTrackerAdapter", () => {
     expect(await adapter.inspectLock()).toMatchObject({ state: "orphaned" });
     await adapter.reclaimOrphanedLock("orphan");
     expect(await adapter.inspectLock()).toEqual({ state: "absent" });
+  });
+
+  test("durable replacement leaves a parseable target and no temporary files", async () => {
+    const adapter = await fixture();
+    const before = await adapter.snapshotClaimState(blocker);
+    await adapter.comment(blocker, `replacement on ${process.platform}`, before.version);
+    expect(parseMarkdownTracker(await readFile(adapter.path, "utf8")).tickets[0]?.comments).toEqual(
+      [`replacement on ${process.platform}`],
+    );
+    const files = await readdir(join(adapter.path, ".."));
+    expect(files.filter((name) => name.includes(".tmp"))).toEqual([]);
   });
 
   test("every advertised capability has behavioral conformance evidence", async () => {
