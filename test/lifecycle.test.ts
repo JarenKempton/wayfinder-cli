@@ -155,6 +155,72 @@ describe("supervisor", () => {
     }
   });
 
+  test("persisted active claim is stale at expiry and after restart downtime", async () => {
+    const item = fixture();
+    const { run } = item.add("a");
+    const tracker = new Tracker();
+    try {
+      for (const now of ["2026-08-10T12:15:00.000Z", "2026-08-10T12:20:00.000Z"]) {
+        const restarted = item.store.run(run.ref);
+        restarted.status = "active";
+        item.store.saveRun(restarted);
+        await supervisor(item.store, tracker, () => lifecycle(), {
+          clock: { now: () => new Date(now) },
+        }).tick();
+        expect(tracker.renewed).toEqual([]);
+        expect(item.store.run(run.ref).status).toBe("attention_required");
+      }
+    } finally {
+      item.cleanup();
+    }
+  });
+
+  test("claim expiring during observation is rejected by the final pre-renewal check", async () => {
+    const item = fixture();
+    const { run } = item.add("a");
+    const tracker = new Tracker();
+    const times = [
+      new Date("2026-08-10T12:14:59.000Z"),
+      new Date("2026-08-10T12:14:59.500Z"),
+      new Date("2026-08-10T12:15:00.000Z"),
+    ];
+    try {
+      await supervisor(item.store, tracker, () => lifecycle(), {
+        clock: { now: () => times.shift() ?? new Date("2026-08-10T12:15:00.000Z") },
+      }).tick();
+      expect(tracker.renewed).toEqual([]);
+      expect(item.store.run(run.ref).status).toBe("attention_required");
+    } finally {
+      item.cleanup();
+    }
+  });
+
+  test("explicit reclaimed identity may renew after restart downtime", async () => {
+    const item = fixture();
+    const { claim } = item.add("a");
+    const reclaimed: Claim = {
+      ...claim,
+      ref: "wayfinder-claim:reclaimed",
+      claimedAt: "2026-08-10T12:19:00.000Z",
+      leaseExpiresAt: "2026-08-10T12:30:00.000Z",
+      currentVersion: "4",
+      supersedes: claim.ref,
+    };
+    claim.status = "superseded";
+    claim.supersededBy = reclaimed.ref;
+    item.store.saveClaim(claim);
+    item.store.saveClaim(reclaimed);
+    const tracker = new Tracker();
+    try {
+      await supervisor(item.store, tracker, () => lifecycle(), {
+        clock: { now: () => new Date("2026-08-10T12:20:00.000Z") },
+      }).tick();
+      expect(tracker.renewed.map((request) => request.claim)).toEqual([reclaimed.ref]);
+    } finally {
+      item.cleanup();
+    }
+  });
+
   test("observe failure for run A is isolated while run B renews", async () => {
     const item = fixture();
     const a = item.add("a");
@@ -261,6 +327,41 @@ describe("supervisor", () => {
       finish();
       await first;
       expect(item.store.supervisorStatus()).toBeUndefined();
+    } finally {
+      finish?.();
+      item.cleanup();
+    }
+  });
+
+  test("same-process supervisor identity cannot overlap an unexpired tick", async () => {
+    const item = fixture();
+    item.add("a");
+    let finish!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    try {
+      const first = supervisor(
+        item.store,
+        new Tracker(),
+        () =>
+          lifecycle({
+            observe: async () => {
+              await blocked;
+              return { state: "running", observedAt: "now" };
+            },
+          }),
+        { supervisorId: "same-process", supervisorLockMs: 1_000 },
+      ).tick();
+      await Bun.sleep(10);
+      await expect(
+        supervisor(item.store, new Tracker(), () => lifecycle(), {
+          supervisorId: "same-process",
+          supervisorLockMs: 1_000,
+        }).tick(),
+      ).rejects.toThrow("Another per-user supervisor");
+      finish();
+      await first;
     } finally {
       finish?.();
       item.cleanup();
@@ -450,7 +551,7 @@ describe("lifecycle coordinator", () => {
     }
   });
 
-  test("CLI does not treat a bare verified flag as recovery proof", async () => {
+  test("standalone CLI does not advertise or execute unwired lifecycle commands", async () => {
     const directory = mkdtempSync(join(tmpdir(), "wayfinder-cli-recovery-"));
     const statePath = join(directory, "state.db");
     const store = new StateStore(statePath);
@@ -467,10 +568,16 @@ describe("lifecycle coordinator", () => {
     store.saveRun(run);
     store.close();
     try {
-      await runCli(["recover", run.ref, "--verified", "--evidence", "{}"], () => {}, { statePath });
+      const output: string[] = [];
+      await runCli(["help"], (line) => output.push(line), { statePath });
+      expect(output.join("\n")).not.toContain("wayfinder recover");
+      expect(output.join("\n")).not.toContain("wayfinder stop");
+      await expect(
+        runCli(["recover", run.ref, "--evidence", "{}"], () => {}, { statePath }),
+      ).rejects.toThrow("no recovery verifier is composed");
       const reopened = new StateStore(statePath);
       expect(reopened.run(run.ref).status).toBe("recovery_required");
-      expect(reopened.recoveryEvidence(run.ref)).toHaveLength(1);
+      expect(reopened.recoveryEvidence(run.ref)).toHaveLength(0);
       reopened.close();
     } finally {
       rmSync(directory, { recursive: true, force: true });

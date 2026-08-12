@@ -246,7 +246,7 @@ export class StateStore {
     const result = this.#database
       .query(`INSERT INTO supervisor_lock(singleton,owner,heartbeat_at,expires_at) VALUES(1,?,?,?)
         ON CONFLICT(singleton) DO UPDATE SET owner=excluded.owner,heartbeat_at=excluded.heartbeat_at,
-          expires_at=excluded.expires_at WHERE supervisor_lock.owner=excluded.owner OR supervisor_lock.expires_at<=excluded.heartbeat_at`)
+          expires_at=excluded.expires_at WHERE supervisor_lock.expires_at<=excluded.heartbeat_at`)
       .run(owner, heartbeatAt, expiresAt);
     return result.changes === 1;
   }

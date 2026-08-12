@@ -62,20 +62,22 @@ wayfinder runs list
 wayfinder runs show <run-id>
 wayfinder runs export <run-id>
 wayfinder claim show <claim-id>
-wayfinder claim release <claim-id> --authorized-by <actor>
-wayfinder stop <run-id>
-wayfinder recover <run-id> --evidence <json>
 wayfinder supervisor status
-wayfinder supervisor tick
-wayfinder supervisor reconcile <run-id> --evidence <json>
 ```
 
-Lifecycle commands use injected conforming tracker and harness adapters. Bare
-PIDs are explicitly insufficient process identity and the standalone fallback
-advertises no observe/stop capability; managed sessions fail before mutation
-unless their harness lifecycle adapter is configured.
-Claim release is always explicit and requires both an authorizing actor and a
-tracker adapter capable of guarded mutation plus read-after-write verification.
+The standalone binary advertises only those local/read commands because it does
+not yet compose a mutating tracker adapter, managed lifecycle adapter, or
+recovery verifier. A host that explicitly injects conforming runtime services
+also exposes `claim release`, `stop`, `recover`, `supervisor tick`, and
+`supervisor reconcile`; invoking those commands without the required service
+fails before opening or mutating the local store.
+
+Bare PIDs are explicitly insufficient process identity and the standalone
+fallback advertises no observe/stop capability. Claim release requires both an
+authorizing actor and a tracker adapter capable of guarded mutation plus
+read-after-write verification. The bundled hosted tracker adapters remain
+read-only for pickup unless their advertised capabilities prove the stronger
+mutation contract.
 
 ## Principles
 

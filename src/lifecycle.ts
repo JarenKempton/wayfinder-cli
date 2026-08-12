@@ -6,7 +6,7 @@ import type {
   TrackerAdapter,
 } from "./contracts.ts";
 import type { ActorRef, Claim, ClaimRef, Run, RunObservation, RunRef } from "./domain.ts";
-import { capabilities, requireCapabilities, stopRun } from "./domain.ts";
+import { capabilities, claimStatusAt, requireCapabilities, stopRun } from "./domain.ts";
 import type { StateStore } from "./state.ts";
 
 export interface SupervisorOptions {
@@ -23,10 +23,14 @@ export interface SupervisorOptions {
 }
 
 export class Supervisor {
-  constructor(private readonly options: SupervisorOptions) {}
+  readonly #instanceId: string;
+
+  constructor(private readonly options: SupervisorOptions) {
+    this.#instanceId = options.supervisorId ?? `process:${process.pid}:${crypto.randomUUID()}`;
+  }
 
   async tick(): Promise<Array<{ run: RunRef; outcome: string }>> {
-    const owner = this.options.supervisorId ?? `process:${process.pid}`;
+    const owner = this.#instanceId;
     const lockClock = this.options.lockClock ?? (() => new Date());
     const lockMs = this.options.supervisorLockMs ?? 60_000;
     const startedAt = lockClock();
@@ -83,8 +87,14 @@ export class Supervisor {
 
   async #process(run: Run, renewLock: () => void): Promise<{ run: RunRef; outcome: string }> {
     const claim = this.options.store.claimForRun(run.ref);
-    if (claim.status !== "active") {
-      this.#attention(run, { phase: "claim_check", claim: claim.ref, status: claim.status });
+    const observedClaimStatus = claimStatusAt(claim, this.options.clock.now());
+    if (observedClaimStatus !== "active") {
+      this.#attention(run, {
+        phase: "claim_check",
+        claim: claim.ref,
+        status: observedClaimStatus,
+        persistedStatus: claim.status,
+      });
       return { run: run.ref, outcome: "attention_required" };
     }
 
@@ -98,8 +108,13 @@ export class Supervisor {
       return { run: run.ref, outcome: "attention_required" };
     }
 
+    const renewalNow = this.options.clock.now();
+    if (claimStatusAt(claim, renewalNow) !== "active") {
+      this.#attention(run, { phase: "pre_renewal_claim_check", claim: claim.ref, status: "stale" });
+      return { run: run.ref, outcome: "attention_required" };
+    }
     const leaseExpiresAt = new Date(
-      this.options.clock.now().getTime() + (this.options.leaseDurationMs ?? 900_000),
+      renewalNow.getTime() + (this.options.leaseDurationMs ?? 900_000),
     ).toISOString();
     const request: RenewLeaseRequest = {
       claim: claim.ref,
@@ -108,12 +123,7 @@ export class Supervisor {
       expectedVersion: claim.currentVersion ?? claim.previousState.version,
     };
     renewLock();
-    this.options.store.beginRenewal(
-      run.ref,
-      claim.ref,
-      request,
-      this.options.clock.now().toISOString(),
-    );
+    this.options.store.beginRenewal(run.ref, claim.ref, request, renewalNow.toISOString());
     try {
       await this.options.tracker.renewLease(request);
     } catch (renewError) {
@@ -144,8 +154,13 @@ export class Supervisor {
       const run = this.options.store.run(pending.run);
       try {
         const claim = this.options.store.claim(pending.claim);
-        if (claim.status !== "active") throw new Error(`Claim is ${claim.status}`);
         const request = pending.request as RenewLeaseRequest;
+        const now = this.options.clock.now();
+        if (claimStatusAt(claim, now) !== "active") throw new Error("Claim is stale");
+        if (now.getTime() >= Date.parse(request.leaseExpiresAt)) {
+          this.options.store.discardRenewal(run.ref);
+          throw new Error("Pending renewal lease is already stale");
+        }
         renewLock();
         await this.options.tracker.verifyLease(request);
         const verified = await this.options.tracker.snapshotClaimState(claim.ticket);

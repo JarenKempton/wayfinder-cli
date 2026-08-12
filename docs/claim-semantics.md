@@ -35,7 +35,10 @@ The supervisor is a per-user runtime service protected by a heartbeat-refreshed,
 fenced local lock that is released after every tick. Each run is isolated so a
 missing claim, adapter error, or observation failure cannot abort later runs.
 Only an active run with an active claim and a session observed as running may
-renew. Released and superseded claims never renew. Missing, stopped, unknown,
+renew. Claim state is derived from `leaseExpiresAt` at the final pre-renewal
+check: a persisted `active` value is stale at or after expiry and requires an
+explicit reclaim. Released, superseded, expired, and restart-after-downtime
+claims never renew. Missing, stopped, unknown,
 or unverifiable sessions become `attention_required`; they are never silently
 stopped, released, or reassigned. Verified reconciliation of both the running
 session and matching active claim is the explicit path back to `active`.
