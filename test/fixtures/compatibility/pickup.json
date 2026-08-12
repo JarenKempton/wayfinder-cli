@@ -1,7 +1,7 @@
 {
   "ticket": {
-    "ref": "tracker:fixture:workspace:ticket:TASK-1",
-    "map": "tracker:fixture:workspace:map:MAP-1",
+    "ref": "tracker:fixture:workspace:ticket:JWB-233",
+    "map": "tracker:fixture:workspace:map:JWB-232",
     "kind": "task",
     "state": "open",
     "status": "To Do",
@@ -19,8 +19,8 @@
     }
   },
   "workspacePlan": {
-    "path": "/workspaces/TASK-1",
-    "branch": "task/TASK-1"
+    "path": "/fixtures/worktrees/JWB-233",
+    "branch": "task/JWB-233"
   },
   "clock": "2026-08-10T12:00:00.000Z",
   "expected": {
@@ -29,8 +29,8 @@
     "expectedVersion": "tracker-version-1",
     "leaseExpiresAt": "2026-08-10T12:15:00.000Z",
     "workspace": {
-      "path": "/workspaces/TASK-1",
-      "branch": "task/TASK-1"
+      "path": "/fixtures/worktrees/JWB-233",
+      "branch": "task/JWB-233"
     },
     "steps": ["planning", "claiming", "claimed", "workspace_prepared", "launched", "committed"]
   }

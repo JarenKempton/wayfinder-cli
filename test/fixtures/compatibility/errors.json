@@ -9,6 +9,7 @@
       "expected": {
         "state": "collision",
         "restoreCalls": 0,
+        "recoveryRequiredSaves": 0,
         "workspacePrepareCalls": 0,
         "harnessLaunchCalls": 0
       }
@@ -22,6 +23,7 @@
       "expected": {
         "state": "compensated",
         "restoreCalls": 1,
+        "recoveryRequiredSaves": 0,
         "restoresOriginalSnapshot": true
       }
     },
@@ -34,6 +36,7 @@
       "expected": {
         "state": "compensated",
         "restoreCalls": 1,
+        "recoveryRequiredSaves": 0,
         "restoresOriginalSnapshot": true,
         "harnessLaunchCalls": 0
       }
@@ -47,6 +50,7 @@
       "expected": {
         "state": "compensated",
         "restoreCalls": 1,
+        "recoveryRequiredSaves": 0,
         "restoresOriginalSnapshot": true
       }
     },
@@ -60,6 +64,7 @@
       "expected": {
         "state": "recovery_required",
         "restoreCalls": 1,
+        "recoveryRequiredSaves": 1,
         "restoresOriginalSnapshot": true
       }
     }

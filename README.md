@@ -10,7 +10,8 @@ by Matt Pocock. See [NOTICE.md](NOTICE.md) for attribution and project lineage.
 The normative [ownership boundary](docs/ownership-boundary.md) defines what
 stays in the MCP/skill layer and what belongs to this CLI runtime.
 The [compatibility fixtures](docs/compatibility-fixtures.md) exercise durable
-frontier ordering and pickup compensation behavior through production code.
+frontier ordering and pickup compensation through production code, plus an
+offline golden for the historical command and receipt surface.
 
 ## Status
 

@@ -18,6 +18,7 @@ import {
 import {
   type ActorRef,
   type AdapterRef,
+  type Claim,
   type ClaimRef,
   capabilities,
   type MapRef,
@@ -88,16 +89,75 @@ interface PickupFixture {
   };
 }
 
+interface LegacyParse {
+  operation: "frontier" | "pickup";
+  reference: string;
+  frontier: boolean;
+  harnessLaunch: boolean;
+  resumeOnly: boolean;
+  dryRun: boolean;
+  json: boolean;
+}
+
+function parseLegacyFlags(argv: string[]): LegacyParse {
+  const [operation, reference, ...flags] = argv;
+  if ((operation !== "frontier" && operation !== "pickup") || !reference) {
+    throw new Error("Legacy command requires frontier or pickup plus one reference");
+  }
+  const known = new Set(["--frontier", "--t3", "--resume", "--dry-run", "--json"]);
+  const unknown = flags.filter((flag) => !known.has(flag));
+  if (unknown.length > 0) throw new Error(`Unknown legacy flags: ${unknown.join(", ")}`);
+  if (operation === "frontier" && flags.some((flag) => flag !== "--json")) {
+    throw new Error("Legacy frontier accepts only --json");
+  }
+  return {
+    operation,
+    reference,
+    frontier: flags.includes("--frontier"),
+    harnessLaunch: flags.includes("--t3"),
+    resumeOnly: flags.includes("--resume"),
+    dryRun: flags.includes("--dry-run"),
+    json: flags.includes("--json"),
+  };
+}
+
 class FixtureLedger implements Ledger {
   readonly steps: string[] = [];
   readonly runs: Run[] = [];
+  readonly claims: Claim[] = [];
+  readonly recoveryRequired: Array<{
+    run: Run;
+    receipt: unknown;
+    error: unknown;
+    evidence: unknown;
+  }> = [];
 
   saveRun(run: Run): void {
     this.runs.push(structuredClone(run));
   }
 
-  recordStep(_run: RunRef, state: string): void {
+  saveClaim(claim: Claim): void {
+    this.claims.push(structuredClone(claim));
+  }
+
+  commitClaim(claim: Claim, receipt: unknown): void {
+    this.saveClaim(claim);
+    this.recordStep(claim.run, "claimed", receipt);
+  }
+
+  commitRun(run: Run, state: string, receipt: unknown): void {
+    this.saveRun(run);
+    this.recordStep(run.ref, state, receipt);
+  }
+
+  recordStep(_run: RunRef, state: string, _receipt?: unknown, _error?: unknown): void {
     this.steps.push(state);
+  }
+
+  saveRecoveryRequired(run: Run, receipt: unknown, error: unknown, evidence: unknown): void {
+    this.saveRun(run);
+    this.recoveryRequired.push({ run: structuredClone(run), receipt, error, evidence });
+    this.recordStep(run.ref, "recovery_required", receipt, error);
   }
 }
 
@@ -114,7 +174,13 @@ class FixtureTracker implements TrackerAdapter {
   ) {}
 
   async describe() {
-    return capabilities("conditional_update");
+    return capabilities(
+      "atomic_assignment",
+      "conditional_update",
+      "claim_comments",
+      "claim_identity",
+      "lease_metadata",
+    );
   }
   async preflight(_ticket: TicketRef) {}
   async getTicket(_ticket: TicketRef): Promise<Ticket> {
@@ -221,6 +287,141 @@ async function pickupFailure(
 }
 
 describe("compatibility fixtures exercise production behavior", () => {
+  test("legacy command forms, receipts, and TypeScript frontier parity stay golden", () => {
+    const value = fixture<{
+      formatVersion: number;
+      commands: Array<{ argv: string[]; expectedParse: LegacyParse }>;
+      offlineGolden: {
+        map: { key: string; title: string };
+        tickets: Array<{
+          key: string;
+          title: string;
+          role: TicketKind;
+          status: string;
+          order: number;
+        }>;
+        frontierReceipt: {
+          ok: boolean;
+          action: string;
+          map: { key: string; title: string };
+          tickets: Array<{
+            key: string;
+            title: string;
+            role: TicketKind;
+            status: string;
+          }>;
+        };
+        pickupPlanReceipt: {
+          ok: boolean;
+          action: string;
+          state: string;
+          transactionId: string;
+          ticket: { key: string; title: string; role: TicketKind };
+          map: { key: string; title: string };
+          repository: { github: string; baseBranch: string; baseCommit: string };
+          workspace: { path: string; branch: string; policy: string };
+          claim: null;
+          t3: { threadId: null; title: string; worktreePath: string };
+        };
+        frontierPickupSelects: string;
+      };
+      liveFrontierCapture: {
+        capturedAt: string;
+        argv: string[];
+        result: {
+          ok: boolean;
+          code: string;
+          message: string;
+          transactionId: null;
+          stage: string;
+          recoverable: boolean;
+          details: { map: string };
+        };
+      };
+    }>("legacy-wf.json");
+
+    expect(value.formatVersion).toBe(1);
+    for (const command of value.commands) {
+      expect(parseLegacyFlags(command.argv)).toEqual(command.expectedParse);
+    }
+
+    expect(Object.keys(value.offlineGolden.frontierReceipt).sort()).toEqual([
+      "action",
+      "map",
+      "ok",
+      "tickets",
+    ]);
+    expect(Object.keys(value.offlineGolden.pickupPlanReceipt).sort()).toEqual([
+      "action",
+      "claim",
+      "map",
+      "ok",
+      "repository",
+      "state",
+      "t3",
+      "ticket",
+      "transactionId",
+      "workspace",
+    ]);
+
+    const mapRef = `tracker:fixture:workspace:map:${value.offlineGolden.map.key}` as MapRef;
+    const portableTickets = value.offlineGolden.tickets.map<Ticket>((ticket) => ({
+      ref: `tracker:fixture:workspace:ticket:${ticket.key}` as TicketRef,
+      map: mapRef,
+      kind: ticket.role,
+      state: "open",
+      status: ticket.status,
+      order: ticket.order,
+    }));
+    const portableFrontier = evaluateFrontier(
+      portableTickets,
+      { map: mapRef },
+      {
+        availableStatuses: new Set(["To Do"]),
+      },
+    );
+    const nativeIds = portableFrontier.map((ticket) => ticket.ref.split(":").at(-1));
+    expect(nativeIds).toEqual(
+      value.offlineGolden.frontierReceipt.tickets.map((ticket) => ticket.key),
+    );
+    expect(value.offlineGolden.frontierReceipt).toMatchObject({
+      ok: true,
+      action: "frontier_listed",
+      map: value.offlineGolden.map,
+      tickets: value.offlineGolden.tickets.map(({ order: _order, ...ticket }) => ticket),
+    });
+    expect(nativeIds.length).toBeGreaterThan(0);
+    expect(value.offlineGolden.frontierPickupSelects).toBe(nativeIds[0] as string);
+
+    const pickup = fixture<PickupFixture>("pickup.json");
+    expect(value.offlineGolden.pickupPlanReceipt.workspace).toEqual({
+      ...pickup.workspacePlan,
+      policy: "ticket-key-v1",
+    });
+    expect(value.offlineGolden.pickupPlanReceipt.ticket).toMatchObject({
+      key: pickup.ticket.ref.split(":").at(-1),
+      role: pickup.ticket.kind,
+    });
+    expect(value.offlineGolden.pickupPlanReceipt.t3).toMatchObject({
+      threadId: null,
+      worktreePath: pickup.workspacePlan.path,
+    });
+
+    expect(value.liveFrontierCapture).toEqual({
+      capturedAt: "2026-08-11",
+      argv: ["frontier", "JWB-232", "--json"],
+      result: {
+        ok: false,
+        code: "map_config_missing",
+        message: "No WF map configuration for JWB-232",
+        transactionId: null,
+        stage: "resolve",
+        recoverable: false,
+        details: { map: "JWB-232" },
+      },
+    });
+  });
+
   test("frontier fixture is evaluated and ordered by evaluateFrontier", () => {
     const value = fixture<{
       scope: string;
@@ -261,6 +462,14 @@ describe("compatibility fixtures exercise production behavior", () => {
       branch: value.workspacePlan.branch,
     });
     expect(subject.ledger.steps).toEqual(value.expected.steps);
+    expect(subject.ledger.claims.at(-1)).toMatchObject({
+      ticket: value.ticket.ref,
+      humanOwner: value.expected.humanOwner,
+      previousState: value.snapshot,
+      leaseExpiresAt: value.expected.leaseExpiresAt,
+      status: "active",
+      currentVersion: value.expected.expectedVersion,
+    });
     expect(subject.ledger.runs.at(-1)).toMatchObject({
       ticket: value.ticket.ref,
       harness: value.request.harness,
@@ -285,6 +494,7 @@ describe("compatibility fixtures exercise production behavior", () => {
           restoresOriginalSnapshot?: boolean;
           workspacePrepareCalls?: number;
           harnessLaunchCalls?: number;
+          recoveryRequiredSaves: number;
         };
       }>;
     }>("errors.json");
@@ -308,6 +518,9 @@ describe("compatibility fixtures exercise production behavior", () => {
 
       expect(result.receipt.state, scenario.name).toBe(scenario.expected.state);
       expect(subject.tracker.restoreCalls, scenario.name).toBe(scenario.expected.restoreCalls);
+      expect(subject.ledger.recoveryRequired.length, scenario.name).toBe(
+        scenario.expected.recoveryRequiredSaves,
+      );
       if (scenario.expected.restoresOriginalSnapshot !== undefined) {
         expect(
           subject.tracker.restoreRequest?.originalSnapshot === pickup.snapshot,

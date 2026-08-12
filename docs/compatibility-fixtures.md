@@ -12,6 +12,20 @@ frontier evaluator and pickup coordinator. The fixtures contain no dependency
 on a particular tracker, workspace provider, harness, command-line client, or
 session product.
 
+The legacy golden additionally freezes these historical command forms and
+their Python receipt contract:
+
+- `wf frontier JWB-232 --json`;
+- `wf pickup JWB-233 --t3`;
+- `wf pickup JWB-232 --frontier --t3`;
+- `wf pickup JWB-233 --dry-run --json`.
+
+The test parses every legacy flag combination, asserts the JSON receipt keys,
+checks deterministic `task/JWB-233` and `<worktree-root>/JWB-233` identity, and
+normalizes the Python frontier golden through production `evaluateFrontier`.
+This is offline parity data, not a runtime dependency on the historical Python
+implementation.
+
 ## Covered contract
 
 1. Frontier evaluation is read-only, honors map scope, excludes assigned,
@@ -31,3 +45,15 @@ Lease renewal, explicit release, and human-authorized stale reclaim are outside
 these pickup fixtures because they are separate production contracts. Their
 human ownership, expected-version, original-snapshot, and authorization
 requirements are exercised in `test/claim.test.ts`.
+
+## Live boundary
+
+The read-only legacy frontier command was attempted on 2026-08-11 and returned
+the captured `map_config_missing` receipt because JWB-232 is no longer present
+in the machine-local map configuration. Live pickup was not executed: it would
+claim tracker work, create or reuse a worktree, and start a harness session.
+Those effects require an explicitly configured disposable tracker/repository
+and credentials. Until such a target is provided, command parsing, success
+receipt shape, deterministic identity, and Python-to-TypeScript normalization
+remain deterministic offline goldens; live mutation parity is intentionally
+unproven.
