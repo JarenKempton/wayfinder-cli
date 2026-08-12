@@ -90,13 +90,20 @@ adapter boundary defined in [Development environment boundary](environment-bound
 
 ## Git workspaces
 
-The Git adapter consumes one explicit repository mapping and derives the canonical
-`<worktreeRoot>/<native-ticket-id>` path and `<ticket-kind>/<native-ticket-id>` branch.
+The Git adapter consumes one explicit repository mapping. It injectively base64url-encodes
+the ticket's tracker, instance, workspace, and native ID components into a qualified
+identity, then derives the canonical `<worktreeRoot>/<qualified-identity>` path and
+`wayfinder/<qualified-identity>` branch. Preparation recomputes this mapping from the
+ticket reference and rejects caller-altered plans before any Git operation.
+
 Preparation resumes only an already-registered exact path/branch pair. An occupied path,
-branch checked out elsewhere, detached worktree, or mismatched repository mapping fails
-closed. Resume preserves dirty work; worktree removal is a separate explicit operation
-that refuses dirty work. Git is always invoked with an argument array so native paths,
-including paths containing spaces, are not shell-interpreted.
+branch checked out elsewhere, detached or ambiguous worktree, or mismatched repository
+mapping fails closed. SSH URL, HTTPS URL, and scp-style remotes normalize to a shared
+host/path identity; other URL schemes are unsupported. Resume preserves dirty work.
+Deletion requires the exact prepared-workspace record, verifies the canonical real path
+under the configured root and unambiguous Git registration, and refuses dirty work. Git
+is always invoked with an argument array so native paths, including paths containing
+spaces, are not shell-interpreted.
 
 ## Capability honesty
 
