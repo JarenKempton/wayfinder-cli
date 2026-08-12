@@ -16,10 +16,32 @@ frontier ordering and pickup compensation behavior through production code.
 
 Wayfinder CLI is a TypeScript/Bun pre-release. This repository currently defines and implements the stable
 foundation: qualified references, portable ticket and capability types, frontier
-evaluation, adapter protocol discovery, layered execution routing, SQLite run
-state, and the initial CLI. Hosted tracker mutations and product-specific
-session lifecycle adapters must pass their conformance suites before being
-advertised as supported.
+evaluation, adapter protocol discovery, layered execution routing, SQLite run,
+claim, lease, observation, and recovery state, and the lifecycle CLI. Bundled
+Linear and GitHub Issues adapters normalize
+native map children and blockers and exhaust provider pagination. Their hosted
+assignment APIs do not satisfy mutating pickup's capability gate, so they remain
+read-only in pickup coordination. Product-specific session lifecycle adapters
+must pass their conformance suites before being advertised as supported.
+
+## Tracker credentials
+
+The Linear adapter accepts a scoped API token and the GitHub adapter accepts a
+token with repository Issues access. Tokens are passed in request headers and
+are never placed in process arguments or logs. The registry leaves both adapters
+unavailable until credential validation and CLI composition are proven; merely
+setting an environment variable does not advertise a usable adapter.
+
+Both adapters intentionally omit `conditional_update`, `atomic_assignment`, and
+`lease_metadata` from their advertised capabilities. Their public assignment APIs
+do not provide a verified compare-and-swap, durable claim identity, or native
+expiring lease. Mutating pickup requires all of those capabilities and fails
+before snapshot or mutation when they are absent. Direct compensation helpers
+retain the persisted claimed-owner guard and never overwrite a concurrent owner.
+
+The GitHub adapter uses the documented REST API version `2026-03-10`, pins
+authenticated pagination to the configured API origin, and rejects
+cross-repository sub-issues or blockers at the v1 workspace boundary.
 
 ## Develop from source
 
@@ -36,15 +58,28 @@ wayfinder resolve <reference>
 wayfinder frontier --input tickets.json [--scope <reference>] [--json]
 wayfinder adapter list
 wayfinder adapter describe <name>
+wayfinder adapter test <executable>
+wayfinder adapter conformance <fixture>
 wayfinder runs list
 wayfinder runs show <run-id>
 wayfinder runs export <run-id>
+wayfinder claim show <claim-id>
+wayfinder supervisor status
 ```
 
-The planned pickup, claim, supervisor, workspace, and recovery commands are
-documented in [docs/requirements.md](docs/requirements.md). Commands that could
-mutate a tracker are not exposed until their atomicity and compensation paths
-are implemented and tested.
+The standalone binary advertises only those local/read commands because it does
+not yet compose a mutating tracker adapter, managed lifecycle adapter, or
+recovery verifier. A host that explicitly injects conforming runtime services
+also exposes `claim release`, `stop`, `recover`, `supervisor tick`, and
+`supervisor reconcile`; invoking those commands without the required service
+fails before opening or mutating the local store.
+
+Bare PIDs are explicitly insufficient process identity and the standalone
+fallback advertises no observe/stop capability. Claim release requires both an
+authorizing actor and a tracker adapter capable of guarded mutation plus
+read-after-write verification. The bundled hosted tracker adapters remain
+read-only for pickup unless their advertised capabilities prove the stronger
+mutation contract.
 
 ## Principles
 

@@ -9,7 +9,23 @@ import type {
   WorkspaceAdapter,
 } from "./contracts.ts";
 import { ClaimCollisionError, HarnessLaunchError } from "./contracts.ts";
-import { capabilities, type PreparedWorkspace, type Run, type RunRef } from "./domain.ts";
+import {
+  type Claim,
+  capabilities,
+  type PreparedWorkspace,
+  type Run,
+  type RunRef,
+  requireCapabilities,
+} from "./domain.ts";
+import { validateExecutionRoute } from "./routing.ts";
+
+const MUTATING_PICKUP_TRACKER_CAPABILITIES = capabilities(
+  "atomic_assignment",
+  "conditional_update",
+  "claim_comments",
+  "claim_identity",
+  "lease_metadata",
+);
 
 export type PickupState =
   | "planning"
@@ -92,17 +108,20 @@ export class PickupCoordinator {
     if (ticket.state !== "open" || ticket.assignee !== undefined) {
       throw new Error("Ticket is not claimable");
     }
-    await this.#options.tracker.describe();
+    const trackerCapabilities = await this.#options.tracker.describe();
+    requireCapabilities(trackerCapabilities, MUTATING_PICKUP_TRACKER_CAPABILITIES);
     await this.#options.tracker.preflight(request.ticket);
     await this.#options.workspace.preflight(ticket);
     const plan = await this.#options.workspace.plan(ticket);
-    await this.#options.harness.describe();
+    const harnessCapabilities = await this.#options.harness.describe();
+    validateExecutionRoute(request, harnessCapabilities);
     await this.#options.harness.preflight({
       run: runRef,
       ticket,
       workspace: { path: plan.path, branch: plan.branch },
       ...(request.model ? { model: request.model } : {}),
       ...(request.effort ? { effort: request.effort } : {}),
+      ...(request.context ? { context: request.context } : {}),
     });
 
     const snapshot = await this.#options.tracker.snapshotClaimState(request.ticket);
@@ -127,11 +146,23 @@ export class PickupCoordinator {
           await this.#options.ledger.recordStep(runRef, "collision", receipt, error);
           throw new PickupResultError(receipt, error);
         }
-        return this.#compensate(receipt, snapshot, error);
+        return this.#compensate(run, receipt, snapshot, request.owner, error);
       }
       await this.#options.tracker.verifyClaim(claimRequest);
+      const verifiedSnapshot = await this.#options.tracker.snapshotClaimState(request.ticket);
+      const claim: Claim = {
+        ref: claimRef,
+        ticket: request.ticket,
+        humanOwner: request.owner,
+        run: runRef,
+        previousState: snapshot,
+        claimedAt: now.toISOString(),
+        leaseExpiresAt: claimRequest.leaseExpiresAt,
+        status: "active",
+        currentVersion: verifiedSnapshot.version,
+      };
       receipt.state = "claimed";
-      await this.#options.ledger.recordStep(runRef, "claimed", receipt);
+      await this.#options.ledger.commitClaim(claim, receipt);
 
       const prepared = await this.#options.workspace.prepare(plan);
       receipt.state = "workspace_prepared";
@@ -144,6 +175,7 @@ export class PickupCoordinator {
         workspace: prepared,
         ...(request.model ? { model: request.model } : {}),
         ...(request.effort ? { effort: request.effort } : {}),
+        ...(request.context ? { context: request.context } : {}),
       };
       const launch = await this.#options.harness.launch(launchRequest);
       receipt.state = "launched";
@@ -151,26 +183,31 @@ export class PickupCoordinator {
       await this.#options.ledger.recordStep(runRef, "launched", receipt);
 
       run.workspace = prepared;
+      run.execution = launch;
       run.status = "active";
       run.updatedAt = this.#options.clock.now().toISOString();
       if (request.model) run.model = request.model;
-      await this.#options.ledger.saveRun(run);
+      if (request.effort) run.effort = request.effort;
+      if (request.context) run.context = request.context;
+      run.capabilities = harnessCapabilities;
       receipt.ok = true;
       receipt.state = "committed";
-      await this.#options.ledger.recordStep(runRef, "committed", receipt);
+      await this.#options.ledger.commitRun(run, "committed", receipt);
       return receipt;
     } catch (error) {
       if (error instanceof PickupResultError) throw error;
       if (error instanceof HarnessLaunchError && error.receipt) {
         receipt.launch = error.receipt;
       }
-      return this.#compensate(receipt, snapshot, error);
+      return this.#compensate(run, receipt, snapshot, request.owner, error);
     }
   }
 
   async #compensate(
+    run: Run,
     receipt: PickupReceipt,
     snapshot: Awaited<ReturnType<TrackerAdapter["snapshotClaimState"]>>,
+    claimedOwner: PickupRequest["owner"],
     cause: unknown,
   ): Promise<never> {
     receipt.ok = false;
@@ -187,6 +224,7 @@ export class PickupCoordinator {
     const restoreRequest = {
       ticket: receipt.ticket,
       claim: receipt.claim,
+      claimedOwner,
       originalSnapshot: snapshot,
     };
     try {
@@ -201,12 +239,18 @@ export class PickupCoordinator {
       throw new PickupResultError(receipt, cause);
     }
     receipt.state = "recovery_required";
-    receipt.recoveryCommand = `wayfinder recover ${receipt.run}`;
+    receipt.recoveryCommand = `wayfinder recover ${receipt.run} --evidence '{"tracker":"verify","session":"verify"}'`;
     const combined = new AggregateError(
       [cause, ...recoveryErrors],
       "Pickup compensation could not be fully verified",
     );
-    await this.#options.ledger.recordStep(receipt.run, "recovery_required", receipt, combined);
+    run.status = "recovery_required";
+    run.updatedAt = this.#options.clock.now().toISOString();
+    await this.#options.ledger.saveRecoveryRequired(run, receipt, combined, {
+      command: receipt.recoveryCommand,
+      tracker: "verification_required",
+      session: receipt.launch ? "verification_required" : "not_started",
+    });
     throw new PickupResultError(receipt, combined);
   }
 }

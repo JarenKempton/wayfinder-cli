@@ -57,6 +57,7 @@ describe("claim semantics", () => {
     const request: ReleaseClaimRequest = {
       claim: claim.ref,
       ticket: claim.ticket,
+      claimedOwner: claim.humanOwner,
       originalSnapshot: claim.previousState,
       expectedVersion: "claimed-version",
       authorizedBy: "operator" as ActorRef,
