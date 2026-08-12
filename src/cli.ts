@@ -15,7 +15,12 @@ import type {
   TicketRef,
   WorkspaceRef,
 } from "./domain.ts";
-import { evaluateFrontier, type FrontierScope } from "./frontier.ts";
+import {
+  type DependencyStatusTransition,
+  evaluateFrontier,
+  type FrontierScope,
+  reconcileDependencyStatuses,
+} from "./frontier.ts";
 import { LifecycleCoordinator, Supervisor } from "./lifecycle.ts";
 import { databasePath } from "./paths.ts";
 import { ProcessLifecycleAdapter } from "./platform/process-lifecycle.ts";
@@ -35,6 +40,7 @@ export interface RuntimeServices {
     run: Run,
     evidence: unknown,
   ): Promise<{ observation: RunObservation; claim: Claim }>;
+  repairStatuses?(transitions: readonly DependencyStatusTransition[]): Promise<void>;
 }
 
 export async function run(
@@ -60,6 +66,8 @@ export async function run(
       return resolve(rest, write);
     case "frontier":
       return frontier(rest, write);
+    case "reconcile":
+      return reconcile(rest, write, services);
     case "adapter":
       return adapter(rest, write);
     case "runs":
@@ -90,6 +98,7 @@ function usage(services: RuntimeServices): string {
     "wayfinder doctor",
     "wayfinder resolve <qualified-reference>",
     'wayfinder frontier --input <tickets.json> [--scope <ref>] [--available "To Do,Open"] [--json]',
+    'wayfinder reconcile statuses --input <tickets.json> [--available "To Do"] [--blocked "Blocked"] [--dry-run] [--json]',
     "wayfinder adapter list",
     "wayfinder adapter describe <name>",
     "wayfinder adapter test <executable>",
@@ -112,6 +121,53 @@ function usage(services: RuntimeServices): string {
 
 Usage:
   ${commands.join("\n  ")}`;
+}
+
+async function reconcile(
+  args: string[],
+  write: (text: string) => void,
+  services: RuntimeServices,
+): Promise<void> {
+  const [subcommand, ...rest] = args;
+  if (subcommand !== "statuses") throw new Error("reconcile requires statuses <scope>");
+  const flags = parseFlags(rest);
+  const input = value(flags, "input");
+  if (!input) throw new Error("reconcile statuses currently requires --input <tickets.json>");
+  const tickets = JSON.parse(readFileSync(input, "utf8")) as Ticket[];
+  const ready = value(flags, "available") ?? "To Do";
+  const blocked = value(flags, "blocked") ?? "Blocked";
+  const result = reconcileDependencyStatuses(tickets, {
+    ready,
+    blocked,
+    managedStatuses: new Set([ready, blocked]),
+    protectedStatuses: new Set(["In Progress", "In Review"]),
+  });
+  const repair = flags.has("repair");
+  const dryRun = flags.has("dry-run");
+  if (repair && !dryRun) {
+    if (!services.repairStatuses) {
+      throw unavailableRuntime(
+        "reconcile statuses --repair",
+        "conditional status mutation and verification service",
+      );
+    }
+    await services.repairStatuses(result.transitions);
+  }
+  const receipt = {
+    version: 1,
+    action: repair ? (dryRun ? "status_repair_planned" : "statuses_repaired") : "statuses_audited",
+    scope: parseScope(value(flags, "scope")),
+    dryRun,
+    transitions: result.transitions,
+    drift: result.drift,
+    counts: { transitions: result.transitions.length, drift: result.drift.length },
+  };
+  if (flags.has("json")) return writeJson(write, receipt);
+  for (const transition of result.transitions) {
+    write(`${transition.ticket}\t${transition.from} -> ${transition.to}`);
+  }
+  for (const drift of result.drift)
+    write(`${drift.ticket}\tattention: ${drift.from} -> ${drift.to}`);
 }
 
 function doctor(write: (text: string) => void): void {

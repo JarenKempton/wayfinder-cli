@@ -12,6 +12,33 @@ export interface FrontierOptions {
   availableStatuses: ReadonlySet<string>;
 }
 
+export interface DependencyStatusPolicy {
+  ready: string;
+  blocked: string;
+  /** Only these statuses are owned by dependency reconciliation. */
+  managedStatuses: ReadonlySet<string>;
+  /** Active workflow states that must be reported, never overwritten. */
+  protectedStatuses?: ReadonlySet<string>;
+}
+
+export interface DependencyStatusTransition {
+  ticket: TicketRef;
+  from: string;
+  to: string;
+  unresolvedBlockers: TicketRef[];
+}
+
+export interface DependencyStatusReconciliation {
+  tickets: Ticket[];
+  transitions: DependencyStatusTransition[];
+  drift: DependencyStatusTransition[];
+}
+
+export interface CloseoutFrontierHandoff extends DependencyStatusReconciliation {
+  frontier: Ticket[];
+  newlyEligible: Ticket[];
+}
+
 export function evaluateFrontier(
   tickets: readonly Ticket[],
   scope: FrontierScope,
@@ -48,6 +75,79 @@ export function evaluateFrontier(
   // Modern Array#sort is stable. Equal order values therefore retain the tracker
   // adapter's input order instead of inventing a reference-based ordering.
   return eligible.toSorted((left, right) => left.order - right.order);
+}
+
+/**
+ * Derives tracker status changes from the complete dependency graph without mutating input.
+ * Assigned tickets and statuses outside the adapter-declared managed set are left alone.
+ */
+export function reconcileDependencyStatuses(
+  tickets: readonly Ticket[],
+  policy: DependencyStatusPolicy,
+): DependencyStatusReconciliation {
+  validateDependencyStatusPolicy(policy);
+  const normalized = normalizeTrackerTickets(tickets);
+  const byRef = new Map(normalized.tickets.map((ticket) => [ticket.ref, ticket]));
+  const transitions: DependencyStatusTransition[] = [];
+  const drift: DependencyStatusTransition[] = [];
+  const reconciled = normalized.tickets.map((ticket) => {
+    if (ticket.state !== "open") return ticket;
+    const unresolvedBlockers = (ticket.dependencies ?? [])
+      .map((dependency) => byRef.get(dependency.blocking) as Ticket)
+      .filter((blocker) => blocker.state !== "closed")
+      .map((blocker) => blocker.ref);
+    const status = unresolvedBlockers.length > 0 ? policy.blocked : policy.ready;
+    if (status === ticket.status) return ticket;
+    const transition = { ticket: ticket.ref, from: ticket.status, to: status, unresolvedBlockers };
+    if (policy.protectedStatuses?.has(ticket.status)) {
+      drift.push(transition);
+      return ticket;
+    }
+    if (ticket.assignee !== undefined || !policy.managedStatuses.has(ticket.status)) return ticket;
+    transitions.push(transition);
+    return { ...ticket, status };
+  });
+  return { tickets: reconciled, transitions, drift };
+}
+
+/**
+ * Computes the post-close status plan and the stable frontier handoff. The tracker snapshots
+ * remain the authority: the close must already be visible in `after` before a handoff is emitted.
+ */
+export function deriveCloseoutFrontierHandoff(
+  before: readonly Ticket[],
+  after: readonly Ticket[],
+  closedTicket: TicketRef,
+  scope: FrontierScope,
+  policy: DependencyStatusPolicy,
+): CloseoutFrontierHandoff {
+  const prior = reconcileDependencyStatuses(before, policy);
+  const next = reconcileDependencyStatuses(after, policy);
+  const beforeByRef = new Map(prior.tickets.map((ticket) => [ticket.ref, ticket]));
+  const closedBefore = beforeByRef.get(closedTicket);
+  const closedAfter = next.tickets.find((ticket) => ticket.ref === closedTicket);
+  if (!closedBefore || !closedAfter) throw new Error(`Closeout ticket is absent: ${closedTicket}`);
+  if (closedBefore.state !== "open" || closedAfter.state !== "closed") {
+    throw new Error(`Closeout transition is not verified: ${closedTicket}`);
+  }
+  const beforeRefs = new Set(prior.tickets.map((ticket) => ticket.ref));
+  const afterRefs = new Set(next.tickets.map((ticket) => ticket.ref));
+  if (
+    beforeRefs.size !== afterRefs.size ||
+    [...beforeRefs].some((ticket) => !afterRefs.has(ticket))
+  ) {
+    throw new Error("Closeout snapshots do not describe the same dependency graph");
+  }
+  const frontierOptions = { availableStatuses: new Set([policy.ready]) };
+  const priorFrontier = new Set(
+    evaluateFrontier(prior.tickets, scope, frontierOptions).map((ticket) => ticket.ref),
+  );
+  const frontier = evaluateFrontier(next.tickets, scope, frontierOptions);
+  return {
+    ...next,
+    frontier,
+    newlyEligible: frontier.filter((ticket) => !priorFrontier.has(ticket.ref)),
+  };
 }
 
 export interface NormalizedTrackerTickets {
@@ -196,4 +296,13 @@ function normalizeScopeRef(
     throw new Error(`Expected ${expected} scope reference, received ${parsed.kind}: ${parsed.raw}`);
   }
   return parsed.raw;
+}
+
+function validateDependencyStatusPolicy(policy: DependencyStatusPolicy): void {
+  if (!policy.ready || !policy.blocked || policy.ready === policy.blocked) {
+    throw new Error("Dependency status policy requires distinct ready and blocked statuses");
+  }
+  if (!policy.managedStatuses.has(policy.ready) || !policy.managedStatuses.has(policy.blocked)) {
+    throw new Error("Dependency status policy must manage its ready and blocked statuses");
+  }
 }
