@@ -2,10 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { builtInAdapters } from "../src/adapters.ts";
 import type { LaunchRequest } from "../src/contracts.ts";
 import type { HarnessPlatform, HarnessProcess } from "../src/harness-adapters.ts";
 import {
   CommandHarnessAdapter,
+  type NamedHarnessName,
   namedHarnessAdapter,
   namedHarnessCapabilities,
 } from "../src/harness-adapters.ts";
@@ -108,46 +110,113 @@ describe("generic command harness", () => {
 });
 
 describe("named harnesses", () => {
-  test("use the correct executable names and conservative launch capabilities", async () => {
-    const expected = {
-      t3: "t3",
-      pi: "pi",
-      claude: "claude",
-      codex: "codex",
-      cursor: "cursor-agent",
-      opencode: "opencode",
-    } as const;
-    for (const [name, executable] of Object.entries(expected)) {
-      const platform = new FakePlatform();
-      platform.found.add(executable);
-      const adapter = namedHarnessAdapter(name as keyof typeof expected, platform);
-      const described = await adapter.describe();
-      expect(described.prompt_generation).toBe(name === "t3" ? undefined : true);
-      expect(described.process_launch).toBeTrue();
-      expect(described.session_status).toBeUndefined();
-      expect(described.session_interrupt).toBeUndefined();
-      expect(described.session_close).toBeUndefined();
+  const profiles: Record<
+    NamedHarnessName,
+    { executable: string; argv: readonly string[]; nativeWindows: boolean }
+  > = {
+    pi: { executable: "pi", argv: ["pi", "-p", "{prompt}"], nativeWindows: true },
+    claude: {
+      executable: "claude",
+      argv: ["claude", "-p", "{prompt}"],
+      nativeWindows: false,
+    },
+    codex: {
+      executable: "codex",
+      argv: ["codex", "exec", "{prompt}"],
+      nativeWindows: false,
+    },
+    cursor: {
+      executable: "cursor-agent",
+      argv: ["cursor-agent", "-p", "{prompt}"],
+      nativeWindows: false,
+    },
+    opencode: {
+      executable: "opencode",
+      argv: ["opencode", "run", "{prompt}"],
+      nativeWindows: true,
+    },
+  };
+
+  test("renders the documented launch argv exactly for every named command harness", async () => {
+    const item = fixture();
+    try {
+      for (const [name, profile] of Object.entries(profiles)) {
+        const platform = new FakePlatform();
+        platform.found.add(profile.executable);
+        const adapter = namedHarnessAdapter(name as NamedHarnessName, platform);
+        const receipt = await adapter.launch(item.request);
+        expect(platform.calls).toEqual([
+          {
+            argv: profile.argv.map((token) =>
+              token === "{prompt}"
+                ? "Work on jira:example:W:ticket:T-1.\n\nKeep the change narrow."
+                : token,
+            ),
+            cwd: item.path,
+          },
+        ]);
+        await adapter.stop(receipt);
+      }
+    } finally {
+      item.cleanup();
     }
   });
 
-  test("does not advertise a platform-qualified adapter on unsupported native Windows", async () => {
-    const platform = new FakePlatform();
-    platform.platform = "win32";
-    platform.found.add("cursor-agent");
-    const expected = {
-      prompt_generation: true,
-    } as const;
-    expect(await namedHarnessAdapter("cursor", platform).describe()).toEqual(expected);
-    expect(namedHarnessCapabilities("cursor", platform)).toEqual(expected);
+  test("detection adds only process launch to the implemented prepare tier", async () => {
+    for (const [name, profile] of Object.entries(profiles)) {
+      const platform = new FakePlatform();
+      const adapter = namedHarnessAdapter(name as NamedHarnessName, platform);
+      expect(await adapter.describe()).toEqual({ prompt_generation: true });
+      expect(namedHarnessCapabilities(name as NamedHarnessName, platform)).toEqual({
+        prompt_generation: true,
+      });
+      platform.found.add(profile.executable);
+      const expected = { prompt_generation: true, process_launch: true } as const;
+      expect(await adapter.describe()).toEqual(expected);
+      expect(namedHarnessCapabilities(name as NamedHarnessName, platform)).toEqual(expected);
+    }
   });
 
-  test("advertises T3 host visibility only after detecting its executable", () => {
-    const platform = new FakePlatform();
-    expect(namedHarnessCapabilities("t3", platform)).toEqual({});
-    platform.found.add("t3");
-    expect(namedHarnessCapabilities("t3", platform)).toEqual({
-      process_launch: true,
-      visible_multi_session: true,
+  test("applies the documented native-platform qualification to every named harness", async () => {
+    for (const [name, profile] of Object.entries(profiles)) {
+      for (const os of ["darwin", "linux", "win32"] as const) {
+        const platform = new FakePlatform();
+        platform.platform = os;
+        platform.found.add(profile.executable);
+        const launchSupported = os !== "win32" || profile.nativeWindows;
+        expect(await namedHarnessAdapter(name as NamedHarnessName, platform).describe()).toEqual({
+          prompt_generation: true,
+          ...(launchSupported ? { process_launch: true } : {}),
+        });
+      }
+    }
+  });
+
+  test("keeps T3 out of command discovery and advertises no unproven host capability", () => {
+    const t3 = builtInAdapters().find((adapter) => adapter.name === "t3");
+    expect(t3).toEqual({
+      name: "t3",
+      kind: "harness",
+      bundled: false,
+      available: false,
+      capabilities: {},
     });
+  });
+
+  test("never advertises managed lifecycle from command adapters", async () => {
+    const forbidden = [
+      "session_create",
+      "session_resume",
+      "session_status",
+      "session_interrupt",
+      "session_close",
+    ] as const;
+    for (const [name, profile] of Object.entries(profiles)) {
+      const platform = new FakePlatform();
+      platform.found.add(profile.executable);
+      const adapter = namedHarnessAdapter(name as NamedHarnessName, platform);
+      const described = await adapter.describe();
+      for (const capability of forbidden) expect(described[capability]).toBeUndefined();
+    }
   });
 });

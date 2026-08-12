@@ -1,5 +1,9 @@
 import { type CapabilitySet, capabilities } from "./domain.ts";
-import { namedHarnessCapabilities, namedHarnessExecutable } from "./harness-adapters.ts";
+import {
+  type NamedHarnessName,
+  namedHarnessCapabilities,
+  namedHarnessExecutable,
+} from "./harness-adapters.ts";
 
 export type AdapterKind = "tracker" | "harness" | "workspace" | "environment";
 
@@ -13,7 +17,6 @@ export interface AdapterDescriptor {
 }
 
 const harnessExecutables = {
-  t3: namedHarnessExecutable("t3"),
   pi: namedHarnessExecutable("pi"),
   claude: namedHarnessExecutable("claude"),
   codex: namedHarnessExecutable("codex"),
@@ -31,7 +34,7 @@ export function builtInAdapters(): AdapterDescriptor[] {
     capabilities: {},
   }));
 
-  const harnesses = Object.entries(harnessExecutables).map<AdapterDescriptor>(
+  const commandHarnesses = Object.entries(harnessExecutables).map<AdapterDescriptor>(
     ([name, executable]) => {
       const available = name === "command" || (executable ? Bun.which(executable) !== null : false);
       return {
@@ -41,12 +44,20 @@ export function builtInAdapters(): AdapterDescriptor[] {
         available,
         ...(executable ? { executable } : {}),
         capabilities:
-          name === "command"
-            ? capabilities()
-            : namedHarnessCapabilities(name as Exclude<keyof typeof harnessExecutables, "command">),
+          name === "command" ? capabilities() : namedHarnessCapabilities(name as NamedHarnessName),
       };
     },
   );
+  const harnesses: AdapterDescriptor[] = [
+    ...commandHarnesses,
+    {
+      name: "t3",
+      kind: "harness",
+      bundled: false,
+      available: false,
+      capabilities: capabilities(),
+    },
+  ];
 
   return [
     ...trackers,

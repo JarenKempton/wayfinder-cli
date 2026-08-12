@@ -23,7 +23,9 @@ Linear and GitHub Issues adapters normalize
 native map children and blockers and exhaust provider pagination. Their hosted
 assignment APIs do not satisfy mutating pickup's capability gate, so they remain
 read-only in pickup coordination. Product-specific session lifecycle adapters
-must pass their conformance suites before being advertised as supported.
+must pass their conformance suites before being advertised as supported. The
+[command harness adapters](docs/harness-adapters.md) provide only executable-qualified
+prepare/launch integration; their documented richer session protocols are not yet claimed.
 
 ## Tracker credentials
 

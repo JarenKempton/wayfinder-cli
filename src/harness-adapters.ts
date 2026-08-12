@@ -2,10 +2,11 @@ import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 import type { HarnessAdapter, LaunchReceipt, LaunchRequest } from "./contracts.ts";
 import { HarnessLaunchError } from "./contracts.ts";
-import type { Capability, CapabilitySet } from "./domain.ts";
+import type { CapabilitySet } from "./domain.ts";
 import { capabilities } from "./domain.ts";
 
-export type HarnessName = "command" | "t3" | "pi" | "claude" | "codex" | "cursor" | "opencode";
+export type NamedHarnessName = "pi" | "claude" | "codex" | "cursor" | "opencode";
+export type HarnessName = "command" | NamedHarnessName;
 export type CommandToken =
   | string
   | "{prompt}"
@@ -30,7 +31,6 @@ export interface CommandHarnessOptions {
   name?: HarnessName;
   argv: readonly CommandToken[];
   platform?: HarnessPlatform;
-  extraCapabilities?: readonly Capability[];
   supportedPlatforms?: readonly NodeJS.Platform[];
 }
 
@@ -53,7 +53,6 @@ export class CommandHarnessAdapter implements HarnessAdapter {
   readonly name: HarnessName;
   readonly #argv: readonly CommandToken[];
   readonly #platform: HarnessPlatform;
-  readonly #extraCapabilities: readonly Capability[];
   readonly #supportedPlatforms: readonly NodeJS.Platform[] | undefined;
   readonly #children = new Map<string, HarnessProcess>();
   readonly #exited = new Set<string>();
@@ -63,7 +62,6 @@ export class CommandHarnessAdapter implements HarnessAdapter {
     this.name = options.name ?? "command";
     this.#argv = [...options.argv];
     this.#platform = options.platform ?? bunPlatform;
-    this.#extraCapabilities = options.extraCapabilities ?? [];
     this.#supportedPlatforms = options.supportedPlatforms;
   }
 
@@ -76,7 +74,6 @@ export class CommandHarnessAdapter implements HarnessAdapter {
       ...(this.#argv.includes("{model}") ? (["model_selection"] as const) : []),
       ...(this.#argv.includes("{effort}") ? (["reasoning_selection"] as const) : []),
       ...(this.#argv.includes("{context}") ? (["context_selection"] as const) : []),
-      ...this.#extraCapabilities,
     );
   }
 
@@ -147,44 +144,41 @@ export class CommandHarnessAdapter implements HarnessAdapter {
 
 interface NamedHarness {
   argv: readonly CommandToken[];
-  capabilities?: readonly Capability[];
   platforms?: readonly NodeJS.Platform[];
 }
 
-const namedHarnesses: Record<Exclude<HarnessName, "command">, NamedHarness> = {
-  t3: { argv: ["t3"], capabilities: ["visible_multi_session"] },
-  pi: { argv: ["pi", "{prompt}"] },
-  claude: { argv: ["claude", "{prompt}"] },
-  codex: { argv: ["codex", "{prompt}"], platforms: ["darwin", "linux"] },
-  cursor: { argv: ["cursor-agent", "{prompt}"], platforms: ["darwin", "linux"] },
+const namedHarnesses: Record<NamedHarnessName, NamedHarness> = {
+  pi: { argv: ["pi", "-p", "{prompt}"] },
+  claude: { argv: ["claude", "-p", "{prompt}"], platforms: ["darwin", "linux"] },
+  codex: { argv: ["codex", "exec", "{prompt}"], platforms: ["darwin", "linux"] },
+  cursor: { argv: ["cursor-agent", "-p", "{prompt}"], platforms: ["darwin", "linux"] },
   opencode: { argv: ["opencode", "run", "{prompt}"] },
 };
 
 export function namedHarnessAdapter(
-  name: Exclude<HarnessName, "command">,
+  name: NamedHarnessName,
   platform?: HarnessPlatform,
 ): CommandHarnessAdapter {
   const profile = namedHarnesses[name];
   return new CommandHarnessAdapter({
     name,
     argv: profile.argv,
-    ...(profile.capabilities ? { extraCapabilities: profile.capabilities } : {}),
     ...(profile.platforms ? { supportedPlatforms: profile.platforms } : {}),
     ...(platform ? { platform } : {}),
   });
 }
 
-export function namedHarnessExecutable(name: Exclude<HarnessName, "command">): string {
+export function namedHarnessExecutable(name: NamedHarnessName): string {
   return namedHarnesses[name].argv[0] as string;
 }
 
 export function namedHarnessCapabilities(
-  name: Exclude<HarnessName, "command">,
+  name: NamedHarnessName,
   platform: Pick<HarnessPlatform, "which" | "platform"> = bunPlatform,
 ): CapabilitySet {
   const profile = namedHarnesses[name];
   const prepare = profile.argv.includes("{prompt}") ? (["prompt_generation"] as const) : [];
   const supported = !profile.platforms || profile.platforms.includes(platform.platform);
   if (!supported || !platform.which(profile.argv[0] as string)) return capabilities(...prepare);
-  return capabilities(...prepare, "process_launch", ...(profile.capabilities ?? []));
+  return capabilities(...prepare, "process_launch");
 }
