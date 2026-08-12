@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { findAdapter } from "../src/adapters.ts";
 import { AmbiguousTrackerResultError, ClaimCollisionError } from "../src/contracts.ts";
-import type { ActorRef, ClaimRef, RunRef, TicketRef } from "../src/domain.ts";
-import { selectFrontierTicket } from "../src/frontier.ts";
+import type { ActorRef, ClaimRef, RunRef, Ticket, TicketRef } from "../src/domain.ts";
+import { evaluateFrontier, selectFrontierTicket } from "../src/frontier.ts";
 import { type JiraResponse, JiraTrackerAdapter, type JiraTransport } from "../src/jira.ts";
 
 const ticket = "jira:responsibid:JWB:ticket:JWB-288" as TicketRef;
@@ -19,6 +19,12 @@ class FakeJira implements JiraTransport {
   rank = 7;
   permissions = true;
   assigneeEditable = true;
+  links: Array<Record<string, unknown>> = [
+    {
+      type: { inward: "is blocked by", outward: "blocks" },
+      inwardIssue: { key: "JWB-279", fields: { status: { name: "Done" } } },
+    },
+  ];
   failure?: Failure;
   comments: string[] = [];
   operations: string[] = [];
@@ -117,12 +123,7 @@ class FakeJira implements JiraTransport {
         parent: { key: "JWB-274" },
         priority: this.priority,
         customfield_rank: this.rank,
-        issuelinks: [
-          {
-            type: { inward: "is blocked by", outward: "blocks" },
-            inwardIssue: { key: "JWB-279", fields: { status: { name: "Done" } } },
-          },
-        ],
+        issuelinks: this.links,
       },
     };
   }
@@ -184,6 +185,50 @@ describe("Jira tracker adapter", () => {
     expect(highest.dependencies?.[0]?.blocking).toBe(
       "jira:responsibid:JWB:ticket:JWB-279" as TicketRef,
     );
+  });
+
+  test("emits inward blockers as dependencies owned by the current ticket", async () => {
+    const result = await adapter(new FakeJira()).getTicket(ticket);
+    expect(result.dependencies).toEqual([
+      {
+        blocking: "jira:responsibid:JWB:ticket:JWB-279" as TicketRef,
+        blocked: ticket,
+        kind: "blocks",
+      },
+    ]);
+  });
+
+  test("does not attach outward blocks owned by another ticket", async () => {
+    const api = new FakeJira();
+    api.links = [
+      {
+        type: { inward: "is blocked by", outward: "blocks" },
+        outwardIssue: { key: "JWB-295", fields: { status: { name: "To Do" } } },
+      },
+    ];
+    expect((await adapter(api).getTicket(ticket)).dependencies).toEqual([]);
+  });
+
+  test("produces a complete graph satisfying normalizeTrackerTickets ownership", async () => {
+    const current = await adapter(new FakeJira()).getTicket(ticket);
+    const blocker: Ticket = {
+      ...current,
+      ref: "jira:responsibid:JWB:ticket:JWB-279" as TicketRef,
+      state: "closed",
+      status: "Done",
+      dependencies: [],
+      order: current.order - 1,
+    };
+    expect(current.dependencies?.every((dependency) => dependency.blocked === current.ref)).toBe(
+      true,
+    );
+    expect(() =>
+      evaluateFrontier(
+        [blocker, current],
+        { map: current.map },
+        { availableStatuses: new Set(["To Do"]) },
+      ),
+    ).not.toThrow();
   });
 
   test("advertises only implemented features and remains unavailable without composition", async () => {

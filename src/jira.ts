@@ -184,13 +184,6 @@ export class JiraTrackerAdapter implements TrackerAdapter {
           kind: "blocks",
         });
       }
-      if (link.outwardIssue && link.type.outward.toLowerCase() === "blocks") {
-        dependencies.push({
-          blocking: ticket,
-          blocked: this.#ticketRef(link.outwardIssue.key),
-          kind: "blocks",
-        });
-      }
     }
     return {
       ref: ticket,
