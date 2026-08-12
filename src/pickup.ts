@@ -10,6 +10,7 @@ import type {
 } from "./contracts.ts";
 import { ClaimCollisionError, HarnessLaunchError } from "./contracts.ts";
 import { capabilities, type PreparedWorkspace, type Run, type RunRef } from "./domain.ts";
+import { validateExecutionRoute } from "./routing.ts";
 
 export type PickupState =
   | "planning"
@@ -96,13 +97,15 @@ export class PickupCoordinator {
     await this.#options.tracker.preflight(request.ticket);
     await this.#options.workspace.preflight(ticket);
     const plan = await this.#options.workspace.plan(ticket);
-    await this.#options.harness.describe();
+    const harnessCapabilities = await this.#options.harness.describe();
+    validateExecutionRoute(request, harnessCapabilities);
     await this.#options.harness.preflight({
       run: runRef,
       ticket,
       workspace: { path: plan.path, branch: plan.branch },
       ...(request.model ? { model: request.model } : {}),
       ...(request.effort ? { effort: request.effort } : {}),
+      ...(request.context ? { context: request.context } : {}),
     });
 
     const snapshot = await this.#options.tracker.snapshotClaimState(request.ticket);
@@ -144,6 +147,7 @@ export class PickupCoordinator {
         workspace: prepared,
         ...(request.model ? { model: request.model } : {}),
         ...(request.effort ? { effort: request.effort } : {}),
+        ...(request.context ? { context: request.context } : {}),
       };
       const launch = await this.#options.harness.launch(launchRequest);
       receipt.state = "launched";
@@ -154,6 +158,9 @@ export class PickupCoordinator {
       run.status = "active";
       run.updatedAt = this.#options.clock.now().toISOString();
       if (request.model) run.model = request.model;
+      if (request.effort) run.effort = request.effort;
+      if (request.context) run.context = request.context;
+      run.capabilities = harnessCapabilities;
       await this.#options.ledger.saveRun(run);
       receipt.ok = true;
       receipt.state = "committed";

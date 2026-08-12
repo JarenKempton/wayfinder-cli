@@ -58,6 +58,19 @@ either `compensated` after verified restoration or `recovery_required` when the
 result is ambiguous. Local steps and receipts are persisted before moving to
 the next state.
 
+## Configuration and execution routing
+
+Core resolves execution configuration in a fixed least-to-most-specific order:
+harness defaults, user, repository, workspace, group, map, ticket, then CLI. Scalar
+settings (`harness`, `model`, `effort`, and `context`) use the most specific non-empty
+value and retain source provenance. Required capabilities accumulate across layers so a
+more specific scope cannot silently weaken a lower-level requirement.
+
+The selected harness must advertise every explicitly required capability. Model, effort,
+and context requests additionally require `model_selection`, `reasoning_selection`, and
+`context_selection`, respectively. These checks and adapter preflight complete before
+the tracker snapshot or claim mutation.
+
 ## Persistence
 
 The per-user SQLite database enables WAL and foreign keys. It records runs,
