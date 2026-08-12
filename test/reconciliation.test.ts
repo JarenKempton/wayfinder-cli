@@ -44,10 +44,18 @@ describe("dependency status reconciliation", () => {
     const assigned = { ...ticket("B", 1), assignee: "human" as NonNullable<Ticket["assignee"]> };
     const active = ticket("C", 2, "In Progress");
     const closed = { ...ticket("D", 3, "Done"), state: "closed" as const };
-    for (const item of [assigned, active, closed]) {
+    const unmanaged = {
+      ...ticket("E", 4, "Backlog"),
+      assignee: "human" as NonNullable<Ticket["assignee"]>,
+    };
+    for (const item of [assigned, active, closed, unmanaged]) {
       item.dependencies = [{ blocking: blocker.ref, blocked: item.ref, kind: "blocks" }];
     }
-    const result = reconcileDependencyStatuses([blocker, assigned, active, closed], {}, policy);
+    const result = reconcileDependencyStatuses(
+      [blocker, assigned, active, closed, unmanaged],
+      {},
+      policy,
+    );
     expect(result.transitions).toEqual([]);
     expect(result.drift).toEqual([
       {
@@ -65,6 +73,7 @@ describe("dependency status reconciliation", () => {
         reasons: ["protected_status"],
       },
     ]);
+    expect(result.tickets.find((item) => item.ref === unmanaged.ref)?.status).toBe("Backlog");
   });
 
   test("fails closed for incomplete graphs and invalid policies", () => {

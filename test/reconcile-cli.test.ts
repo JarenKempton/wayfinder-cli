@@ -43,8 +43,22 @@ function fixture(): string {
       },
     ],
   };
+  const unmanaged: Ticket = {
+    ...blocked,
+    ref: "jira:x:W:ticket:D" as Ticket["ref"],
+    status: "Backlog",
+    assignee: "human" as NonNullable<Ticket["assignee"]>,
+    order: 3,
+    dependencies: [
+      {
+        blocking: blocker.ref,
+        blocked: "jira:x:W:ticket:D" as Ticket["ref"],
+        kind: "blocks",
+      },
+    ],
+  };
   const path = join(directory, "tickets.json");
-  writeFileSync(path, JSON.stringify([blocker, blocked, active]));
+  writeFileSync(path, JSON.stringify([blocker, blocked, active, unmanaged]));
   return path;
 }
 
@@ -59,6 +73,7 @@ describe("reconcile statuses CLI", () => {
     expect(receipt.action).toBe("statuses_audited");
     expect(receipt.transitions).toHaveLength(1);
     expect(receipt.drift).toHaveLength(1);
+    expect(JSON.stringify(receipt)).not.toContain("jira:x:W:ticket:D");
   });
 
   test("dry-run plans repair without mutation and live repair requires a verifier", async () => {

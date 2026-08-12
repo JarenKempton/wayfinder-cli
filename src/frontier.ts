@@ -106,15 +106,16 @@ export function reconcileDependencyStatuses(
       .map((blocker) => blocker.ref);
     const status = unresolvedBlockers.length > 0 ? policy.blocked : policy.ready;
     if (status === ticket.status) return ticket;
+    const protectedStatus = policy.protectedStatuses?.has(ticket.status) ?? false;
+    if (!policy.managedStatuses.has(ticket.status) && !protectedStatus) return ticket;
     const transition = { ticket: ticket.ref, from: ticket.status, to: status, unresolvedBlockers };
     const reasons: DependencyStatusDrift["reasons"] = [];
     if (ticket.assignee !== undefined) reasons.push("assigned");
-    if (policy.protectedStatuses?.has(ticket.status)) reasons.push("protected_status");
+    if (protectedStatus) reasons.push("protected_status");
     if (reasons.length > 0) {
       drift.push({ ...transition, reasons });
       return ticket;
     }
-    if (!policy.managedStatuses.has(ticket.status)) return ticket;
     transitions.push(transition);
     return { ...ticket, status };
   });
