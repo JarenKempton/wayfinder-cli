@@ -56,3 +56,27 @@ Each live adapter still needs its domain conformance suite before advertising
 mutation capabilities.
 
 The canonical JSON Schemas live under [`schemas/`](../schemas/).
+
+## Markdown reference tracker
+
+The bundled Markdown adapter is the credential-free reference implementation for tracker
+conformance. Its fenced, line-anchored `wayfinder-tracker` JSON state block is the authoritative
+hand-editable state. A tagged rendered index is generated from that state; prose outside both
+tagged regions is preserved. Guarded mutations validate the complete document, use a monotonically
+increasing version and adjacent exclusive lock, then validate again before atomic replacement.
+
+Lock recovery is explicit: inspection reports absent, live, orphaned, or unknown ownership. Only a
+same-host owner proven absent may be reclaimed, using the observed lock token; live, remote, and
+malformed owners are never stolen. This reference adapter is not marked available in the registry
+until a CLI construction and path-configuration boundary exists.
+
+Every stored workspace, group, map, ticket, and dependency reference is fully qualified as
+`markdown:<instance>:<workspace>...`; mixed adapters and cross-workspace edges are rejected. Reclaim
+keeps the superseded claim record, including its `supersededBy` link, in per-ticket audit history
+while the new active claim points back with `supersedes`.
+
+Persistence writes and syncs a complete temporary file before asking Node/libuv to replace the
+destination, then syncs the parent directory where directory handles support it. CI exercises the
+same replacement path on Windows, macOS, and Linux. The adapter claims only the replacement
+semantics supplied by Node/libuv and the host filesystem—not universal power-loss atomicity;
+replacement failure leaves the prior destination intact and removes the temporary file.

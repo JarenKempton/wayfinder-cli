@@ -19,6 +19,7 @@ export const CAPABILITIES = [
   "conditional_update",
   "native_properties",
   "claim_comments",
+  "claim_identity",
   "lease_metadata",
   "resolution_comments",
   "artifact_links",
@@ -152,6 +153,8 @@ export interface Claim {
   claimedAt: string;
   leaseExpiresAt: string;
   status: ClaimStatus;
+  /** Latest tracker version verified for this claim; used to guard renewal/release. */
+  currentVersion?: string;
   supersedes?: ClaimRef;
   supersededBy?: ClaimRef;
 }
@@ -220,6 +223,24 @@ export interface Run {
   status: RunStatus;
   createdAt: string;
   updatedAt: string;
+  execution?: ExecutionReceipt;
+  observation?: RunObservation;
+}
+
+export interface ExecutionReceipt {
+  sessionId?: string;
+  pid?: number;
+  /** PID operations are forbidden unless this adapter-owned identity can be verified. */
+  processIdentity?: string;
+  tier: "prepare" | "launch" | "managed" | "lifecycle";
+}
+
+export type ObservedSessionState = "running" | "stopped" | "missing" | "unknown";
+
+export interface RunObservation {
+  state: ObservedSessionState;
+  observedAt: string;
+  detail?: string;
 }
 
 /** Stopping execution preserves workspace and claim/tracker ownership outside the run record. */

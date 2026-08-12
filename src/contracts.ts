@@ -9,6 +9,7 @@ import type {
   PreparedEnvironment,
   PreparedWorkspace,
   Run,
+  RunObservation,
   RunRef,
   Ticket,
   TicketRef,
@@ -34,6 +35,8 @@ export interface RenewLeaseRequest {
 export interface ReleaseClaimRequest {
   claim: ClaimRef;
   ticket: TicketRef;
+  /** Persisted owner installed by the claim; required by guarded release implementations. */
+  claimedOwner?: ActorRef;
   originalSnapshot: TrackerSnapshot;
   expectedVersion: string;
   authorizedBy: ActorRef;
@@ -54,6 +57,8 @@ export interface ReclaimRequest {
 export interface RestoreClaimRequest {
   ticket: TicketRef;
   claim: ClaimRef;
+  /** Persisted owner installed by the claim; required for restart-safe restoration. */
+  claimedOwner?: ActorRef;
   originalSnapshot: TrackerSnapshot;
 }
 
@@ -90,6 +95,11 @@ export interface TrackerAdapter {
   verifyReleased(request: ReleaseClaimRequest): Promise<void>;
   reclaim(request: ReclaimRequest): Promise<void>;
   verifyReclaimed(request: ReclaimRequest): Promise<void>;
+}
+
+/** Optional read surface implemented by adapters that can hydrate a complete map frontier. */
+export interface FrontierTrackerAdapter extends TrackerAdapter {
+  listMapTickets(map: import("./domain.ts").MapRef): Promise<Ticket[]>;
 }
 
 export interface WorkspacePlan {
@@ -161,7 +171,29 @@ export interface HarnessAdapter {
 
 export interface Ledger {
   saveRun(run: Run): void | Promise<void>;
+  saveClaim(claim: import("./domain.ts").Claim): void | Promise<void>;
+  commitClaim(claim: import("./domain.ts").Claim, receipt: unknown): void | Promise<void>;
+  commitRun(run: Run, state: string, receipt: unknown): void | Promise<void>;
   recordStep(run: RunRef, state: string, receipt?: unknown, error?: unknown): void | Promise<void>;
+  saveRecoveryRequired(
+    run: Run,
+    receipt: unknown,
+    error: unknown,
+    evidence: unknown,
+  ): void | Promise<void>;
+}
+
+/** Harness-specific observation is kept behind this portable lifecycle boundary. */
+export interface RunLifecycleAdapter {
+  capabilities: CapabilitySet;
+  observe(run: Run): Promise<RunObservation>;
+  stop(run: Run): Promise<void>;
+}
+
+export interface RecoveryVerification {
+  verified: boolean;
+  evidence: unknown;
+  resolvedStatus?: "active" | "stopped";
 }
 
 export interface IdFactory {

@@ -28,16 +28,36 @@ import { PickupCoordinator, PickupResultError } from "../src/pickup.ts";
 
 class FakeLedger implements Ledger {
   readonly steps: string[] = [];
+  saveClaim(_claim: import("../src/domain.ts").Claim): void {}
+  commitClaim(_claim: import("../src/domain.ts").Claim): void {
+    this.steps.push("claimed");
+  }
+  recoveryRun?: Run;
   savedRun?: Run;
   saveRun(run: Run): void {
     this.savedRun = structuredClone(run);
   }
+  commitRun(run: Run, state: string): void {
+    this.savedRun = structuredClone(run);
+    this.steps.push(state);
+  }
   recordStep(_run: RunRef, state: string): void {
     this.steps.push(state);
+  }
+  saveRecoveryRequired(run: Run): void {
+    this.recoveryRun = structuredClone(run);
+    this.steps.push("recovery_required");
   }
 }
 
 class FakeTracker implements TrackerAdapter {
+  describedCapabilities = capabilities(
+    "atomic_assignment",
+    "conditional_update",
+    "claim_comments",
+    "claim_identity",
+    "lease_metadata",
+  );
   claimError?: Error;
   preflightError?: Error;
   restoreError?: Error;
@@ -47,9 +67,10 @@ class FakeTracker implements TrackerAdapter {
   restoreRequest?: RestoreClaimRequest;
   claimCalls = 0;
   restoreCalls = 0;
+  snapshotCalls = 0;
 
   async describe() {
-    return capabilities("conditional_update");
+    return this.describedCapabilities;
   }
   async preflight(_ticket: TicketRef) {
     if (this.preflightError) throw this.preflightError;
@@ -65,6 +86,7 @@ class FakeTracker implements TrackerAdapter {
     };
   }
   async snapshotClaimState(_ticket: TicketRef): Promise<TrackerSnapshot> {
+    this.snapshotCalls += 1;
     return { version: "1", payload: { assignee: null, status: "To Do" } };
   }
   async claim(request: ClaimRequest) {
@@ -192,6 +214,17 @@ describe("pickup coordinator", () => {
     expect(tracker.restoreCalls).toBe(0);
   });
 
+  test("hosted-style weak tracker capabilities fail before snapshot or mutation", async () => {
+    const tracker = new FakeTracker();
+    tracker.describedCapabilities = capabilities("native_maps", "native_dependencies");
+    const { coordinator: subject } = coordinator(tracker);
+    await expect(subject.execute(request)).rejects.toThrow(
+      "Unsupported capabilities: atomic_assignment, conditional_update, claim_comments, claim_identity, lease_metadata",
+    );
+    expect(tracker.snapshotCalls).toBe(0);
+    expect(tracker.claimCalls).toBe(0);
+  });
+
   test("requested routing capabilities are rejected before claim", async () => {
     const harness = new FakeHarness();
     harness.describedCapabilities = capabilities("process_launch", "model_selection");
@@ -271,6 +304,7 @@ describe("pickup coordinator", () => {
     expect(tracker.restoreRequest).toEqual({
       ticket: request.ticket,
       claim: "wayfinder-claim:test",
+      claimedOwner: request.owner,
       originalSnapshot: { version: "1", payload: { assignee: null, status: "To Do" } },
     });
   });
@@ -296,9 +330,13 @@ describe("pickup coordinator", () => {
     tracker.verifyRestoreError = new Error("cannot verify");
     const workspace = new FakeWorkspace();
     workspace.prepareError = new Error("prepare failed");
-    const result = await failure(coordinator(tracker, workspace).coordinator);
+    const item = coordinator(tracker, workspace);
+    const result = await failure(item.coordinator);
     expect(result.receipt.state).toBe("recovery_required");
-    expect(result.receipt.recoveryCommand).toBe("wayfinder recover wayfinder-run:test");
+    expect(result.receipt.recoveryCommand).toBe(
+      `wayfinder recover wayfinder-run:test --evidence '{"tracker":"verify","session":"verify"}'`,
+    );
+    expect(item.ledger.recoveryRun?.status).toBe("recovery_required");
   });
 
   test("concurrent change during restoration requires recovery", async () => {
