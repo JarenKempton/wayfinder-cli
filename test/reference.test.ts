@@ -7,7 +7,7 @@ import {
   type UnsupportedCapabilityError,
 } from "../src/domain.ts";
 import type { RefKind } from "../src/reference.ts";
-import { parseRef } from "../src/reference.ts";
+import { parseRef, workspaceRefOf } from "../src/reference.ts";
 
 describe("parseRef", () => {
   test.each([
@@ -29,6 +29,14 @@ describe("parseRef", () => {
     "nav-run:018f",
     "nav-claim:018f",
   ])("rejects %s", (raw) => expect(() => parseRef(raw)).toThrow());
+});
+
+test("derives the same qualified workspace from workspace-owned references", () => {
+  expect(workspaceRefOf("jira:responsibid:JWB")).toBe("jira:responsibid:JWB");
+  expect(workspaceRefOf("jira:responsibid:JWB:group:JWB-100")).toBe("jira:responsibid:JWB");
+  expect(workspaceRefOf("jira:responsibid:JWB:map:JWB-239")).toBe("jira:responsibid:JWB");
+  expect(workspaceRefOf("jira:responsibid:JWB:ticket:JWB-245")).toBe("jira:responsibid:JWB");
+  expect(() => workspaceRefOf("jira:responsibid")).toThrow("not owned by a workspace");
 });
 
 test("reports missing capabilities", () => {

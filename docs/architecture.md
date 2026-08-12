@@ -45,7 +45,10 @@ the two tickets do not share a workspace.
 The tracker adapter returns normalized ticket and dependency inputs. Core owns
 eligibility: a frontier ticket is open, in an available state, unassigned,
 inside the requested scope, and has no unresolved blocker. Core preserves the
-adapter's stable order.
+adapter's stable order. The normalized input is one complete workspace graph:
+every dependency is owned by its blocked ticket and every referenced blocker
+must be present, even when the requested frontier scope would filter that ticket
+out of the result.
 
 ## Pickup transaction
 
@@ -84,6 +87,23 @@ binaries embed Bun, so consumers install a single executable without a runtime.
 
 Application development lifecycle behavior crosses the separate environment
 adapter boundary defined in [Development environment boundary](environment-boundary.md).
+
+## Git workspaces
+
+The Git adapter consumes one explicit repository mapping. It injectively base64url-encodes
+the ticket's tracker, instance, workspace, and native ID components into a qualified
+identity, then derives the canonical `<worktreeRoot>/<qualified-identity>` path and
+`wayfinder/<qualified-identity>` branch. Preparation recomputes this mapping from the
+ticket reference and rejects caller-altered plans before any Git operation.
+
+Preparation resumes only an already-registered exact path/branch pair. An occupied path,
+branch checked out elsewhere, detached or ambiguous worktree, or mismatched repository
+mapping fails closed. SSH URL, HTTPS URL, and scp-style remotes normalize to a shared
+host/path identity; other URL schemes are unsupported. Resume preserves dirty work.
+Deletion requires the exact prepared-workspace record, verifies the canonical real path
+under the configured root and unambiguous Git registration, and refuses dirty work. Git
+is always invoked with an argument array so native paths, including paths containing
+spaces, are not shell-interpreted.
 
 ## Capability honesty
 
