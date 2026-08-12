@@ -30,7 +30,7 @@ describe("dependency status reconciliation", () => {
     ];
     const input = [blocker, blocked, alreadyBlocked];
 
-    const result = reconcileDependencyStatuses(input, policy);
+    const result = reconcileDependencyStatuses(input, {}, policy);
 
     expect(result.transitions).toEqual([
       { ticket: blocked.ref, from: "To Do", to: "Blocked", unresolvedBlockers: [blocker.ref] },
@@ -47,14 +47,22 @@ describe("dependency status reconciliation", () => {
     for (const item of [assigned, active, closed]) {
       item.dependencies = [{ blocking: blocker.ref, blocked: item.ref, kind: "blocks" }];
     }
-    const result = reconcileDependencyStatuses([blocker, assigned, active, closed], policy);
+    const result = reconcileDependencyStatuses([blocker, assigned, active, closed], {}, policy);
     expect(result.transitions).toEqual([]);
     expect(result.drift).toEqual([
+      {
+        ticket: assigned.ref,
+        from: "To Do",
+        to: "Blocked",
+        unresolvedBlockers: [blocker.ref],
+        reasons: ["assigned"],
+      },
       {
         ticket: active.ref,
         from: "In Progress",
         to: "Blocked",
         unresolvedBlockers: [blocker.ref],
+        reasons: ["protected_status"],
       },
     ]);
   });
@@ -64,10 +72,31 @@ describe("dependency status reconciliation", () => {
     blocked.dependencies = [
       { blocking: ref("jira:x:W:ticket:A"), blocked: blocked.ref, kind: "blocks" },
     ];
-    expect(() => reconcileDependencyStatuses([blocked], policy)).toThrow("unknown blocker");
-    expect(() => reconcileDependencyStatuses([], { ...policy, blocked: "To Do" })).toThrow(
+    expect(() => reconcileDependencyStatuses([blocked], {}, policy)).toThrow("unknown blocker");
+    expect(() => reconcileDependencyStatuses([], {}, { ...policy, blocked: "To Do" })).toThrow(
       "distinct",
     );
+  });
+
+  test("uses cross-map blockers from the full graph but reports only scoped tickets", () => {
+    const otherMap = "jira:x:W:map:OTHER" as Ticket["map"];
+    const blocker = { ...ticket("A", 0), map: otherMap };
+    const inside = ticket("B", 1);
+    inside.dependencies = [{ blocking: blocker.ref, blocked: inside.ref, kind: "blocks" }];
+    const outside = { ...ticket("C", 2), map: otherMap };
+    outside.dependencies = [{ blocking: inside.ref, blocked: outside.ref, kind: "blocks" }];
+
+    const result = reconcileDependencyStatuses([blocker, inside, outside], { map }, policy);
+
+    expect(result.transitions.map((item) => item.ticket)).toEqual([inside.ref]);
+    expect(result.tickets.find((item) => item.ref === outside.ref)?.status).toBe("To Do");
+  });
+
+  test("validates scope against the complete workspace graph", () => {
+    const input = [ticket("A", 0)];
+    expect(() =>
+      reconcileDependencyStatuses(input, { map: "jira:x:OTHER:map:M" as Ticket["map"] }, policy),
+    ).toThrow("outside workspace");
   });
 });
 

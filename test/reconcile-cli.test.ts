@@ -6,6 +6,7 @@ import { run } from "../src/cli.ts";
 import type { Ticket } from "../src/domain.ts";
 
 const map = "jira:x:W:map:M" as Ticket["map"];
+const scope = String(map);
 
 function fixture(): string {
   const directory = mkdtempSync(join(tmpdir(), "wayfinder-reconcile-"));
@@ -50,7 +51,10 @@ function fixture(): string {
 describe("reconcile statuses CLI", () => {
   test("audits transitions and protected-state drift as a structured receipt", async () => {
     const output: string[] = [];
-    await run(["reconcile", "statuses", "--input", fixture(), "--json"], output.push.bind(output));
+    await run(
+      ["reconcile", "statuses", scope, "--input", fixture(), "--json"],
+      output.push.bind(output),
+    );
     const receipt = JSON.parse(output[0] ?? "null");
     expect(receipt.action).toBe("statuses_audited");
     expect(receipt.transitions).toHaveLength(1);
@@ -61,7 +65,7 @@ describe("reconcile statuses CLI", () => {
     const output: string[] = [];
     let calls = 0;
     await run(
-      ["reconcile", "statuses", "--input", fixture(), "--repair", "--dry-run", "--json"],
+      ["reconcile", "statuses", scope, "--input", fixture(), "--repair", "--dry-run", "--json"],
       output.push.bind(output),
       {
         repairStatuses: async () => {
@@ -72,17 +76,35 @@ describe("reconcile statuses CLI", () => {
     expect(calls).toBe(0);
     expect(JSON.parse(output[0] ?? "null").action).toBe("status_repair_planned");
     await expect(
-      run(["reconcile", "statuses", "--input", fixture(), "--repair"], () => undefined),
+      run(["reconcile", "statuses", scope, "--input", fixture(), "--repair"], () => undefined),
     ).rejects.toThrow("conditional status mutation and verification service");
   });
 
   test("repair delegates the exact conditional transition plan", async () => {
     const repaired: unknown[] = [];
     await run(
-      ["reconcile", "statuses", "--input", fixture(), "--repair", "--json"],
+      ["reconcile", "statuses", scope, "--input", fixture(), "--repair", "--json"],
       () => undefined,
       { repairStatuses: async (transitions) => void repaired.push(...transitions) },
     );
     expect(repaired).toHaveLength(1);
+  });
+
+  test("requires and validates the positional qualified scope", async () => {
+    await expect(
+      run(["reconcile", "statuses", "--input", fixture()], () => undefined),
+    ).rejects.toThrow("qualified <scope>");
+    await expect(
+      run(["reconcile", "statuses", "wayfinder-run:123", "--input", fixture()], () => undefined),
+    ).rejects.toThrow("not a frontier scope");
+    await expect(
+      run(["reconcile", "statuses", "not-a-reference", "--input", fixture()], () => undefined),
+    ).rejects.toThrow();
+  });
+
+  test("rejects dry-run without repair", async () => {
+    await expect(
+      run(["reconcile", "statuses", scope, "--input", fixture(), "--dry-run"], () => undefined),
+    ).rejects.toThrow("--dry-run requires --repair");
   });
 });

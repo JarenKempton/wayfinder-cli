@@ -98,7 +98,7 @@ function usage(services: RuntimeServices): string {
     "wayfinder doctor",
     "wayfinder resolve <qualified-reference>",
     'wayfinder frontier --input <tickets.json> [--scope <ref>] [--available "To Do,Open"] [--json]',
-    'wayfinder reconcile statuses --input <tickets.json> [--available "To Do"] [--blocked "Blocked"] [--dry-run] [--json]',
+    'wayfinder reconcile statuses <scope> --input <workspace-tickets.json> [--available "To Do"] [--blocked "Blocked"] [--repair [--dry-run]] [--json]',
     "wayfinder adapter list",
     "wayfinder adapter describe <name>",
     "wayfinder adapter test <executable>",
@@ -128,15 +128,19 @@ async function reconcile(
   write: (text: string) => void,
   services: RuntimeServices,
 ): Promise<void> {
-  const [subcommand, ...rest] = args;
+  const [subcommand, scopeReference, ...rest] = args;
   if (subcommand !== "statuses") throw new Error("reconcile requires statuses <scope>");
+  if (!scopeReference || scopeReference.startsWith("--")) {
+    throw new Error("reconcile statuses requires a qualified <scope>");
+  }
+  const scope = parseScope(scopeReference);
   const flags = parseFlags(rest);
   const input = value(flags, "input");
   if (!input) throw new Error("reconcile statuses currently requires --input <tickets.json>");
   const tickets = JSON.parse(readFileSync(input, "utf8")) as Ticket[];
   const ready = value(flags, "available") ?? "To Do";
   const blocked = value(flags, "blocked") ?? "Blocked";
-  const result = reconcileDependencyStatuses(tickets, {
+  const result = reconcileDependencyStatuses(tickets, scope, {
     ready,
     blocked,
     managedStatuses: new Set([ready, blocked]),
@@ -144,6 +148,7 @@ async function reconcile(
   });
   const repair = flags.has("repair");
   const dryRun = flags.has("dry-run");
+  if (dryRun && !repair) throw new Error("reconcile statuses --dry-run requires --repair");
   if (repair && !dryRun) {
     if (!services.repairStatuses) {
       throw unavailableRuntime(
@@ -156,7 +161,7 @@ async function reconcile(
   const receipt = {
     version: 1,
     action: repair ? (dryRun ? "status_repair_planned" : "statuses_repaired") : "statuses_audited",
-    scope: parseScope(value(flags, "scope")),
+    scope,
     dryRun,
     transitions: result.transitions,
     drift: result.drift,
@@ -431,10 +436,10 @@ function unavailableRuntime(command: string, requirement: string): Error {
 function parseScope(raw: string | undefined): FrontierScope {
   if (!raw) return {};
   const parsed = parseRef(raw);
-  if (parsed.kind === "workspace") return { workspace: raw as WorkspaceRef };
-  if (parsed.kind === "group") return { group: raw as GroupRef };
-  if (parsed.kind === "map") return { map: raw as MapRef };
-  if (parsed.kind === "ticket") return { ticket: raw as TicketRef };
+  if (parsed.kind === "workspace") return { workspace: parsed.raw as WorkspaceRef };
+  if (parsed.kind === "group") return { group: parsed.raw as GroupRef };
+  if (parsed.kind === "map") return { map: parsed.raw as MapRef };
+  if (parsed.kind === "ticket") return { ticket: parsed.raw as TicketRef };
   throw new Error(`${raw} is not a frontier scope`);
 }
 

@@ -28,10 +28,14 @@ export interface DependencyStatusTransition {
   unresolvedBlockers: TicketRef[];
 }
 
+export interface DependencyStatusDrift extends DependencyStatusTransition {
+  reasons: ("assigned" | "protected_status")[];
+}
+
 export interface DependencyStatusReconciliation {
   tickets: Ticket[];
   transitions: DependencyStatusTransition[];
-  drift: DependencyStatusTransition[];
+  drift: DependencyStatusDrift[];
 }
 
 export interface CloseoutFrontierHandoff extends DependencyStatusReconciliation {
@@ -79,19 +83,23 @@ export function evaluateFrontier(
 
 /**
  * Derives tracker status changes from the complete dependency graph without mutating input.
- * Assigned tickets and statuses outside the adapter-declared managed set are left alone.
+ * The complete workspace graph is validated and used for blocker evaluation, while only tickets
+ * inside `scope` may produce transitions or drift. Assigned and protected tickets are drift only.
  */
 export function reconcileDependencyStatuses(
   tickets: readonly Ticket[],
+  scope: FrontierScope,
   policy: DependencyStatusPolicy,
 ): DependencyStatusReconciliation {
   validateDependencyStatusPolicy(policy);
   const normalized = normalizeTrackerTickets(tickets);
+  const normalizedScope = normalizeScope(scope);
+  validateScope(normalizedScope, normalized.workspace);
   const byRef = new Map(normalized.tickets.map((ticket) => [ticket.ref, ticket]));
   const transitions: DependencyStatusTransition[] = [];
-  const drift: DependencyStatusTransition[] = [];
+  const drift: DependencyStatusDrift[] = [];
   const reconciled = normalized.tickets.map((ticket) => {
-    if (ticket.state !== "open") return ticket;
+    if (!isInScope(ticket, normalizedScope) || ticket.state !== "open") return ticket;
     const unresolvedBlockers = (ticket.dependencies ?? [])
       .map((dependency) => byRef.get(dependency.blocking) as Ticket)
       .filter((blocker) => blocker.state !== "closed")
@@ -99,11 +107,14 @@ export function reconcileDependencyStatuses(
     const status = unresolvedBlockers.length > 0 ? policy.blocked : policy.ready;
     if (status === ticket.status) return ticket;
     const transition = { ticket: ticket.ref, from: ticket.status, to: status, unresolvedBlockers };
-    if (policy.protectedStatuses?.has(ticket.status)) {
-      drift.push(transition);
+    const reasons: DependencyStatusDrift["reasons"] = [];
+    if (ticket.assignee !== undefined) reasons.push("assigned");
+    if (policy.protectedStatuses?.has(ticket.status)) reasons.push("protected_status");
+    if (reasons.length > 0) {
+      drift.push({ ...transition, reasons });
       return ticket;
     }
-    if (ticket.assignee !== undefined || !policy.managedStatuses.has(ticket.status)) return ticket;
+    if (!policy.managedStatuses.has(ticket.status)) return ticket;
     transitions.push(transition);
     return { ...ticket, status };
   });
@@ -121,8 +132,8 @@ export function deriveCloseoutFrontierHandoff(
   scope: FrontierScope,
   policy: DependencyStatusPolicy,
 ): CloseoutFrontierHandoff {
-  const prior = reconcileDependencyStatuses(before, policy);
-  const next = reconcileDependencyStatuses(after, policy);
+  const prior = reconcileDependencyStatuses(before, scope, policy);
+  const next = reconcileDependencyStatuses(after, scope, policy);
   const beforeByRef = new Map(prior.tickets.map((ticket) => [ticket.ref, ticket]));
   const closedBefore = beforeByRef.get(closedTicket);
   const closedAfter = next.tickets.find((ticket) => ticket.ref === closedTicket);
