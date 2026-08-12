@@ -4,10 +4,31 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run } from "../src/cli.ts";
 import type { Ticket } from "../src/domain.ts";
-import { FakeStatusRepairService } from "../src/status-repair.ts";
+import {
+  FakeStatusRepairService,
+  type StatusRepairReceiptStore,
+  type StatusRepairRecoveryReceipt,
+} from "../src/status-repair.ts";
 
 const map = "jira:x:W:map:M" as Ticket["map"];
 const scope = String(map);
+
+class MemoryReceipts implements StatusRepairReceiptStore {
+  records = new Map<string, StatusRepairRecoveryReceipt>();
+  updates = 0;
+  async create(receipt: Omit<StatusRepairRecoveryReceipt, "ref">): Promise<string> {
+    const ref = "status-repair:test-receipt";
+    this.records.set(ref, { ...receipt, ref });
+    return ref;
+  }
+  async load(ref: string): Promise<StatusRepairRecoveryReceipt | undefined> {
+    return structuredClone(this.records.get(ref));
+  }
+  async update(ref: string, receipt: StatusRepairRecoveryReceipt): Promise<void> {
+    this.updates += 1;
+    this.records.set(ref, structuredClone(receipt));
+  }
+}
 
 function fixture(): string {
   const directory = mkdtempSync(join(tmpdir(), "wayfinder-reconcile-"));
@@ -109,6 +130,7 @@ describe("reconcile statuses CLI", () => {
             calls += 1;
             return new FakeStatusRepairService(new Map()).repair([]);
           },
+          refresh: async () => new FakeStatusRepairService(new Map()).refresh([]),
         },
       },
     );
@@ -138,6 +160,7 @@ describe("reconcile statuses CLI", () => {
 
   test("does not report repaired when an outcome is ambiguous", async () => {
     const output: string[] = [];
+    const receipts = new MemoryReceipts();
     await expect(
       run(
         ["reconcile", "statuses", scope, "--input", fixture(), "--repair", "--json"],
@@ -148,13 +171,13 @@ describe("reconcile statuses CLI", () => {
               ["jira:x:W:ticket:B", { status: "To Do", version: "v-B", outcome: "ambiguous" }],
             ]),
           ),
-          statusRepairReceipts: { persist: () => undefined },
+          statusRepairReceipts: receipts,
         },
       ),
     ).resolves.toBeUndefined();
     expect(JSON.parse(output[0] ?? "null")).toMatchObject({
       action: "status_repair_recovery_required",
-      outcomes: [{ outcome: "ambiguous" }],
+      dispositions: [{ outcome: "ambiguous" }],
     });
   });
 
@@ -170,9 +193,11 @@ describe("reconcile statuses CLI", () => {
             ]),
           ),
           statusRepairReceipts: {
-            persist: () => {
+            create: () => {
               throw new Error("receipt disk unavailable");
             },
+            load: async () => undefined,
+            update: () => undefined,
           },
         },
       ),
@@ -180,7 +205,7 @@ describe("reconcile statuses CLI", () => {
   });
 
   test("persists complete partial-success recovery and exact retry command", async () => {
-    const persisted: unknown[] = [];
+    const receipts = new MemoryReceipts();
     const output: string[] = [];
     await run(
       ["reconcile", "statuses", scope, "--input", partialFixture(), "--repair", "--json"],
@@ -192,17 +217,142 @@ describe("reconcile statuses CLI", () => {
             ["jira:x:W:ticket:E", { status: "To Do", version: "changed" }],
           ]),
         ),
-        statusRepairReceipts: { persist: (receipt) => void persisted.push(receipt) },
+        statusRepairReceipts: receipts,
       },
     );
     const receipt = JSON.parse(output[0] ?? "null");
     expect(receipt).toMatchObject({
       action: "status_repair_recovery_required",
       requested: [{ ticket: "jira:x:W:ticket:B" }, { ticket: "jira:x:W:ticket:E" }],
-      outcomes: [{ outcome: "verified" }, { outcome: "collision" }],
-      recoveryCommand: `wayfinder reconcile statuses ${scope} --repair --json`,
+      dispositions: [{ outcome: "verified" }, { outcome: "collision" }],
+      recoveryArgv: [
+        "reconcile",
+        "statuses",
+        scope,
+        "--recover",
+        "status-repair:test-receipt",
+        "--json",
+      ],
+      refreshEvidence: [],
     });
-    expect(persisted).toHaveLength(1);
+    expect(receipts.records.size).toBe(1);
+  });
+
+  test("executes durable recovery, retries only unresolved work, and is idempotent", async () => {
+    const receipts = new MemoryReceipts();
+    const records = new Map([
+      ["jira:x:W:ticket:B", { status: "To Do", version: "v-B" }],
+      ["jira:x:W:ticket:E", { status: "To Do", version: "current" }],
+    ]);
+    const service = new FakeStatusRepairService(records);
+    const initialOutput: string[] = [];
+    await run(
+      ["reconcile", "statuses", scope, "--input", partialFixture(), "--repair", "--json"],
+      initialOutput.push.bind(initialOutput),
+      { statusRepair: service, statusRepairReceipts: receipts },
+    );
+    expect(service.repairCalls.map((call) => call.map(String))).toEqual([
+      ["jira:x:W:ticket:B", "jira:x:W:ticket:E"],
+    ]);
+    const output: string[] = [];
+    const recoveryArgv = JSON.parse(initialOutput[0] ?? "null").recoveryArgv as string[];
+    await run(recoveryArgv, output.push.bind(output), {
+      statusRepair: service,
+      statusRepairReceipts: receipts,
+    });
+    expect(service.repairCalls[1]?.map(String)).toEqual(["jira:x:W:ticket:E"]);
+    expect(service.refreshCalls[0]?.map(String)).toEqual([
+      "jira:x:W:ticket:B",
+      "jira:x:W:ticket:E",
+    ]);
+    const recoveredReceipt = JSON.parse(output[0] ?? "null");
+    expect(recoveredReceipt).toMatchObject({
+      action: "status_repair_recovered",
+      dispositions: [
+        { outcome: "verified", reconciled: true },
+        { outcome: "verified", expectedVersion: "current" },
+      ],
+    });
+    expect(recoveredReceipt.refreshEvidence[0].observations).toHaveLength(2);
+    await run(
+      ["reconcile", "statuses", scope, "--recover", "status-repair:test-receipt", "--json"],
+      () => undefined,
+      { statusRepair: service, statusRepairReceipts: receipts },
+    );
+    expect(service.repairCalls).toHaveLength(2);
+  });
+
+  test("fails closed for missing receipt and persists ambiguous refresh attention", async () => {
+    const receipts = new MemoryReceipts();
+    const service = new FakeStatusRepairService(new Map());
+    await expect(
+      run(["reconcile", "statuses", scope, "--recover", "missing", "--json"], () => undefined, {
+        statusRepair: service,
+        statusRepairReceipts: receipts,
+      }),
+    ).rejects.toThrow("not found");
+
+    const records = new Map<string, { status: string; version: string; outcome?: "ambiguous" }>([
+      ["jira:x:W:ticket:B", { status: "To Do", version: "v-B" }],
+      ["jira:x:W:ticket:E", { status: "To Do", version: "current" }],
+    ]);
+    const partial = new FakeStatusRepairService(records);
+    await run(
+      ["reconcile", "statuses", scope, "--input", partialFixture(), "--repair", "--json"],
+      () => undefined,
+      { statusRepair: partial, statusRepairReceipts: receipts },
+    );
+    const unresolved = records.get("jira:x:W:ticket:E");
+    if (!unresolved) throw new Error("missing fake record");
+    unresolved.outcome = "ambiguous";
+    const output: string[] = [];
+    await run(
+      ["reconcile", "statuses", scope, "--recover", "status-repair:test-receipt", "--json"],
+      output.push.bind(output),
+      { statusRepair: partial, statusRepairReceipts: receipts },
+    );
+    expect(JSON.parse(output[0] ?? "null")).toMatchObject({
+      action: "attention_required",
+      dispositions: [{ outcome: "verified", reconciled: true }, { outcome: "ambiguous" }],
+    });
+    expect(receipts.records.get("status-repair:test-receipt")?.action).toBe("attention_required");
+  });
+
+  test("fails closed when a recovered receipt cannot be persisted", async () => {
+    const receipts = new MemoryReceipts();
+    const service = new FakeStatusRepairService(
+      new Map([
+        ["jira:x:W:ticket:B", { status: "To Do", version: "v-B" }],
+        ["jira:x:W:ticket:E", { status: "To Do", version: "current" }],
+      ]),
+    );
+    await run(
+      ["reconcile", "statuses", scope, "--input", partialFixture(), "--repair", "--json"],
+      () => undefined,
+      { statusRepair: service, statusRepairReceipts: receipts },
+    );
+    const failingStore: StatusRepairReceiptStore = {
+      create: receipts.create.bind(receipts),
+      load: receipts.load.bind(receipts),
+      update: () => {
+        throw new Error("recovery receipt unavailable");
+      },
+    };
+    const output: string[] = [];
+    await expect(
+      run(
+        ["reconcile", "statuses", scope, "--recover", "status-repair:test-receipt", "--json"],
+        output.push.bind(output),
+        { statusRepair: service, statusRepairReceipts: failingStore },
+      ),
+    ).rejects.toThrow("recovery receipt unavailable");
+    expect(output).toEqual([]);
+  });
+
+  test("requires a recovery receipt reference", async () => {
+    await expect(
+      run(["reconcile", "statuses", scope, "--recover"], () => undefined),
+    ).rejects.toThrow("--recover requires <receipt-ref>");
   });
 
   test("requires and validates the positional qualified scope", async () => {

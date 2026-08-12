@@ -44,44 +44,132 @@ export interface StatusRepairBatchResult {
 
 export interface StatusRepairService {
   repair(transitions: readonly DependencyStatusTransition[]): Promise<StatusRepairBatchResult>;
+  refresh(tickets: readonly TicketRef[]): Promise<StatusRefreshResult>;
+}
+
+export interface StatusRefreshObservation {
+  ticket: TicketRef;
+  outcome: "observed" | "missing" | "ambiguous";
+  status?: string;
+  version?: string;
+  detail?: unknown;
+}
+
+export interface StatusRefreshResult {
+  adapter: StatusRepairAdapterIdentity;
+  observations: StatusRefreshObservation[];
+}
+
+export interface StatusRefreshEvidence {
+  adapter: Omit<StatusRepairAdapterIdentity, "versionContract"> & { versionContract: string };
+  observations: StatusRefreshObservation[];
+}
+
+export interface StatusRepairDisposition extends StatusRepairOutcome {
+  reconciled?: true;
+}
+
+export interface StatusRepairEvaluation {
+  verified: boolean;
+  rawOutcomes: StatusRepairOutcome[];
+  dispositions: StatusRepairDisposition[];
+  diagnostics: StatusRepairOutcome[];
 }
 
 export interface StatusRepairRecoveryReceipt {
+  ref: string;
   version: 1;
-  action: "status_repair_recovery_required";
+  action: "status_repair_recovery_required" | "status_repair_recovered" | "attention_required";
+  scope: string;
   requested: DependencyStatusTransition[];
-  outcomes: StatusRepairOutcome[];
-  recoveryCommand: string;
+  rawOutcomes: StatusRepairOutcome[];
+  dispositions: StatusRepairDisposition[];
+  diagnostics: StatusRepairOutcome[];
+  refreshEvidence: StatusRefreshEvidence[];
+  recoveryArgv: string[];
 }
 
 export interface StatusRepairReceiptStore {
-  persist(receipt: StatusRepairRecoveryReceipt): void | Promise<void>;
+  create(receipt: Omit<StatusRepairRecoveryReceipt, "ref">): string | Promise<string>;
+  load(ref: string): StatusRepairRecoveryReceipt | Promise<StatusRepairRecoveryReceipt | undefined>;
+  update(ref: string, receipt: StatusRepairRecoveryReceipt): void | Promise<void>;
 }
 
 export function evaluateStatusRepairBatch(
   requested: readonly DependencyStatusTransition[],
   result: StatusRepairBatchResult,
-): { verified: boolean; outcomes: StatusRepairOutcome[] } {
+): StatusRepairEvaluation {
   const requestedByTicket = new Map(requested.map((item) => [item.ticket, item]));
-  const supplied = new Map<string, StatusRepairOutcome>();
-  for (const outcome of result.outcomes) {
-    if (!requestedByTicket.has(outcome.ticket) || supplied.has(outcome.ticket)) continue;
-    supplied.set(outcome.ticket, outcome);
+  const grouped = new Map<string, StatusRepairOutcome[]>();
+  const diagnostics: StatusRepairOutcome[] = [];
+  for (const raw of result.outcomes) {
+    if (!requestedByTicket.has(raw.ticket)) {
+      diagnostics.push({ ...raw, outcome: "ambiguous", detail: "unexpected adapter outcome" });
+      continue;
+    }
+    const entries = grouped.get(raw.ticket) ?? [];
+    entries.push(raw);
+    grouped.set(raw.ticket, entries);
   }
-  const outcomes = requested.map((request) => {
-    const outcome = supplied.get(request.ticket) ?? {
-      ticket: request.ticket,
-      expectedVersion: request.expectedVersion,
-      outcome: "untouched" as const,
-      detail: "adapter omitted outcome",
+  const dispositions = requested.map((request): StatusRepairDisposition => {
+    const entries = grouped.get(request.ticket) ?? [];
+    if (entries.length === 0) {
+      const diagnostic: StatusRepairDisposition = {
+        ticket: request.ticket,
+        expectedVersion: request.expectedVersion,
+        outcome: "untouched" as const,
+        detail: "adapter omitted outcome",
+      };
+      diagnostics.push(diagnostic);
+      return diagnostic;
+    }
+    if (entries.length !== 1) {
+      const diagnostic: StatusRepairDisposition = {
+        ticket: request.ticket,
+        expectedVersion: request.expectedVersion,
+        outcome: "ambiguous",
+        detail: { reason: "duplicate adapter outcomes", count: entries.length },
+      };
+      diagnostics.push(diagnostic);
+      return diagnostic;
+    }
+    const outcome = entries[0] as StatusRepairOutcome;
+    if (outcome.expectedVersion !== request.expectedVersion) {
+      const diagnostic: StatusRepairDisposition = {
+        ...outcome,
+        outcome: "ambiguous",
+        detail: {
+          reason: "mismatched expected version",
+          requested: request.expectedVersion,
+          received: outcome.expectedVersion,
+        },
+      };
+      diagnostics.push(diagnostic);
+      return diagnostic;
+    }
+    if (proofVerifies(request, outcome, result.adapter)) return outcome;
+    if (outcome.outcome !== "verified") return outcome;
+    const diagnostic: StatusRepairDisposition = {
+      ...outcome,
+      outcome: "unverifiable",
+      detail: "invalid verification proof",
     };
-    return proofVerifies(request, outcome, result.adapter)
-      ? outcome
-      : outcome.outcome === "verified"
-        ? { ...outcome, outcome: "unverifiable" as const, detail: "invalid verification proof" }
-        : outcome;
+    diagnostics.push(diagnostic);
+    return diagnostic;
   });
-  return { verified: outcomes.every((item) => item.outcome === "verified"), outcomes };
+  const adapterCapable =
+    result.adapter.capabilities.conditional_update === true &&
+    result.adapter.capabilities.workflow_transition === true;
+  return {
+    verified:
+      adapterCapable &&
+      diagnostics.length === 0 &&
+      result.outcomes.length === requested.length &&
+      dispositions.every((item) => item.outcome === "verified"),
+    rawOutcomes: result.outcomes.map((item) => structuredClone(item)),
+    dispositions,
+    diagnostics,
+  };
 }
 
 function proofVerifies(
@@ -92,7 +180,11 @@ function proofVerifies(
   const proof = outcome.proof;
   if (outcome.outcome !== "verified" || !proof) return false;
   const versions = adapter.versionContract;
+  const batchCapabilities = canonicalCapabilities(adapter.capabilities);
+  const proofCapabilities = canonicalCapabilities(proof.adapter.capabilities);
   return (
+    adapter.capabilities.conditional_update === true &&
+    adapter.capabilities.workflow_transition === true &&
     outcome.expectedVersion === request.expectedVersion &&
     proof.conditionalGuard.applied === true &&
     versions.equals(proof.conditionalGuard.expectedVersion, request.expectedVersion) &&
@@ -104,8 +196,16 @@ function proofVerifies(
     proof.adapter.adapter === adapter.adapter &&
     proof.adapter.instance === adapter.instance &&
     proof.adapter.versionContract === versions.name &&
-    proof.adapter.capabilities.conditional_update === true &&
-    proof.adapter.capabilities.workflow_transition === true
+    batchCapabilities === proofCapabilities
+  );
+}
+
+function canonicalCapabilities(capabilities: CapabilitySet): string {
+  return JSON.stringify(
+    Object.entries(capabilities)
+      .filter(([, value]) => value === true)
+      .map(([key]) => key)
+      .toSorted(),
   );
 }
 
@@ -116,6 +216,8 @@ export const opaqueVersionContract: TrackerVersionContract = {
 };
 
 export class FakeStatusRepairService implements StatusRepairService {
+  readonly repairCalls: TicketRef[][] = [];
+  readonly refreshCalls: TicketRef[][] = [];
   readonly adapter: StatusRepairAdapterIdentity = {
     adapter: "fake",
     instance: "test",
@@ -133,6 +235,7 @@ export class FakeStatusRepairService implements StatusRepairService {
   async repair(
     transitions: readonly DependencyStatusTransition[],
   ): Promise<StatusRepairBatchResult> {
+    this.repairCalls.push(transitions.map((item) => item.ticket));
     const outcomes = transitions.map((request) => {
       const record = this.records.get(request.ticket);
       if (!record || record.version !== request.expectedVersion) {
@@ -164,6 +267,26 @@ export class FakeStatusRepairService implements StatusRepairService {
       };
     });
     return { adapter: this.adapter, outcomes };
+  }
+
+  async refresh(tickets: readonly TicketRef[]): Promise<StatusRefreshResult> {
+    this.refreshCalls.push([...tickets]);
+    return {
+      adapter: this.adapter,
+      observations: tickets.map((ticket) => {
+        const record = this.records.get(ticket);
+        if (!record) return { ticket, outcome: "missing" as const };
+        if (record.outcome === "ambiguous") {
+          return { ticket, outcome: "ambiguous" as const, detail: "fake ambiguous refresh" };
+        }
+        return {
+          ticket,
+          outcome: "observed" as const,
+          status: record.status,
+          version: record.version,
+        };
+      }),
+    };
   }
 
   private failure(
