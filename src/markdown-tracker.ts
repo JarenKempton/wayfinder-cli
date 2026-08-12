@@ -132,6 +132,7 @@ export class MarkdownTrackerAdapter implements TrackerAdapter {
       "workflow_transition",
       "conditional_update",
       "claim_comments",
+      "claim_identity",
       "lease_metadata",
       "resolution_comments",
       "artifact_links",

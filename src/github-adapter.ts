@@ -26,6 +26,23 @@ export interface GitHubAdapterOptions {
   pageSize?: number;
 }
 
+export const GITHUB_API_VERSION = "2026-03-10";
+
+export class GitHubWorkspaceBoundaryError extends Error {
+  readonly code = "cross_workspace_reference";
+
+  constructor(
+    readonly expectedWorkspace: string,
+    readonly actualWorkspace: string,
+    readonly entity: "map" | "ticket",
+  ) {
+    super(
+      `GitHub ${entity} belongs to ${actualWorkspace}, outside configured workspace ${expectedWorkspace}`,
+    );
+    this.name = "GitHubWorkspaceBoundaryError";
+  }
+}
+
 export class GitHubIssuesTrackerAdapter
   extends AssignmentTrackerAdapter
   implements FrontierTrackerAdapter
@@ -180,7 +197,8 @@ export class GitHubIssuesTrackerAdapter
       headers: {
         Accept: "application/vnd.github+json",
         Authorization: `Bearer ${this.#token}`,
-        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "wayfinder-cli",
+        "X-GitHub-Api-Version": GITHUB_API_VERSION,
         ...(body === undefined ? {} : { "Content-Type": "application/json" }),
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -276,7 +294,9 @@ function issueRef(
   }
   const number = String(issue.number);
   if (!/^\d+$/.test(number)) throw new Error("Invalid GitHub issue number");
-  return `github:${context.instance}:${owner}/${repository}:${kind}:${number}` as
-    | MapRef
-    | TicketRef;
+  const workspace = `${owner}/${repository}`;
+  if (workspace.toLowerCase() !== context.workspace.toLowerCase()) {
+    throw new GitHubWorkspaceBoundaryError(context.workspace, workspace, kind);
+  }
+  return `github:${context.instance}:${workspace}:${kind}:${number}` as MapRef | TicketRef;
 }

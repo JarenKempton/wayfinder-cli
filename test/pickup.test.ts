@@ -38,6 +38,13 @@ class FakeLedger implements Ledger {
 }
 
 class FakeTracker implements TrackerAdapter {
+  describedCapabilities = capabilities(
+    "atomic_assignment",
+    "conditional_update",
+    "claim_comments",
+    "claim_identity",
+    "lease_metadata",
+  );
   claimError?: Error;
   preflightError?: Error;
   restoreError?: Error;
@@ -47,9 +54,10 @@ class FakeTracker implements TrackerAdapter {
   restoreRequest?: RestoreClaimRequest;
   claimCalls = 0;
   restoreCalls = 0;
+  snapshotCalls = 0;
 
   async describe() {
-    return capabilities("conditional_update");
+    return this.describedCapabilities;
   }
   async preflight(_ticket: TicketRef) {
     if (this.preflightError) throw this.preflightError;
@@ -65,6 +73,7 @@ class FakeTracker implements TrackerAdapter {
     };
   }
   async snapshotClaimState(_ticket: TicketRef): Promise<TrackerSnapshot> {
+    this.snapshotCalls += 1;
     return { version: "1", payload: { assignee: null, status: "To Do" } };
   }
   async claim(request: ClaimRequest) {
@@ -190,6 +199,17 @@ describe("pickup coordinator", () => {
     await expect(subject.execute(request)).rejects.toThrow("unsupported");
     expect(tracker.claimCalls).toBe(0);
     expect(tracker.restoreCalls).toBe(0);
+  });
+
+  test("hosted-style weak tracker capabilities fail before snapshot or mutation", async () => {
+    const tracker = new FakeTracker();
+    tracker.describedCapabilities = capabilities("native_maps", "native_dependencies");
+    const { coordinator: subject } = coordinator(tracker);
+    await expect(subject.execute(request)).rejects.toThrow(
+      "Unsupported capabilities: atomic_assignment, conditional_update, claim_comments, claim_identity, lease_metadata",
+    );
+    expect(tracker.snapshotCalls).toBe(0);
+    expect(tracker.claimCalls).toBe(0);
   });
 
   test("requested routing capabilities are rejected before claim", async () => {

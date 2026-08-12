@@ -16,9 +16,10 @@ Wayfinder CLI is a TypeScript/Bun pre-release. This repository currently defines
 foundation: qualified references, portable ticket and capability types, frontier
 evaluation, adapter protocol discovery, layered execution routing, SQLite run
 state, and the initial CLI. Bundled Linear and GitHub Issues adapters normalize
-native map children and blockers, exhaust provider pagination, and use guarded,
-read-after-write assignment and restoration. Product-specific session lifecycle
-adapters must pass their conformance suites before being advertised as supported.
+native map children and blockers and exhaust provider pagination. Their hosted
+assignment APIs do not satisfy mutating pickup's capability gate, so they remain
+read-only in pickup coordination. Product-specific session lifecycle adapters
+must pass their conformance suites before being advertised as supported.
 
 ## Tracker credentials
 
@@ -30,10 +31,14 @@ setting an environment variable does not advertise a usable adapter.
 
 Both adapters intentionally omit `conditional_update`, `atomic_assignment`, and
 `lease_metadata` from their advertised capabilities. Their public assignment APIs
-do not provide a verified compare-and-swap or native expiring lease. Assignment is
-therefore guarded by a pre-write read, verified by an authoritative reread, and
-restored only while the adapter-owned assignee is still present; a concurrent
-owner is reported as a collision and is never overwritten.
+do not provide a verified compare-and-swap, durable claim identity, or native
+expiring lease. Mutating pickup requires all of those capabilities and fails
+before snapshot or mutation when they are absent. Direct compensation helpers
+retain the persisted claimed-owner guard and never overwrite a concurrent owner.
+
+The GitHub adapter uses the documented REST API version `2026-03-10`, pins
+authenticated pagination to the configured API origin, and rejects
+cross-repository sub-issues or blockers at the v1 workspace boundary.
 
 ## Develop from source
 

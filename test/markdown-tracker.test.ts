@@ -316,6 +316,7 @@ describe("MarkdownTrackerAdapter", () => {
       "artifact_links",
       "atomic_assignment",
       "claim_comments",
+      "claim_identity",
       "conditional_update",
       "cross_map_dependencies",
       "lease_metadata",

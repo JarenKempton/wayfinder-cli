@@ -8,7 +8,7 @@ import {
 } from "../src/contracts.ts";
 import type { ActorRef, ClaimRef, MapRef, RunRef, TicketRef } from "../src/domain.ts";
 import { evaluateFrontier } from "../src/frontier.ts";
-import { GitHubIssuesTrackerAdapter } from "../src/github-adapter.ts";
+import { GitHubIssuesTrackerAdapter, GitHubWorkspaceBoundaryError } from "../src/github-adapter.ts";
 import { LinearTrackerAdapter } from "../src/linear-adapter.ts";
 import type { HttpResponse, HttpTransport } from "../src/tracker-http.ts";
 
@@ -66,11 +66,17 @@ const linearIssue = (
   state: { name: "Todo" },
   labels: {
     nodes: [{ name: "wayfinder:task" }],
-    pageInfo: { hasNextPage: options.labelsHaveNextPage ?? false, endCursor: null },
+    pageInfo: {
+      hasNextPage: options.labelsHaveNextPage ?? false,
+      endCursor: options.labelsHaveNextPage ? "next" : null,
+    },
   },
   inverseRelations: {
     nodes: options.inverseRelations ?? [],
-    pageInfo: { hasNextPage: options.relationsHaveNextPage ?? false, endCursor: null },
+    pageInfo: {
+      hasNextPage: options.relationsHaveNextPage ?? false,
+      endCursor: options.relationsHaveNextPage ? "next" : null,
+    },
   },
 });
 
@@ -177,17 +183,50 @@ describe("Linear tracker adapter", () => {
     ).toEqual(["linear:api:team:ticket:2"]);
   });
 
-  test("fails closed when nested Linear connections exceed their explicit bound", async () => {
+  test("exhausts nested Linear label and inverse-relation pages", async () => {
+    const requests: RecordedRequest[] = [];
     const adapter = new LinearTrackerAdapter({
       token: "secret",
       pageSize: 1,
-      transport: queueTransport([
-        response({ data: { issue: linearIssue("1", { relationsHaveNextPage: true }) } }),
-      ]),
+      transport: queueTransport(
+        [
+          response({
+            data: {
+              issue: linearIssue("1", {
+                labelsHaveNextPage: true,
+                relationsHaveNextPage: true,
+              }),
+            },
+          }),
+          response({
+            data: {
+              issue: {
+                labels: {
+                  nodes: [{ name: "triage" }],
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                },
+              },
+            },
+          }),
+          response({
+            data: {
+              issue: {
+                inverseRelations: {
+                  nodes: [{ type: "blocks", issue: { id: "blocker" } }],
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                },
+              },
+            },
+          }),
+        ],
+        requests,
+      ),
     });
-    await expect(adapter.getTicket("linear:api:team:ticket:1" as TicketRef)).rejects.toThrow(
-      "exceeds the configured nested page bound",
-    );
+    const ticket = await adapter.getTicket("linear:api:team:ticket:1" as TicketRef);
+    expect(String(ticket.dependencies?.[0]?.blocking)).toBe("linear:api:team:ticket:blocker");
+    expect(requests).toHaveLength(3);
+    expect(JSON.parse(requestBody(requests, 1)).variables.after).toBe("next");
+    expect(JSON.parse(requestBody(requests, 2)).variables.after).toBe("next");
   });
 });
 
@@ -215,30 +254,54 @@ describe("GitHub Issues tracker adapter", () => {
     expect(tickets[1]?.order).toBe(2);
   });
 
-  test("preserves cross-repository child and blocker identities", async () => {
+  test("rejects cross-repository children and blockers at the v1 workspace boundary", async () => {
+    const childAdapter = new GitHubIssuesTrackerAdapter({
+      token: "secret",
+      apiBase: "https://api.github.test",
+      transport: queueTransport([response([githubIssue(7, [], "child/repo")])]),
+    });
+    await expect(
+      childAdapter.listMapTickets("github:github.com:parent/repo:map:5" as MapRef),
+    ).rejects.toBeInstanceOf(GitHubWorkspaceBoundaryError);
+
+    const blockerAdapter = new GitHubIssuesTrackerAdapter({
+      token: "secret",
+      apiBase: "https://api.github.test",
+      transport: queueTransport([
+        response([githubIssue(7, [], "parent/repo")]),
+        response([githubIssue(8, [], "blocker/repo")]),
+      ]),
+    });
+    try {
+      await blockerAdapter.listMapTickets("github:github.com:parent/repo:map:5" as MapRef);
+      throw new Error("Expected a workspace boundary failure");
+    } catch (error) {
+      expect(error).toBeInstanceOf(GitHubWorkspaceBoundaryError);
+      expect(error).toMatchObject({
+        code: "cross_workspace_reference",
+        expectedWorkspace: "parent/repo",
+        actualWorkspace: "blocker/repo",
+        entity: "ticket",
+      });
+    }
+  });
+
+  test("uses the documented GitHub API version and endpoint paths", async () => {
     const requests: RecordedRequest[] = [];
     const adapter = new GitHubIssuesTrackerAdapter({
       token: "secret",
       apiBase: "https://api.github.test",
-      transport: queueTransport(
-        [
-          response([githubIssue(7, [], "child/repo")]),
-          response([githubIssue(7, [], "blocker/repo")]),
-          response(githubIssue(7, [], "child/repo"), { headers: { etag: "v1" } }),
-        ],
-        requests,
-      ),
+      transport: queueTransport([response([githubIssue(7)]), response([])], requests),
     });
-    const tickets = await adapter.listMapTickets("github:github.com:parent/repo:map:5" as MapRef);
-    const ticket = required(tickets, 0);
-    expect(String(ticket.ref)).toBe("github:github.com:child/repo:ticket:7");
-    expect(String(ticket.map)).toBe("github:github.com:parent/repo:map:5");
-    expect(String(ticket.dependencies?.[0]?.blocking)).toBe(
-      "github:github.com:blocker/repo:ticket:7",
-    );
-    expect(requests[1]?.url).toContain("/repos/child/repo/issues/7/dependencies/blocked_by");
-    await adapter.snapshotClaimState(ticket.ref);
-    expect(requests[2]?.url).toContain("/repos/child/repo/issues/7");
+    await adapter.listMapTickets("github:github.com:o/r:map:5" as MapRef);
+    expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
+      "/repos/o/r/issues/5/sub_issues",
+      "/repos/o/r/issues/7/dependencies/blocked_by",
+    ]);
+    for (const request of requests) {
+      expect(request.headers?.["X-GitHub-Api-Version"]).toBe("2026-03-10");
+      expect(request.headers?.["User-Agent"]).toBe("wayfinder-cli");
+    }
   });
 
   test("rejects cross-origin pagination before sending authorization", async () => {
@@ -260,7 +323,7 @@ describe("GitHub Issues tracker adapter", () => {
 
   test("getTicket and map listing use the same map and assignee normalization", async () => {
     const issue = githubIssue(7, [{ login: "human" }], "child/repo");
-    const parent = githubIssue(5, [], "parent/repo");
+    const parent = githubIssue(5, [], "child/repo");
     const direct = new GitHubIssuesTrackerAdapter({
       token: "secret",
       apiBase: "https://api.github.test",
@@ -275,7 +338,7 @@ describe("GitHub Issues tracker adapter", () => {
       "github:github.com:child/repo:ticket:7" as TicketRef,
     );
     const listedTickets = await listed.listMapTickets(
-      "github:github.com:parent/repo:map:5" as MapRef,
+      "github:github.com:child/repo:map:5" as MapRef,
     );
     expect(directTicket).toEqual(required(listedTickets, 0));
   });

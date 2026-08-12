@@ -64,7 +64,9 @@ export class LinearTrackerAdapter
       id: parsed.nativeId,
       nestedFirst: this.#pageSize,
     });
-    return normalizeLinearTicket(object(data.issue, "Linear issue"), ticket, 0);
+    const issue = object(data.issue, "Linear issue");
+    await this.#completeNestedConnections(issue);
+    return normalizeLinearTicket(issue, ticket, 0);
   }
 
   async listMapTickets(map: MapRef): Promise<Ticket[]> {
@@ -81,7 +83,11 @@ export class LinearTrackerAdapter
       const children = object(object(data.issue, "Linear map").children, "Linear children");
       const page = children.nodes;
       if (!Array.isArray(page)) throw new Error("Invalid Linear children page");
-      nodes.push(...page.map((node) => object(node, "Linear child")));
+      for (const item of page) {
+        const node = object(item, "Linear child");
+        await this.#completeNestedConnections(node);
+        nodes.push(node);
+      }
       const pageInfo = object(children.pageInfo, "Linear page info");
       after = pageInfo.hasNextPage === true ? string(pageInfo.endCursor, "Linear cursor") : null;
     } while (after !== null);
@@ -120,6 +126,44 @@ export class LinearTrackerAdapter
     }
   }
 
+  async #completeNestedConnections(issue: Record<string, unknown>): Promise<void> {
+    const issueId = string(issue.id, "Linear issue id");
+    await this.#completeConnection(issue, issueId, "labels", LABELS_PAGE_QUERY);
+    await this.#completeConnection(
+      issue,
+      issueId,
+      "inverseRelations",
+      INVERSE_RELATIONS_PAGE_QUERY,
+    );
+  }
+
+  async #completeConnection(
+    issue: Record<string, unknown>,
+    issueId: string,
+    field: "labels" | "inverseRelations",
+    query: string,
+  ): Promise<void> {
+    const connection = connectionValue(issue[field], `Linear ${field}`);
+    const seenCursors = new Set<string>();
+    while (connection.pageInfo.hasNextPage === true) {
+      const after = string(connection.pageInfo.endCursor, `Linear ${field} cursor`);
+      if (seenCursors.has(after)) throw new Error(`Linear ${field} pagination cursor repeated`);
+      seenCursors.add(after);
+      const data = await this.#graphql(query, {
+        id: issueId,
+        first: this.#pageSize,
+        after,
+      });
+      const page = connectionValue(
+        object(data.issue, "Linear nested issue")[field],
+        `Linear ${field}`,
+      );
+      connection.nodes.push(...page.nodes);
+      connection.pageInfo = page.pageInfo;
+    }
+    issue[field] = connection;
+  }
+
   async #graphql(
     query: string,
     variables: Record<string, unknown>,
@@ -154,13 +198,13 @@ function normalizeLinearTicket(
       : object(node.parent, "Linear parent");
   const mapId = parent ? string(parent.id, "parent id") : string(node.id, "issue id");
   const parsed = linearRef(ref, "ticket");
-  const labelConnection = completeConnection(node.labels, "Linear labels");
+  const labelConnection = connectionValue(node.labels, "Linear labels");
   const labels = labelConnection.nodes;
   const labelNames = Array.isArray(labels)
     ? labels.map((label) => string(object(label, "Linear label").name, "label name"))
     : [];
   const kind = kindFromLabels(labelNames);
-  const relations = completeConnection(node.inverseRelations, "Linear inverse relations").nodes;
+  const relations = connectionValue(node.inverseRelations, "Linear inverse relations").nodes;
   const dependencies = Array.isArray(relations)
     ? relations.flatMap((relation) => {
         const item = object(relation, "Linear relation");
@@ -197,16 +241,13 @@ function normalizeLinearTicket(
   };
 }
 
-function completeConnection(
+function connectionValue(
   value: unknown,
   context: string,
 ): { nodes: unknown[]; pageInfo: Record<string, unknown> } {
   const connection = object(value, context);
   if (!Array.isArray(connection.nodes)) throw new Error(`Invalid ${context} nodes`);
   const pageInfo = object(connection.pageInfo, `${context} page info`);
-  if (pageInfo.hasNextPage === true) {
-    throw new Error(`${context} exceeds the configured nested page bound`);
-  }
   return { nodes: connection.nodes, pageInfo };
 }
 
@@ -248,3 +289,5 @@ const ISSUE_QUERY = `query Issue($id: String!, $nestedFirst: Int!) { issue(id: $
 const ASSIGNMENT_QUERY = `query Assignment($id: String!) { issue(id: $id) { updatedAt assignee { id } } }`;
 const ASSIGN_MUTATION = `mutation Assign($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }`;
 const MAP_TICKETS_QUERY = `query MapTickets($id: String!, $first: Int!, $after: String, $nestedFirst: Int!) { issue(id: $id) { children(first: $first, after: $after) { nodes { ${ISSUE_FIELDS} } pageInfo { hasNextPage endCursor } } } }`;
+const LABELS_PAGE_QUERY = `query IssueLabels($id: String!, $first: Int!, $after: String!) { issue(id: $id) { labels(first: $first, after: $after) { nodes { name } pageInfo { hasNextPage endCursor } } } }`;
+const INVERSE_RELATIONS_PAGE_QUERY = `query IssueInverseRelations($id: String!, $first: Int!, $after: String!) { issue(id: $id) { inverseRelations(first: $first, after: $after) { nodes { type issue { id completedAt canceledAt } } pageInfo { hasNextPage endCursor } } } }`;
