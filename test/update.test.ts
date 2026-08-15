@@ -149,4 +149,20 @@ describe("update notifications", () => {
     expect(errors).toHaveLength(1);
     expect(errors[0]).toContain("Wayfinder 1.2.4 is available");
   });
+
+  test("honors the documented release metadata endpoint override", async () => {
+    const cachePath = join(await mkdtemp(join(tmpdir(), "wayfinder-update-")), "cache.json");
+    const requested: string[] = [];
+    await checkForUpdate({
+      currentVersion: "1.2.3",
+      interactive: true,
+      environment: { WAYFINDER_UPDATE_URL: "https://updates.example.test/releases" },
+      cachePath,
+      fetch: async (input) => {
+        requested.push(String(input));
+        return Response.json([]);
+      },
+    });
+    expect(requested).toEqual(["https://updates.example.test/releases"]);
+  });
 });

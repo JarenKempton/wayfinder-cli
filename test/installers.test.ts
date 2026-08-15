@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -46,6 +46,14 @@ function runInstaller(f: ReturnType<typeof fixture>, extra: Record<string, strin
 const describePosix = process.platform === "win32" ? describe.skip : describe;
 
 describePosix("POSIX installer", () => {
+  test("requires an explicit prerelease version without a fixture base URL", () => {
+    const f = fixture();
+    const result = runInstaller(f, { WAYFINDER_BASE_URL: "", WAYFINDER_VERSION: "" });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr.toString()).toContain("WAYFINDER_VERSION is required");
+    expect(existsSync(join(f.root, "curl.log"))).toBeFalse();
+  });
+
   test("selects the platform asset, verifies it, and installs atomically", () => {
     const f = fixture();
     const asset = "wayfinder-linux-x64";

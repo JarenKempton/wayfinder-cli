@@ -64,10 +64,13 @@ export async function checkForUpdate(
   // request must not cause every subsequent CLI invocation to retry it.
   await writeCache(cachePath, { checkedAt: now.toISOString() });
 
-  const response = await (options.fetch ?? globalThis.fetch)(RELEASES_URL, {
-    headers: { Accept: "application/vnd.github+json", "User-Agent": "wayfinder-cli" },
-    signal: (options.timeoutSignal ?? AbortSignal.timeout)(options.timeoutMs ?? 2_000),
-  });
+  const response = await (options.fetch ?? globalThis.fetch)(
+    environment.WAYFINDER_UPDATE_URL ?? RELEASES_URL,
+    {
+      headers: { Accept: "application/vnd.github+json", "User-Agent": "wayfinder-cli" },
+      signal: (options.timeoutSignal ?? AbortSignal.timeout)(options.timeoutMs ?? 2_000),
+    },
+  );
   if (!response.ok) throw new Error(`release check returned HTTP ${response.status}`);
   const releases = (await response.json()) as GitHubRelease[];
   const allowPrerelease = current.prerelease.length > 0;
@@ -97,7 +100,7 @@ export async function notifyAboutUpdate(options: UpdateCheckOptions): Promise<vo
     if (update) {
       (options.writeError ?? console.error)(
         `Wayfinder ${update.latestVersion} is available (current ${update.currentVersion}).\n` +
-          `Upgrade with Homebrew or reinstall from ${update.url}`,
+          `Install the new release from ${update.url}`,
       );
     }
   } catch {

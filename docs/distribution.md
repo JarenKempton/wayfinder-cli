@@ -22,14 +22,17 @@ before replacing an existing executable. They do not require Bun.
 
 ```sh
 curl --proto '=https' --tlsv1.2 -fsSL \
-  https://raw.githubusercontent.com/JarenKempton/wayfinder-cli/main/scripts/install.sh | sh
+  https://raw.githubusercontent.com/JarenKempton/wayfinder-cli/main/scripts/install.sh | \
+  WAYFINDER_VERSION=0.1.0-rc.1 sh
 ```
 
 ```powershell
+$env:WAYFINDER_VERSION = '0.1.0-rc.1'
 irm https://raw.githubusercontent.com/JarenKempton/wayfinder-cli/main/scripts/install.ps1 | iex
 ```
 
-Pin a prerelease by setting `WAYFINDER_VERSION` (without a leading `v`). Set
+Prerelease installation requires `WAYFINDER_VERSION` (without a leading `v`) because GitHub's
+`releases/latest` route excludes prereleases. Set
 `WAYFINDER_INSTALL_DIR` to choose the destination. The installers refuse an unsupported
 platform, a missing checksum, or a digest mismatch and leave the existing executable intact.
 
@@ -51,7 +54,7 @@ wayfinder man | man -l -
 
 ## Update behavior
 
-Wayfinder performs a bounded, non-blocking release metadata check and writes an update notice
+Wayfinder performs a bounded release metadata check after an interactive command and writes an update notice
 to stderr only when a newer version is known. Normal command output remains stable. It never
 downloads or installs an update automatically. Set `WAYFINDER_NO_UPDATE_CHECK=1` for offline or
 managed environments. Network failures are silent and never fail the requested command.

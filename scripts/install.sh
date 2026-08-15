@@ -2,7 +2,7 @@
 set -eu
 
 REPOSITORY="${WAYFINDER_REPOSITORY:-JarenKempton/wayfinder-cli}"
-VERSION="${WAYFINDER_VERSION:-latest}"
+VERSION="${WAYFINDER_VERSION:-}"
 INSTALL_DIR="${WAYFINDER_INSTALL_DIR:-${XDG_BIN_HOME:-$HOME/.local/bin}}"
 OS="${WAYFINDER_OS:-$(uname -s)}"
 ARCH="${WAYFINDER_ARCH:-$(uname -m)}"
@@ -22,9 +22,11 @@ esac
 asset="wayfinder-$platform-$machine"
 if [ -n "${WAYFINDER_BASE_URL:-}" ]; then
   base=${WAYFINDER_BASE_URL%/}
-elif [ "$VERSION" = latest ]; then
-  base="https://github.com/$REPOSITORY/releases/latest/download"
 else
+  if [ -z "$VERSION" ] || [ "$VERSION" = latest ]; then
+    echo "wayfinder: WAYFINDER_VERSION is required for prerelease installation" >&2
+    exit 1
+  fi
   case "$VERSION" in v*) tag=$VERSION ;; *) tag="v$VERSION" ;; esac
   base="https://github.com/$REPOSITORY/releases/download/$tag"
 fi

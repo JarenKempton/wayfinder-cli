@@ -7,7 +7,6 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-if (-not $Version) { $Version = 'latest' }
 if (-not $Repository) { $Repository = 'JarenKempton/wayfinder-cli' }
 if (-not $InstallDir) { $InstallDir = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Programs\Wayfinder\bin' }
 
@@ -20,12 +19,11 @@ switch ($architecture.ToLowerInvariant()) {
 
 $asset = "wayfinder-windows-$machine.exe"
 if (-not $BaseUrl) {
-    if ($Version -eq 'latest') {
-        $BaseUrl = "https://github.com/$Repository/releases/latest/download"
-    } else {
-        $tag = if ($Version.StartsWith('v')) { $Version } else { "v$Version" }
-        $BaseUrl = "https://github.com/$Repository/releases/download/$tag"
+    if ((-not $Version) -or ($Version -eq 'latest')) {
+        throw 'wayfinder: WAYFINDER_VERSION is required for prerelease installation'
     }
+    $tag = if ($Version.StartsWith('v')) { $Version } else { "v$Version" }
+    $BaseUrl = "https://github.com/$Repository/releases/download/$tag"
 }
 $BaseUrl = $BaseUrl.TrimEnd('/')
 
