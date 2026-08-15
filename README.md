@@ -53,6 +53,24 @@ bun install
 bun run src/cli.ts doctor
 ```
 
+## Install a prerelease
+
+GitHub Releases contain checksum-listed standalone binaries for macOS, Linux, and Windows,
+along with an SPDX SBOM, build provenance, shell completions, and a man page. To install a
+specific prerelease without Bun or Node:
+
+```sh
+WAYFINDER_VERSION=0.1.0-beta.1 sh scripts/install.sh
+```
+
+```powershell
+.\scripts\install.ps1 -Version 0.1.0-beta.1
+```
+
+The installers verify the selected binary against the release checksum before installing it.
+Interactive release builds check for a newer release at most once every 24 hours and print a
+notification only; set `WAYFINDER_NO_UPDATE_CHECK=1` to opt out.
+
 ## Commands
 
 ```text

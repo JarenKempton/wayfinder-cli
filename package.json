@@ -13,7 +13,9 @@
     "typecheck": "tsc --noEmit",
     "check": "biome check .",
     "format": "biome format --write .",
-    "build": "bun build ./src/cli.ts --compile --outfile ./dist/wayfinder"
+    "build": "bun build ./src/cli.ts --compile --outfile ./dist/wayfinder",
+    "completions": "bun run ./src/cli.ts completions",
+    "man": "bun run ./src/cli.ts man"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.2.4",

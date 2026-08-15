@@ -1,15 +1,14 @@
-name: Release
+name: Prerelease
 
 on:
   push:
-    tags: ['v*']
+    tags: ["v*-*"]
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 jobs:
-  build:
+  verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,23 +16,133 @@ jobs:
         with:
           bun-version: 1.3.11
       - run: bun install --frozen-lockfile
-      - name: Build standalone release matrix
+      - run: bun test
+      - run: bun run typecheck
+      - run: bun run check
+
+  build:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: bun-linux-x64-baseline
+            asset: wayfinder-linux-x64
+            smoke: true
+          - runner: ubuntu-latest
+            target: bun-linux-arm64
+            asset: wayfinder-linux-arm64
+            smoke: false
+          - runner: macos-14
+            target: bun-darwin-arm64
+            asset: wayfinder-darwin-arm64
+            smoke: true
+          - runner: macos-13
+            target: bun-darwin-x64
+            asset: wayfinder-darwin-x64
+            smoke: true
+          - runner: windows-latest
+            target: bun-windows-x64-baseline
+            asset: wayfinder-windows-x64.exe
+            smoke: true
+          - runner: windows-latest
+            target: bun-windows-arm64
+            asset: wayfinder-windows-arm64.exe
+            smoke: false
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+      - run: bun install --frozen-lockfile
+      - name: Build versioned standalone executable
         shell: bash
+        env:
+          VERSION: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+          ASSET: ${{ matrix.asset }}
         run: |
+          set -euo pipefail
+          VERSION="${VERSION#v}"
           mkdir -p dist
-          bun build src/cli.ts --compile --target=bun-darwin-arm64 --outfile=dist/wayfinder-darwin-arm64
-          bun build src/cli.ts --compile --target=bun-darwin-x64 --outfile=dist/wayfinder-darwin-x64
-          bun build src/cli.ts --compile --target=bun-linux-arm64 --outfile=dist/wayfinder-linux-arm64
-          bun build src/cli.ts --compile --target=bun-linux-x64-baseline --outfile=dist/wayfinder-linux-x64
-          bun build src/cli.ts --compile --target=bun-windows-arm64 --outfile=dist/wayfinder-windows-arm64.exe
-          bun build src/cli.ts --compile --target=bun-windows-x64-baseline --outfile=dist/wayfinder-windows-x64.exe
-          cd dist
-          sha256sum * > checksums.txt
+          bun build src/cli.ts --compile --target="$TARGET" \
+            --define "WAYFINDER_BUILD_VERSION=\"$VERSION\"" --outfile="dist/$ASSET"
+      - name: Native executable smoke test
+        if: matrix.smoke
+        shell: bash
+        env:
+          VERSION: ${{ github.ref_name }}
+          ASSET: ${{ matrix.asset }}
+        run: |
+          set -euo pipefail
+          VERSION="${VERSION#v}"
+          case "$ASSET" in *.exe) PROGRAM="dist/$ASSET" ;; *) chmod +x "dist/$ASSET"; PROGRAM="./dist/$ASSET" ;; esac
+          test "$("$PROGRAM" version)" = "$VERSION"
+          "$PROGRAM" doctor
+          "$PROGRAM" completions bash | grep -q wayfinder
+          "$PROGRAM" man | grep -q 'WAYFINDER 1'
       - uses: actions/upload-artifact@v4
         with:
-          name: wayfinder-cli-release
-          path: dist/
-      - uses: softprops/action-gh-release@v2
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
         with:
-          files: dist/*
+          path: dist
+          merge-multiple: true
+      - name: Generate release documentation assets
+        run: |
+          chmod +x dist/wayfinder-linux-x64
+          dist/wayfinder-linux-x64 completions bash > dist/wayfinder.bash
+          dist/wayfinder-linux-x64 completions zsh > dist/_wayfinder
+          dist/wayfinder-linux-x64 completions fish > dist/wayfinder.fish
+          dist/wayfinder-linux-x64 man > dist/wayfinder.1
+          cp scripts/install.sh scripts/install.ps1 dist/
+      - name: Generate checksums
+        run: cd dist && sha256sum wayfinder-* wayfinder.bash wayfinder.fish _wayfinder install.sh install.ps1 > checksums.txt
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: dist/wayfinder.spdx.json
+          upload-artifact: false
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/wayfinder-*
+            dist/wayfinder.bash
+            dist/wayfinder.fish
+            dist/_wayfinder
+            dist/install.sh
+            dist/install.ps1
+            dist/wayfinder.spdx.json
+            dist/checksums.txt
+      - name: Publish GitHub prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: true
           generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/wayfinder-*
+            dist/wayfinder.bash
+            dist/wayfinder.fish
+            dist/_wayfinder
+            dist/install.sh
+            dist/install.ps1
+            dist/wayfinder.spdx.json
+            dist/checksums.txt
