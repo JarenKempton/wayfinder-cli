@@ -43,7 +43,9 @@ function runInstaller(f: ReturnType<typeof fixture>, extra: Record<string, strin
   });
 }
 
-describe("POSIX installer", () => {
+const describePosix = process.platform === "win32" ? describe.skip : describe;
+
+describePosix("POSIX installer", () => {
   test("selects the platform asset, verifies it, and installs atomically", () => {
     const f = fixture();
     const asset = "wayfinder-linux-x64";
@@ -77,3 +79,15 @@ describe("POSIX installer", () => {
     expect(result.stderr.toString()).toContain("unsupported operating system");
   });
 });
+
+if (process.platform === "win32") {
+  test("PowerShell installer parses without syntax errors", () => {
+    const result = Bun.spawnSync([
+      "pwsh",
+      "-NoProfile",
+      "-Command",
+      "$errors = $null; [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'scripts/install.ps1'), [ref]$null, [ref]$errors) | Out-Null; if ($errors.Count) { $errors | Out-String | Write-Error; exit 1 }",
+    ]);
+    expect(result.exitCode).toBe(0);
+  });
+}
