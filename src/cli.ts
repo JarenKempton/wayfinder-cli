@@ -3,6 +3,7 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { builtInAdapters, findAdapter } from "./adapters.ts";
+import { completionScript, parseCompletionShell } from "./completions.ts";
 import { runAdapterConformance } from "./conformance.ts";
 import type { RecoveryVerification, RunLifecycleAdapter, TrackerAdapter } from "./contracts.ts";
 import type {
@@ -17,6 +18,7 @@ import type {
 } from "./domain.ts";
 import { evaluateFrontier, type FrontierScope, reconcileDependencyStatuses } from "./frontier.ts";
 import { LifecycleCoordinator, Supervisor } from "./lifecycle.ts";
+import { manPage } from "./manpage.ts";
 import { databasePath } from "./paths.ts";
 import { ProcessLifecycleAdapter } from "./platform/process-lifecycle.ts";
 import { AdapterClient, PROTOCOL_VERSION } from "./protocol.ts";
@@ -33,8 +35,11 @@ import {
   statusRepairAdapterBinding,
   statusRepairAdapterMatches,
 } from "./status-repair.ts";
+import { notifyAboutUpdate } from "./update.ts";
 
-export const VERSION = "0.1.0-dev";
+declare const WAYFINDER_BUILD_VERSION: string | undefined;
+export const VERSION =
+  typeof WAYFINDER_BUILD_VERSION === "string" ? WAYFINDER_BUILD_VERSION : "0.1.0-dev";
 
 export interface RuntimeServices {
   tracker?: TrackerAdapter;
@@ -66,6 +71,12 @@ export async function run(
     case "version":
     case "--version":
       write(VERSION);
+      return;
+    case "completions":
+      write(completionScript(parseCompletionShell(rest[0])));
+      return;
+    case "man":
+      write(manPage(VERSION));
       return;
     case "doctor":
       return doctor(write);
@@ -125,6 +136,8 @@ function usage(services: RuntimeServices): string {
     commands.push("wayfinder supervisor reconcile <run-id> --evidence <json>");
   }
   commands.push("wayfinder version");
+  commands.push("wayfinder completions <bash|zsh|fish>");
+  commands.push("wayfinder man");
   return `Wayfinder CLI — portable work orchestration for agents
 
 Usage:
@@ -759,8 +772,16 @@ function writeJson(write: (text: string) => void, data: unknown): void {
 }
 
 if (import.meta.main) {
-  run(Bun.argv.slice(2)).catch((error: unknown) => {
-    console.error(`wayfinder: ${error instanceof Error ? error.message : String(error)}`);
-    process.exitCode = 1;
-  });
+  run(Bun.argv.slice(2))
+    .then(() =>
+      notifyAboutUpdate({
+        currentVersion: VERSION,
+        interactive: Boolean(process.stdout.isTTY && process.stderr.isTTY),
+        json: Bun.argv.slice(2).includes("--json"),
+      }),
+    )
+    .catch((error: unknown) => {
+      console.error(`wayfinder: ${error instanceof Error ? error.message : String(error)}`);
+      process.exitCode = 1;
+    });
 }

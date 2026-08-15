@@ -21,3 +21,7 @@ export function dataDirectory(environment: NodeJS.ProcessEnv = process.env): str
 export function databasePath(environment: NodeJS.ProcessEnv = process.env): string {
   return join(dataDirectory(environment), "wayfinder.db");
 }
+
+export function updateCheckPath(environment: NodeJS.ProcessEnv = process.env): string {
+  return join(dataDirectory(environment), "update-check.json");
+}
