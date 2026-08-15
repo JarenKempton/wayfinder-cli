@@ -17,6 +17,7 @@ describe("update notifications", () => {
     const result = await checkForUpdate({
       currentVersion: "1.2.3",
       interactive: true,
+      environment: {},
       cachePath,
       now: () => new Date("2026-08-14T00:00:00Z"),
       fetch: async () => Response.json([release("v1.3.0"), release("v2.0.0-beta.1", true)]),
@@ -37,6 +38,7 @@ describe("update notifications", () => {
     const base = {
       currentVersion: "1.2.3",
       interactive: true,
+      environment: {},
       cachePath,
       fetch,
     };
@@ -74,6 +76,7 @@ describe("update notifications", () => {
     const result = await checkForUpdate({
       currentVersion: "1.2.0-beta.1",
       interactive: true,
+      environment: {},
       cachePath,
       fetch: async () => Response.json([release("v1.3.0-beta.1", true)]),
     });
@@ -85,6 +88,7 @@ describe("update notifications", () => {
     const result = await checkForUpdate({
       currentVersion: "1.2.0-beta.2",
       interactive: true,
+      environment: {},
       cachePath,
       fetch: async () =>
         Response.json([
@@ -105,6 +109,7 @@ describe("update notifications", () => {
     const options = {
       currentVersion: "1.2.3",
       interactive: true,
+      environment: {},
       cachePath,
       now: () => new Date("2026-08-14T00:00:00Z"),
       fetch: async () => {
@@ -128,6 +133,7 @@ describe("update notifications", () => {
     await notifyAboutUpdate({
       currentVersion: "1.2.3",
       interactive: true,
+      environment: {},
       cachePath,
       timeoutSignal: (milliseconds) => {
         timeouts.push(milliseconds);
