@@ -57,3 +57,9 @@ and credentials. Until such a target is provided, command parsing, success
 receipt shape, deterministic identity, and Python-to-TypeScript normalization
 remain deterministic offline goldens; live mutation parity is intentionally
 unproven.
+
+JWB-295 closes this boundary against the credential-free Markdown reference
+tracker as the disposable target. See `docs/disposable-tracker-acceptance.md`
+and `test/disposable-tracker-acceptance.test.ts`, which drive the production
+pickup, supervision, lifecycle, and generic-harness paths through live tracker
+mutation without external services.
