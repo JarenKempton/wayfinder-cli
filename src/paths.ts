@@ -25,3 +25,7 @@ export function databasePath(environment: NodeJS.ProcessEnv = process.env): stri
 export function updateCheckPath(environment: NodeJS.ProcessEnv = process.env): string {
   return join(dataDirectory(environment), "update-check.json");
 }
+
+export function laneStorePath(environment: NodeJS.ProcessEnv = process.env): string {
+  return join(dataDirectory(environment), "lanes.db");
+}
