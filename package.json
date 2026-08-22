@@ -15,7 +15,9 @@
     "format": "biome format --write .",
     "build": "bun build ./src/cli.ts --compile --outfile ./dist/wayfinder",
     "completions": "bun run ./src/cli.ts completions",
-    "man": "bun run ./src/cli.ts man"
+    "man": "bun run ./src/cli.ts man",
+    "proto:session": "bun run prototypes/session-host/tui.ts",
+    "proto:session:demo": "bun run prototypes/session-host/evidence-demo.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.2.4",
