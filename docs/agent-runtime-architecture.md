@@ -122,13 +122,15 @@ Answers: "Where and under what isolation boundary does this lane execute?"
 
 Examples:
 
-- `host`
+- `local-host`
 - `docker-sandbox`
-- future remote machine / microVM providers
+- future remote machine / microVM providers (`remote`, `remote+docker`)
 
 A runtime implementation owns environment preflight, planning, start, readiness, logs, resume, stop, network realization, credential realization, service exposure, and resource limits.
 
-`host` should itself be modeled as an environment rather than as an absence of environment. This avoids special-case branching throughout the core.
+`local-host` is itself modeled as an environment rather than as an absence of environment. This avoids special-case branching throughout the core, and it means there is no implicit fallback: a lane names its environment or it fails closed.
+
+Workspace handles passed to an environment adapter resolve in that environment's own frame of reference — the host path for `local-host`, the mount point inside the container for `docker-sandbox`, a path on the remote machine for a remote provider. This keeps local, containerized, and remote execution peer implementations of one contract rather than structurally different cases.
 
 ### Agent adapter
 
@@ -286,14 +288,17 @@ The recommended model is:
 T3/Herdr/terminal orchestrator session
               |
               v
-        Wayfinder daemon
+   Wayfinder durable lane store
+     (optional supervisor
+      drives unattended lanes)
               |
          active lanes
 ```
 
-Wayfinder should provide a durable per-user supervisor/daemon process (for example, a future `wayfinder supervisor serve`) that owns:
+Durable lane state lives in a re-attachable SQLite store owned by Wayfinder itself, not by any running process. Every invocation re-attaches to that store, so a daemon is **not** required for correctness or for surviving a closed control surface.
 
-- the SQLite state store;
+Wayfinder additionally provides an **optional** per-user supervisor process (for example, a future `wayfinder supervisor serve`) whose sole purpose is driving **unattended** lanes — lanes that must keep making progress while no control surface is attached. For those lanes it owns:
+
 - lane scheduling;
 - process/environment identities;
 - heartbeats and observations;
@@ -302,7 +307,9 @@ Wayfinder should provide a durable per-user supervisor/daemon process (for examp
 - recovery; and
 - lifecycle transitions that do not require model judgment.
 
-The orchestrator agent subscribes to this state and makes higher-level decisions such as selecting revision instructions, deciding whether to request another review, or escalating to a human.
+Attended lanes run without the supervisor. Starting or stopping it must never change lane truth, only whether unattended lanes advance on their own.
+
+The orchestrator agent subscribes to lane state and makes higher-level decisions such as selecting revision instructions, deciding whether to request another review, or escalating to a human.
 
 ## Strong isolation and sandbox clone mode
 
@@ -533,6 +540,14 @@ Global configuration should allow a user to set defaults once, including:
 
 A project can narrow or extend those defaults, and an explicit invocation remains highest precedence.
 
+### Capabilities are gated at onboarding
+
+Every value above that names a capability — a session host, an agent runtime, an environment/isolation provider — is selectable only if that capability was provisioned during onboarding (the reserved `init` / `config` verbs). An unprovisioned capability does not appear as an option, and configuration naming it is rejected at resolution time rather than at launch.
+
+Runtime capability detection remains as a backstop for a provisioned capability that has since become unavailable, such as a stopped Docker daemon or an uninstalled harness. That backstop fails loud. It is not the primary gate, and it never silently substitutes a weaker capability.
+
+Environment selection follows the same rule with no implicit fallback: a lane must name its environment, and `local-host` is an explicit named environment rather than the absence of one. An unnamed or unresolvable environment fails closed and never drops to bare-host execution.
+
 The desired UX is that `wayfinder pickup <ticket>` resolves all of these choices without requiring users to understand sandbox proxies, VM internals, port mappings, or credential mechanics.
 
 ## Resource model
@@ -750,15 +765,23 @@ lane logs
 
 ### MVP 2: durable control plane
 
-Introduce a long-running supervisor/daemon mode that owns lane state, event subscriptions, scheduling, observations, and recovery.
+Introduce the re-attachable durable lane store as the source of execution truth, usable with no long-running process.
+
+Then add an optional supervisor mode over that store for unattended lanes only, owning event subscriptions, scheduling, observations, and recovery. Attended lanes must remain fully functional without it.
 
 ### MVP 3: separate invocation from execution
 
 Refactor current harness launching so an agent adapter describes an invocation and an environment/session-host executes it.
 
-Implement `host` as the first environment adapter with no behavior regression.
+Implement `local-host` as the first environment adapter with no behavior regression.
 
-### MVP 4: Docker Sandbox environment
+### MVP 4: T3 session host
+
+Add a T3 adapter against its stable programmatic lifecycle boundary, launching lane processes against the host filesystem.
+
+T3 currently advertises no `process_launch` and no `visible_multi_session` capability, so the shipped CLI cannot launch a T3 lane at all. This step closes that gap and is a prerequisite for sandboxing: the sandbox launch mode is defined as *the session host starting the agent process inside the container*, which requires a session host that can launch a lane process in the first place.
+
+### MVP 5: Docker Sandbox environment
 
 Implement:
 
@@ -774,7 +797,9 @@ Implement:
 
 One sandbox per active lane is the initial model.
 
-### MVP 5: project recipe
+The agent runtime process starts **inside** the container. Running the harness on the host and reaching in with per-command `docker exec` is rejected: it leaves the agent's file access and reasoning on the host and reduces the container to a command runner. A contained agent reaches out through one narrow stdio/RPC bridge that the session host attaches to, and that bridge is the isolation boundary. A session host that cannot launch a process inside the requested container fails loud rather than falling back to host-side exec.
+
+### MVP 6: project recipe
 
 Add the provider-neutral project environment contract with only:
 
@@ -783,10 +808,6 @@ Add the provider-neutral project environment contract with only:
 - services;
 - required network policy; and
 - resource estimates.
-
-### MVP 6: T3 session host
-
-Add a T3 adapter against its stable programmatic lifecycle boundary after the generic lane protocol is working.
 
 ### MVP 7: reviewer
 

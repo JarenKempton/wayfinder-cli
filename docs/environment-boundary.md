@@ -1,6 +1,7 @@
 # Development environment boundary
 
-Status: accepted design for JWB-296.
+Status: accepted design for JWB-296, amended 2026-08-22 under JWB-324 (workspace
+handles resolve in the environment's frame of reference; see ADR 0001 §15).
 
 A prepared Git worktree is not necessarily ready for agent work. An application
 may still need processes, credentials, hosted dependencies, routing, and health
@@ -44,8 +45,15 @@ highest:
 4. explicit invocation.
 
 The plan request includes a map of opaque workspace names to prepared workspace
-paths. This permits an adapter to consume more than one worktree without making
-Wayfinder CLI defines repository relationships or assumes sibling directory layouts. How a
+handles. A handle is a path in the environment's own frame of reference, not
+necessarily a path on the host filesystem. For `local-host` it is the host path;
+for a container environment it is the mount point inside the container; for a
+remote environment it is a path on the remote machine that the adapter
+materializes. This keeps local, containerized, and remote execution peer
+implementations of the same contract rather than structurally different cases.
+
+This also permits an adapter to consume more than one worktree without Wayfinder
+CLI defining repository relationships or assuming sibling directory layouts. How a
 profile relates those workspaces is entirely adapter-owned.
 
 Application component catalogs, dependency expansion, local/hosted/off routing,

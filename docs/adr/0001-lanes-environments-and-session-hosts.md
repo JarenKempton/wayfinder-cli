@@ -1,8 +1,10 @@
 # ADR 0001: Lanes, environments, and session hosts
 
-Status: Accepted design direction
+Status: Accepted
 
 Date: 2026-08-19
+
+Ratified: 2026-08-22 under JWB-324 ("Set the execution model for durable agent lanes").
 
 ## Context
 
@@ -30,9 +32,11 @@ Wayfinder owns lane state transitions and persists them independently from any i
 
 ### 2. The host-side Wayfinder control plane survives session-host failure
 
-Wayfinder will evolve toward a durable per-user supervisor/daemon that owns active lane state, scheduling, observations, event subscriptions, resource admission, and recovery.
+Durable lane state lives in a re-attachable local store, not in a running process. Wayfinder does **not** require a daemon: any invocation re-attaches to that store, so closing a control surface never terminates or forgets active lanes.
 
-T3 Code, Herdr, a terminal, or another client can act as a control surface over that state, but closing that surface must not implicitly terminate or forget active lanes.
+A per-user supervisor process is **optional** and exists for one purpose — driving unattended lanes that must make progress while no control surface is attached. For those lanes it owns scheduling, observations, event subscriptions, resource admission, and recovery. Attended lanes run without it.
+
+T3 Code, Herdr, a terminal, or another client can act as a control surface over the durable store, but closing that surface must not implicitly terminate or forget active lanes.
 
 ### 3. Agent runtime, session host, environment, and workspace are separate abstractions
 
@@ -56,9 +60,11 @@ AgentAdapter -> AgentInvocation -> Environment/SessionHost -> ExecutionReceipt
 
 This allows the same Codex/Claude/OpenCode/Pi adapter to run directly on the host, inside a Docker Sandbox, inside a persistent session host, or on a future remote runtime.
 
-### 5. `host` is an explicit environment
+### 5. `local-host` is an explicit environment, and there is no implicit fallback
 
-Host execution is modeled as an environment implementation, not as the absence of an environment. This keeps environment selection uniform and avoids special-case logic throughout the core.
+Host execution is modeled as an environment implementation named `local-host`, not as the absence of an environment. This keeps environment selection uniform and avoids special-case logic throughout the core.
+
+A lane must name its environment. An unnamed or unresolvable environment fails closed; it never silently drops to bare-host execution. This is the same fail-loud rule as §8, applied at selection time rather than only at downgrade time.
 
 ### 6. Autonomous lanes prefer sandbox-private clone isolation
 
@@ -67,6 +73,16 @@ For strong autonomous isolation, the preferred endpoint is a private repository 
 When sandbox clone mode is selected, Wayfinder should not also create a host worktree for the same lane. Host worktrees and sandbox clones are alternative workspace strategies.
 
 Host worktrees remain supported for trusted/manual execution and systems without strong sandbox support.
+
+#### The agent process runs inside the sandbox
+
+When a sandbox environment is selected, the agent runtime process itself starts **inside** the container. The environment entrypoint launches the harness, which reads, edits, and runs tests entirely within the container filesystem.
+
+Running the harness on the host and reaching in with per-command `docker exec` is explicitly rejected. That pattern leaves the agent's file access and reasoning on the host and reduces the container to a command runner, which is cosmetic isolation rather than real isolation.
+
+A contained agent reaches the outside world through one narrow channel: a stdio/RPC bridge that the session host attaches to. That bridge is the isolation boundary. Model inference, scoped Git push, and tracker writes are the only outbound traffic a lane needs, and each remains separately grantable under §11.
+
+A session host that cannot launch a process inside the requested container fails loud (§8). It does not fall back to host-side exec.
 
 ### 7. Project setup is declarative and provider-neutral
 
@@ -122,6 +138,26 @@ Wayfinder may support a development-topology provider that describes which servi
 
 Product-specific gateway and microservice behavior does not belong in portable Wayfinder core.
 
+### 14. Capabilities are provisioned at onboarding, not negotiated at runtime
+
+Docker sandboxing, each session host, and each agent runtime are capabilities a user provisions during onboarding (the reserved `init` / `config` verbs). A capability that has not been provisioned is not selectable: it does not appear as an option, and configuration naming it is rejected at resolution time.
+
+Runtime capability checks remain as a **backstop** for a provisioned capability that has since become unavailable — Docker daemon stopped, harness uninstalled. That backstop fails loud (§8). It is not the primary gate, and it never silently substitutes a weaker capability.
+
+This puts capability availability in front of the user at setup time, where it is actionable, rather than mid-lane where it is only a failure.
+
+### 15. Workspace handles resolve in the environment's frame of reference
+
+The plan request passes workspace handles to the environment adapter. A handle is a path **in the environment's own frame of reference**, not necessarily a path on the host filesystem:
+
+- `local-host` — the host path (identity).
+- `docker` — the mount point inside the container.
+- `remote` / `remote+docker` — a path on the remote machine, which that adapter materializes.
+
+This makes local, containerized, and remote execution peer implementations of the same seven-verb environment contract (`preflight`, `plan`, `start`, `verifyReady`, `logs`, `resume`, `stop`) rather than structurally different cases.
+
+No remote adapter ships in the initial MVP. The wording exists now so that adding one later is a new adapter rather than a change to the workspace and environment seams.
+
 ## Consequences
 
 ### Positive
@@ -146,13 +182,15 @@ Product-specific gateway and microservice behavior does not belong in portable W
 ## Initial implementation sequence
 
 1. Define the lane state machine and structured lane events.
-2. Add a durable supervisor/daemon mode.
+2. Add the durable re-attachable lane store, plus optional supervisor mode for unattended lanes.
 3. Separate agent invocation from execution.
-4. Implement `host` as an explicit environment.
-5. Add a Docker Sandbox environment with sandbox-private clone mode.
-6. Add a provider-neutral project recipe.
-7. Add T3 Code as a session-host integration against a stable programmatic API.
+4. Implement `local-host` as an explicit environment.
+5. Add T3 Code as a session-host integration against a stable programmatic API, launching against the host filesystem.
+6. Add a Docker Sandbox environment with sandbox-private clone mode and in-container agent launch, as a launch mode on an already-working session host.
+7. Add a provider-neutral project recipe.
 8. Add deterministic validation and optional independent review lanes.
+
+Sandboxing follows the session host rather than preceding it. Under §6 the sandbox launch mode is defined as *the session host starting the agent process inside the container*, so there must first be a session host that can launch a lane process at all. T3 Code currently advertises no `process_launch` and no `visible_multi_session` capability, so step 5 is a prerequisite for step 6 rather than an independent track.
 
 ## Non-goals for the initial MVP
 
