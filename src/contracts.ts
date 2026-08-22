@@ -162,6 +162,50 @@ export class HarnessLaunchError extends Error {
   }
 }
 
+/**
+ * A portable, host-agnostic description of how to invoke and steer an agent.
+ * It carries no process, no session, and no assumption about where it runs, so
+ * a host, container, or remote runtime can execute the identical invocation.
+ */
+export interface AgentInvocation {
+  /** The agent/harness label that produced this invocation. */
+  agent: string;
+  /** The argument vector to execute. Always an array, never shell text. */
+  argv: readonly string[];
+  /** The workspace path in the executing runtime's own frame of reference. */
+  cwd: string;
+}
+
+/**
+ * The agent-provider contract. It negotiates capabilities and describes how to
+ * invoke and steer an agent; it never spawns a host process. Where and how the
+ * invocation executes is the {@link AgentRuntime}'s concern, keeping
+ * agent-provider concerns separate from session-host concerns.
+ */
+export interface AgentAdapter {
+  describe(): Promise<CapabilitySet>;
+  preflight(request: LaunchRequest): Promise<void>;
+  invoke(request: LaunchRequest): Promise<AgentInvocation>;
+}
+
+/**
+ * The session-host/execution contract. It owns where and how an invocation
+ * executes and how the resulting session is stopped. `host` is the first
+ * concrete runtime; isolated container or remote runtimes are peers that
+ * execute the same portable {@link AgentInvocation}.
+ */
+export interface AgentRuntime {
+  describe(): Promise<CapabilitySet>;
+  execute(invocation: AgentInvocation): Promise<LaunchReceipt>;
+  stop(receipt: LaunchReceipt): Promise<void>;
+}
+
+/**
+ * v1 host-bound convenience: an {@link AgentAdapter} pre-composed with a host
+ * {@link AgentRuntime} so `launch` both describes an invocation and executes it
+ * on the host. New code should prefer the {@link AgentAdapter} +
+ * {@link AgentRuntime} seam so the same invocation can run on isolated runtimes.
+ */
 export interface HarnessAdapter {
   describe(): Promise<CapabilitySet>;
   preflight(request: LaunchRequest): Promise<void>;
