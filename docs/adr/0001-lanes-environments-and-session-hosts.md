@@ -95,16 +95,19 @@ Wayfinder owns the schema. Docker Kits, Compose, devcontainers, shell commands, 
 Configuration resolves from low to high precedence:
 
 ```text
-built-in defaults
-user-global configuration
-project configuration
-map/ticket policy
+enforced organization policy
 invocation overrides
+map/ticket policy
+project configuration
+user-global configuration
+built-in defaults
 ```
+
+Listed highest precedence first. ADR 0003 adds the enforced organization-policy layer above invocation overrides and defines how a key is pinned. Without that layer this chain cannot express the isolation rule stated immediately below, because an invocation override would outrank it.
 
 Users may establish defaults for isolation, session host, agent, model, network policy, credentials, resource limits, concurrency, review policy, and editor command.
 
-An explicit requirement for strong isolation must never silently downgrade to host execution.
+An explicit requirement for strong isolation must never silently downgrade to host execution. When an organization pins isolation as an enforced key (ADR 0003), no lower layer — including an invocation override — may relax it, and an attempt to do so fails loud.
 
 ### 9. Resource admission is a core responsibility
 
