@@ -482,12 +482,18 @@ function doctor(write: (text: string) => void): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const store = new StateStore(path);
   store.close();
+  const sandboxPresent = Bun.which("sbx") !== null;
   writeJson(write, {
     ok: true,
     version: VERSION,
     protocolVersion: PROTOCOL_VERSION,
     database: path,
     adapters: builtInAdapters().length,
+    dockerSandbox: {
+      available: sandboxPresent,
+      // Fail closed: strong isolation is verified per-launch (login + hypervisor + OS + workspace mode).
+      strongIsolation: sandboxPresent ? "probe-gated" : "unavailable",
+    },
   });
 }
 

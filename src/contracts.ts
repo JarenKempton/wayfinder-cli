@@ -137,6 +137,34 @@ export interface EnvironmentAdapter {
   stop(environment: PreparedEnvironment): Promise<void>;
 }
 
+/** The resources a destructive teardown removed, and the ones it deliberately preserved. */
+export interface DestroyReceipt {
+  /** Owned resources removed (e.g. the sandbox and its private staging clone). */
+  removed: string[];
+  /** Resources never removed by teardown — always includes the host worktree/tree. */
+  preserved: string[];
+}
+
+/** Evidence that a fresh process re-derived and re-verified a live environment it did not create. */
+export interface EnvironmentRecovery {
+  environment: PreparedEnvironment;
+  /** True only when the live environment was re-verified, never recreated. */
+  verified: boolean;
+  /** Machine-readable recovery evidence; `verified: false` retains it for attention, not silent success. */
+  evidence: unknown;
+}
+
+/**
+ * A strongly-isolated environment adapter. It extends the base lifecycle with explicit
+ * destructive teardown and reconnect recovery, so a fresh process can re-derive and
+ * re-verify an environment it did not create without recreating it. `destroy` never
+ * removes the host worktree; `recover` never silently promotes a missing environment.
+ */
+export interface IsolatedEnvironmentAdapter extends EnvironmentAdapter {
+  destroy(environment: PreparedEnvironment): Promise<DestroyReceipt>;
+  recover(id: string): Promise<EnvironmentRecovery>;
+}
+
 export interface LaunchRequest {
   run: RunRef;
   ticket: Ticket;
