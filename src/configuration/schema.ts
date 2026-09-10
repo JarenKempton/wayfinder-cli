@@ -1,261 +1,174 @@
 /** Portable configuration validation and resolution; no filesystem or runtime discovery. */
-export const SETTING_KEYS = [
-  "host",
-  "agent",
-  "model",
-  "effort",
-  "context_window",
-  "runtime_mode",
-  "interaction_mode",
-] as const;
-export type SettingKey = (typeof SETTING_KEYS)[number];
-export type PersonalSettings = Partial<Record<SettingKey, string>>;
-export interface RepositoryConfiguration {
-  github: string;
-  path: string;
-  worktree_root: string;
-  base_branch: string;
-}
-export interface MapConfiguration {
-  repository: string;
-  claim_status: string;
-  available_statuses: string[];
-  claim_comment_required?: boolean;
-}
-export interface SetupRecipe {
-  version: string;
-  steps: Array<{
-    argv: string[];
-    location: "source" | "workspace";
-    scripts: Array<{ path: string; version: string }>;
-  }>;
-}
-export interface ProjectConfiguration {
-  version: 1;
-  repositories: Record<string, RepositoryConfiguration>;
-  maps: Record<string, MapConfiguration>;
-  tracker: { jira: { site: string; cli?: string } };
-  t3: {
-    provider?: string;
-    model?: string;
-    thinking_effort?: string;
-    context_window?: string;
-    runtime_mode?: string;
-    interaction_mode?: string;
-    open?: "none" | "browser";
-  };
-  defaults: PersonalSettings;
-  required: PersonalSettings;
-  instructions?: {
-    runtime_contract?: string;
-    role_templates?: Partial<Record<"task" | "research" | "prototype" | "decision", string>>;
-  };
-  setup?: SetupRecipe;
-}
-export interface ResolvedConfiguration {
-  version: 1;
-  source: { path: string; version: string };
-  project: ProjectConfiguration;
-  settings: PersonalSettings;
-  sources: Partial<Record<SettingKey, "default" | "personal" | "required">>;
-}
+import { z } from "zod";
 
-function invalid(path: string): never {
-  throw new Error(`Invalid configuration at ${path}`);
-}
-export function configObject(
-  value: unknown,
-  keys: readonly string[],
-  path: string,
-): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) invalid(path);
-  const object = value as Record<string, unknown>;
-  // Do not echo unknown keys or supplied values: they may contain credentials.
-  if (Object.keys(object).some((key) => !keys.includes(key))) invalid(path);
-  return object;
-}
-export function hasControlCharacters(value: string): boolean {
-  return [...value].some(
-    (character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
+const configText = z
+  .string()
+  .refine(
+    (value) =>
+      value.trim().length > 0 &&
+      ![...value].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127),
   );
-}
-export function configString(value: unknown, path: string): string {
-  if (typeof value !== "string" || !value.trim() || hasControlCharacters(value)) invalid(path);
-  return value;
-}
-function strings(value: unknown, path: string): string[] {
-  if (!Array.isArray(value) || !value.length) invalid(path);
-  return value.map((item) => configString(item, path));
-}
-function dictionary<T>(
-  value: unknown,
-  path: string,
-  parse: (value: unknown) => T,
-): Record<string, T> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) invalid(path);
-  return Object.fromEntries(
-    Object.entries(value).map(([key, entry]) => [configString(key, path), parse(entry)]),
-  );
-}
-export function validatePersonalSettings(value: unknown): PersonalSettings {
-  const item = configObject(value, SETTING_KEYS, "settings");
-  const result: PersonalSettings = {};
-  for (const key of SETTING_KEYS)
-    if (item[key] !== undefined) result[key] = configString(item[key], `settings.${key}`);
-  if (
-    result.runtime_mode &&
-    !["approval-required", "auto-accept-edits", "auto", "full-access"].includes(result.runtime_mode)
-  )
-    invalid("settings.runtime_mode");
-  if (result.interaction_mode && !["default", "plan"].includes(result.interaction_mode))
-    invalid("settings.interaction_mode");
-  return result;
-}
-export function validateProjectConfiguration(value: unknown): ProjectConfiguration {
-  const item = configObject(
-    value,
-    [
-      "version",
-      "repositories",
-      "maps",
-      "tracker",
-      "t3",
-      "defaults",
-      "required",
-      "instructions",
-      "setup",
-    ],
-    "project",
-  );
-  if (item.version !== 1) invalid("version");
-  const repositories = dictionary(item.repositories, "repositories", (value) => {
-    const r = configObject(value, ["github", "path", "worktree_root", "base_branch"], "repository");
-    const github = configString(r.github, "repository.github");
-    if (!/^[\w.-]+\/[\w.-]+$/.test(github)) invalid("repository.github");
-    return {
-      github,
-      path: configString(r.path, "repository.path"),
-      worktree_root: configString(r.worktree_root, "repository.worktree_root"),
-      base_branch: configString(r.base_branch, "repository.base_branch"),
-    };
-  });
-  const maps = dictionary(item.maps, "maps", (value) => {
-    const m = configObject(
-      value,
-      ["repository", "claim_status", "available_statuses", "claim_comment_required"],
-      "map",
-    );
-    const repository = configString(m.repository, "map.repository");
-    if (!Object.hasOwn(repositories, repository)) invalid("map.repository");
-    if (m.claim_comment_required !== undefined && typeof m.claim_comment_required !== "boolean")
-      invalid("map.claim_comment_required");
-    return {
-      repository,
-      claim_status: configString(m.claim_status, "map.claim_status"),
-      available_statuses: strings(m.available_statuses, "map.available_statuses"),
-      ...(m.claim_comment_required === undefined
-        ? {}
-        : { claim_comment_required: m.claim_comment_required as boolean }),
-    };
-  });
-  const tracker = configObject(item.tracker, ["jira"], "tracker");
-  const jira = configObject(tracker.jira, ["site", "cli"], "tracker.jira");
-  const site = configString(jira.site, "tracker.jira.site");
+// Preserve the public string-valued settings API while checking supported modes at runtime.
+const runtimeMode = configText.refine((value) =>
+  ["approval-required", "auto-accept-edits", "auto", "full-access"].includes(value),
+);
+const interactionMode = configText.refine((value) => ["default", "plan"].includes(value));
+export const personalSettingsSchema = z
+  .strictObject({
+    host: configText,
+    agent: configText,
+    model: configText,
+    effort: configText,
+    context_window: configText,
+    runtime_mode: runtimeMode,
+    interaction_mode: interactionMode,
+  })
+  .partial();
+export const SETTING_KEYS = personalSettingsSchema.keyof().options;
+export type SettingKey = keyof z.infer<typeof personalSettingsSchema>;
+export type PersonalSettings = z.infer<typeof personalSettingsSchema>;
+
+const repositorySchema = z.strictObject({
+  github: configText.regex(/^[\w.-]+\/[\w.-]+$/),
+  path: configText,
+  worktree_root: configText,
+  base_branch: configText,
+});
+const mapSchema = z.strictObject({
+  repository: configText,
+  claim_status: configText,
+  available_statuses: z.array(configText).min(1),
+  claim_comment_required: z.boolean().optional(),
+});
+const setupSchema = z.strictObject({
+  version: configText,
+  steps: z
+    .array(
+      z.strictObject({
+        argv: z.array(configText).min(1),
+        location: z.enum(["source", "workspace"]),
+        scripts: z.array(z.strictObject({ path: configText, version: configText })),
+      }),
+    )
+    .min(1),
+});
+const jiraSite = configText.refine((site) => {
   try {
     const url = new URL(site);
-    if (
-      url.protocol !== "https:" ||
-      url.username ||
-      url.password ||
-      url.search ||
-      url.hash ||
-      url.pathname !== "/"
-    )
-      invalid("tracker.jira.site");
-  } catch {
-    invalid("tracker.jira.site");
-  }
-  const t3 = configObject(
-    item.t3 ?? {},
-    [
-      "provider",
-      "model",
-      "thinking_effort",
-      "context_window",
-      "runtime_mode",
-      "interaction_mode",
-      "open",
-    ],
-    "t3",
-  );
-  for (const value of Object.values(t3)) configString(value, "t3");
-  if (t3.open !== undefined && t3.open !== "none" && t3.open !== "browser") invalid("t3.open");
-  const result: ProjectConfiguration = {
-    version: 1,
-    repositories,
-    maps,
-    tracker: {
-      jira: {
-        site,
-        ...(jira.cli === undefined ? {} : { cli: configString(jira.cli, "tracker.jira.cli") }),
-      },
-    },
-    t3: t3 as ProjectConfiguration["t3"],
-    defaults: validatePersonalSettings(item.defaults ?? {}),
-    required: validatePersonalSettings(item.required ?? {}),
-  };
-  validatePersonalSettings(t3Defaults(result));
-  if (item.instructions !== undefined) {
-    const i = configObject(
-      item.instructions,
-      ["runtime_contract", "role_templates"],
-      "instructions",
+    return (
+      url.protocol === "https:" &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash &&
+      url.pathname === "/"
     );
-    result.instructions = {};
-    if (i.runtime_contract !== undefined)
-      result.instructions.runtime_contract = configString(
-        i.runtime_contract,
-        "instructions.runtime_contract",
-      );
-    if (i.role_templates !== undefined) {
-      const templates = configObject(
-        i.role_templates,
-        ["task", "research", "prototype", "decision"],
-        "instructions.role_templates",
-      );
-      result.instructions.role_templates = Object.fromEntries(
-        Object.entries(templates).map(([key, value]) => [
-          key,
-          configString(value, "instructions.role_templates"),
-        ]),
-      );
+  } catch {
+    return false;
+  }
+});
+export const projectConfigurationSchema = z
+  .strictObject({
+    version: z.literal(1),
+    repositories: z.record(configText, repositorySchema),
+    maps: z.record(configText, mapSchema),
+    tracker: z.strictObject({
+      jira: z.strictObject({ site: jiraSite, cli: configText.optional() }),
+    }),
+    t3: z
+      .strictObject({
+        provider: configText.optional(),
+        model: configText.optional(),
+        thinking_effort: configText.optional(),
+        context_window: configText.optional(),
+        runtime_mode: runtimeMode.optional(),
+        interaction_mode: interactionMode.optional(),
+        open: z.enum(["none", "browser"]).optional(),
+      })
+      .default({}),
+    defaults: personalSettingsSchema.default({}),
+    required: personalSettingsSchema.default({}),
+    instructions: z
+      .strictObject({
+        runtime_contract: configText.optional(),
+        role_templates: z
+          .strictObject({
+            task: configText.optional(),
+            research: configText.optional(),
+            prototype: configText.optional(),
+            decision: configText.optional(),
+          })
+          .optional(),
+      })
+      .optional(),
+    setup: setupSchema.optional(),
+  })
+  .superRefine((project, ctx) => {
+    for (const [key, map] of Object.entries(project.maps)) {
+      if (!Object.hasOwn(project.repositories, map.repository))
+        ctx.addIssue({
+          code: "custom",
+          path: ["maps", key, "repository"],
+          message: "Unknown repository",
+        });
     }
+  });
+export type RepositoryConfiguration = z.infer<typeof repositorySchema>;
+export type MapConfiguration = z.infer<typeof mapSchema>;
+export type SetupRecipe = z.infer<typeof setupSchema>;
+export type ProjectConfiguration = z.infer<typeof projectConfigurationSchema>;
+const resolvedConfigurationSchema = z.strictObject({
+  version: z.literal(1),
+  source: z.strictObject({ path: configText, version: configText }),
+  project: projectConfigurationSchema,
+  settings: personalSettingsSchema,
+  sources: z.partialRecord(
+    personalSettingsSchema.keyof(),
+    z.enum(["default", "personal", "required"]),
+  ),
+});
+export type ResolvedConfiguration = z.infer<typeof resolvedConfigurationSchema>;
+
+// Only schema-owned field names may reach diagnostics; record keys and values are untrusted.
+function diagnosticPath(schema: z.core.$ZodType, path: readonly PropertyKey[]): string {
+  const parts: string[] = [];
+  for (const key of path) {
+    while (schema instanceof z.ZodOptional || schema instanceof z.ZodDefault)
+      schema = schema.unwrap();
+    if (
+      schema instanceof z.ZodObject &&
+      typeof key === "string" &&
+      Object.hasOwn(schema.shape, key)
+    ) {
+      parts.push(key);
+      schema = schema.shape[key];
+    } else if (schema instanceof z.ZodRecord) {
+      parts.push("<key>");
+      schema = schema.valueType;
+    } else if (schema instanceof z.ZodArray) {
+      parts.push("item");
+      schema = schema.element;
+    } else break;
   }
-  if (item.setup !== undefined) {
-    const setup = configObject(item.setup, ["version", "steps"], "setup");
-    if (!Array.isArray(setup.steps) || !setup.steps.length) invalid("setup.steps");
-    result.setup = {
-      version: configString(setup.version, "setup.version"),
-      steps: setup.steps.map((value) => {
-        const step = configObject(value, ["argv", "location", "scripts"], "setup.step");
-        if (step.location !== "source" && step.location !== "workspace")
-          invalid("setup.step.location");
-        if (!Array.isArray(step.scripts)) invalid("setup.step.scripts");
-        return {
-          argv: strings(step.argv, "setup.step.argv"),
-          location: step.location,
-          scripts: step.scripts.map((value) => {
-            const script = configObject(value, ["path", "version"], "setup.step.script");
-            return {
-              path: configString(script.path, "setup.step.script.path"),
-              version: configString(script.version, "setup.step.script.version"),
-            };
-          }),
-        };
-      }),
-    };
+  return parts.join(".");
+}
+function parseConfiguration<S extends z.ZodType>(
+  schema: S,
+  value: unknown,
+  label: string,
+): z.infer<S> {
+  const result = schema.safeParse(value);
+  if (!result.success) {
+    const path = diagnosticPath(schema, result.error.issues[0]?.path ?? []);
+    throw new Error(`Invalid configuration at ${label}${path ? `.${path}` : ""}`);
   }
-  return result;
+  return result.data;
+}
+export function validatePersonalSettings(value: unknown): PersonalSettings {
+  return parseConfiguration(personalSettingsSchema, value, "settings");
+}
+export function validateProjectConfiguration(value: unknown): ProjectConfiguration {
+  return parseConfiguration(projectConfigurationSchema, value, "project");
 }
 function t3Defaults(project: ProjectConfiguration): PersonalSettings {
   const mapping = {
@@ -318,34 +231,18 @@ export function requireAvailableSelections(
 
 /** Validate persisted snapshots without re-reading today's defaults. */
 export function validateResolvedConfiguration(value: unknown): ResolvedConfiguration {
-  const item = configObject(
-    value,
-    ["version", "source", "project", "settings", "sources"],
-    "resolved",
-  );
-  if (item.version !== 1) invalid("resolved.version");
-  const source = configObject(item.source, ["path", "version"], "resolved.source");
-  const settings = validatePersonalSettings(item.settings);
-  const sources = configObject(item.sources, SETTING_KEYS, "resolved.sources");
+  const item = parseConfiguration(resolvedConfigurationSchema, value, "resolved");
   const personal: PersonalSettings = {};
   for (const key of SETTING_KEYS) {
-    if (
-      sources[key] !== undefined &&
-      !["default", "personal", "required"].includes(sources[key] as string)
-    )
-      invalid("resolved.sources");
-    if (sources[key] === "personal" && settings[key] !== undefined) personal[key] = settings[key];
+    if (item.sources[key] === "personal" && item.settings[key] !== undefined)
+      personal[key] = item.settings[key];
   }
-  const resolved = resolveProjectConfiguration(
-    validateProjectConfiguration(item.project),
-    personal,
-    {
-      path: configString(source.path, "resolved.source.path"),
-      version: configString(source.version, "resolved.source.version"),
-    },
-  );
+  const resolved = resolveProjectConfiguration(item.project, personal, item.source);
   for (const key of SETTING_KEYS)
-    if (resolved.settings[key] !== settings[key] || resolved.sources[key] !== sources[key])
-      invalid("resolved.settings");
+    if (
+      resolved.settings[key] !== item.settings[key] ||
+      resolved.sources[key] !== item.sources[key]
+    )
+      throw new Error("Invalid configuration at resolved.settings");
   return resolved;
 }

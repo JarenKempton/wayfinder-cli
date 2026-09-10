@@ -24,8 +24,13 @@ import {
   INITIAL_CONFIGURATION,
 } from "../src/configuration/project-files.ts";
 import {
+  personalSettingsSchema,
+  projectConfigurationSchema,
   requireAvailableSelections,
   resolveProjectConfiguration,
+  SETTING_KEYS,
+  validateProjectConfiguration,
+  validateResolvedConfiguration,
 } from "../src/configuration/schema.ts";
 import type { Run } from "../src/domain.ts";
 import { StateStore } from "../src/state.ts";
@@ -43,6 +48,72 @@ function fixture() {
   return { cwd, path, statePath, ops };
 }
 const input = { json: true, help: false };
+
+test("Zod schemas own configuration types and setting discovery", () => {
+  expect(SETTING_KEYS).toEqual(personalSettingsSchema.keyof().options);
+  expect(projectConfigurationSchema.parse(Bun.TOML.parse(INITIAL_CONFIGURATION))).toEqual(
+    parseProjectToml(INITIAL_CONFIGURATION),
+  );
+  const typeExamples = () => {
+    const settings = personalSettingsSchema.parse({});
+    // @ts-expect-error Unknown setting names must not become part of the inferred API.
+    settings.secret;
+    const project = projectConfigurationSchema.parse({});
+    const step = project.setup?.steps[0];
+    if (step) {
+      // @ts-expect-error Recipe argv is inferred as an array, not a shell command string.
+      step.argv = "sh setup.sh";
+    }
+  };
+  void typeExamples;
+});
+
+test.each(["unknown-field", "record-key", "record-value", "nested-array", "null-section"])(
+  "Zod rejects malformed %s without exposing untrusted keys or values",
+  (scenario) => {
+    const project = structuredClone(Bun.TOML.parse(INITIAL_CONFIGURATION)) as Record<
+      string,
+      unknown
+    >;
+    if (scenario === "unknown-field") project.instructions = { DO_NOT_ECHO: "DO_NOT_ECHO" };
+    if (scenario === "record-key") project.maps = { DO_NOT_ECHO: {} };
+    if (scenario === "record-value")
+      project.repositories = { DO_NOT_ECHO: { github: "DO_NOT_ECHO" } };
+    if (scenario === "nested-array")
+      project.setup = {
+        version: "v1",
+        steps: [{ argv: ["bun", { DO_NOT_ECHO: true }], location: "workspace", scripts: [] }],
+      };
+    if (scenario === "null-section") project.t3 = null;
+    let error: unknown;
+    try {
+      validateProjectConfiguration(project);
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(Error);
+    expect(String(error)).toContain("Invalid configuration at project");
+    expect(String(error)).not.toContain("DO_NOT_ECHO");
+    // Wrapping does not retain a raw ZodError containing untrusted issue data.
+    expect((error as Error).cause).toBeUndefined();
+  },
+);
+
+test("resolved snapshot validation rejects forged settings and provenance after schema validation", () => {
+  const snapshot = resolve(INITIAL_CONFIGURATION, { model: "chosen" });
+  expect(() =>
+    validateResolvedConfiguration({
+      ...snapshot,
+      sources: { ...snapshot.sources, model: "default" },
+    }),
+  ).toThrow("resolved.settings");
+  expect(() =>
+    validateResolvedConfiguration({
+      ...snapshot,
+      settings: { ...snapshot.settings, runtime_mode: "full-access" },
+    }),
+  ).toThrow("resolved.settings");
+});
 function resolve(content: string, personal = {}) {
   return resolveProjectConfiguration(parseProjectToml(content), personal, {
     path: "/project/wayfinder.toml",
@@ -192,7 +263,7 @@ test("rejects dangling map, credentials in tracker URL, invalid runtime, and she
         '[maps.bad]\nrepository = "absent"\nclaim_status = "In Progress"\navailable_statuses = ["To Do"]',
       ),
     ),
-  ).toThrow("map.repository");
+  ).toThrow("project.maps.<key>.repository");
   expect(() =>
     parseProjectToml(
       INITIAL_CONFIGURATION.replace(
@@ -208,12 +279,12 @@ test("rejects dangling map, credentials in tracker URL, invalid runtime, and she
         'runtime_mode = "unknown"',
       ),
     ),
-  ).toThrow("settings.runtime_mode");
+  ).toThrow("project.t3.runtime_mode");
   expect(() =>
     parseProjectToml(
       `${INITIAL_CONFIGURATION}\n[setup]\nversion = "v1"\n[[setup.steps]]\nargv = "sh setup.sh"\nlocation = "workspace"\nscripts = []`,
     ),
-  ).toThrow("setup.step.argv");
+  ).toThrow("project.setup.steps.item.argv");
 });
 
 test("setup is ordered argv with explicit location and script version, and stays present across personal resolution", () => {
