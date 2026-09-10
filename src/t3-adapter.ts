@@ -1,6 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { LaunchReceipt, RunLifecycleAdapter } from "./contracts.ts";
-import { type CapabilitySet, capabilities, type Run, type RunObservation } from "./domain.ts";
+import {
+  type CapabilitySet,
+  capabilities,
+  type Run,
+  type RunObservation,
+  UnsupportedCapabilityError,
+} from "./domain.ts";
 import {
   connectT3,
   nonempty,
@@ -218,12 +224,7 @@ function findThread(
 
 /** A narrow T3 host, deliberately not wired into PickupCoordinator's destructive compensation. */
 export class T3Adapter {
-  readonly capabilities = capabilities(
-    "process_launch",
-    "session_create",
-    "session_status",
-    "session_interrupt",
-  );
+  readonly capabilities = capabilities("process_launch", "session_create", "session_status");
   readonly #connect: NonNullable<T3AdapterOptions["connect"]>;
   readonly #attempts: number;
   constructor(private readonly options: T3AdapterOptions) {
@@ -327,8 +328,11 @@ export class T3Adapter {
       session.lastError !== null
     )
       return { ...observation, state: "unknown", detail: "session_unverified" };
-    if (sessionStatus === "stopped" && session.activeTurnId === null && turnState !== "running")
-      return { ...observation, state: "stopped", recoveryRequired: false };
+    // This pinned T3 build emits session/closed before provider cleanup and ignores
+    // cleanup errors. Its stopped projection is not a termination barrier, even
+    // with a cleared active turn, interrupted latest turn, and no reported error.
+    if (sessionStatus === "stopped")
+      return { ...observation, state: "unknown", detail: "termination_unverified" };
     if (sessionStatus === "running" && turnState === "running" && session.activeTurnId === turnId)
       return { ...observation, state: "running", recoveryRequired: false };
     // The portable lifecycle has no idle/turn-finished state. Never translate it into stopped/Done.
@@ -509,11 +513,15 @@ export class T3Adapter {
     });
   }
 
-  async stopSession(receipt: T3Receipt): Promise<T3Observation> {
+  /** Explicit low-level stop request only; this build cannot verify termination. */
+  async stopSession(receipt: T3Receipt): Promise<never> {
     const checked = t3Receipt(receipt);
     return this.#using(checked.t3, async (c) => {
       const before = await this.#observe(c, checked);
-      if (before.state === "stopped") return before;
+      if (before.detail === "termination_unverified") {
+        await this.options.journal("t3_stop_unknown", { receipt: checked, observation: before });
+        throw new T3Error("stop_unverified");
+      }
       if (before.recoveryRequired) throw new T3Error("stop_target_unverified");
       const sequence = await this.#dispatch(c, checked, {
         type: "thread.session.stop",
@@ -525,14 +533,10 @@ export class T3Adapter {
         c,
         checked,
         sequence ?? before.snapshotSequence ?? 0,
-        (o) => o.state === "stopped",
+        (o) => o.sessionStatus === "stopped",
       );
-      await this.options.journal(
-        after.state === "stopped" ? "t3_stop_verified" : "t3_stop_unknown",
-        { receipt: checked, observation: after },
-      );
-      if (after.state !== "stopped") throw new T3Error("stop_unverified");
-      return after;
+      await this.options.journal("t3_stop_unknown", { receipt: checked, observation: after });
+      throw new T3Error("stop_unverified");
     });
   }
 
@@ -547,7 +551,7 @@ export class T3Adapter {
       return receipt;
     };
     return {
-      capabilities: capabilities("session_status", "session_interrupt"),
+      capabilities: capabilities("session_status"),
       observe: async (run) => {
         try {
           const observation = await this.inspect(receiptFor(run));
@@ -559,8 +563,9 @@ export class T3Adapter {
           return this.#unknown(error);
         }
       },
-      stop: async (run) => {
-        await this.stopSession(receiptFor(run));
+      stop: async (_run) => {
+        // Fail before dispatch even if a caller bypasses coordinator preflight.
+        throw new UnsupportedCapabilityError(["session_interrupt"]);
       },
     };
   }

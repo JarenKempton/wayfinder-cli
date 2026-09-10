@@ -524,7 +524,7 @@ async function adapter(args: string[], write: (text: string) => void): Promise<v
     if (target === "t3") {
       if (args.length !== 3 || args[2] !== "--read-only") {
         throw new Error(
-          "T3 live lifecycle acceptance is pending a disposable-session approval packet; use adapter test t3 --read-only for discovery/auth/snapshot verification",
+          "T3 live lifecycle acceptance is pending a disposable-session approval packet and blocked on verified provider termination; use adapter test t3 --read-only for discovery/auth/snapshot verification",
         );
       }
       const t3 = new T3Adapter({

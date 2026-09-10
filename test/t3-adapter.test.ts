@@ -33,7 +33,7 @@ const receipt: T3Receipt = {
   },
 };
 
-function fixture() {
+function fixture(cleanupOutcome: "pending" | "failed" | "completed" = "pending") {
   const snapshot = structuredClone(recorded);
   const calls: Array<{ method: string; path: string; body?: unknown }> = [];
   const events: Array<{ state: string; evidence: unknown }> = [];
@@ -41,6 +41,7 @@ function fixture() {
   let unavailable = false;
   let ambiguous = false;
   let settle = true;
+  let providerCleanup: "not_requested" | "pending" | "failed" | "completed" = "not_requested";
   const runtime = {
     environmentId: "environment-fixture",
     serverVersion: version,
@@ -61,9 +62,12 @@ function fixture() {
         snapshot.snapshotSequence++;
       }
       if (settle && command.type === "thread.session.stop") {
+        // Pinned T3 emits session/closed before cleanup and swallows cleanup errors.
+        // All three cleanup outcomes therefore expose the same stopped projection.
         snapshot.snapshotSequence++;
         present(snapshot.threads[0]).session.status = "stopped";
         present(snapshot.threads[0]).latestTurn.state = "interrupted";
+        providerCleanup = cleanupOutcome;
       }
       if (ambiguous) throw new Error("private response body must not escape");
       return { sequence: snapshot.snapshotSequence };
@@ -100,6 +104,7 @@ function fixture() {
       settle = false;
     },
     closed: () => closed,
+    providerCleanup: () => providerCleanup,
   };
 }
 
@@ -162,22 +167,38 @@ describe("T3 recorded observation and conformance", () => {
     expect(f.calls.every((c) => c.method === "GET")).toBe(true);
   });
 
-  test("stop verifies provider stopped, never deletes the thread", async () => {
-    const f = fixture();
-    expect((await f.adapter.stopSession(receipt)).state).toBe("stopped");
-    expect(f.calls.filter((c) => c.method === "POST")).toHaveLength(1);
-    expect(present(f.calls.find((c) => c.method === "POST")).body).toMatchObject({
-      type: "thread.session.stop",
-      threadId: receipt.t3.threadId,
-    });
-    expect(present(f.events[0]).state).toBe("t3_dispatch_prepared");
-    expect(present(f.events.at(-1)).state).toBe("t3_stop_verified");
-  });
+  test.each(["pending", "failed", "completed"] as const)(
+    "stopped projection cannot verify %s provider cleanup",
+    async (cleanupOutcome) => {
+      const f = fixture(cleanupOutcome);
+      await expect(f.adapter.stopSession(receipt)).rejects.toThrow("stop_unverified");
+      expect(f.providerCleanup()).toBe(cleanupOutcome);
+      expect(await f.adapter.inspect(receipt)).toMatchObject({
+        state: "unknown",
+        recoveryRequired: true,
+        detail: "termination_unverified",
+        sessionStatus: "stopped",
+        turnState: "interrupted",
+      });
+      expect(await f.adapter.reconnect(receipt)).toMatchObject({
+        state: "unknown",
+        recoveryRequired: true,
+      });
+      expect(f.calls.filter((c) => c.method === "POST")).toHaveLength(1);
+      expect(present(f.calls.find((c) => c.method === "POST")).body).toMatchObject({
+        type: "thread.session.stop",
+        threadId: receipt.t3.threadId,
+      });
+      expect(present(f.events[0]).state).toBe("t3_dispatch_prepared");
+      expect(f.events.some((e) => e.state === "t3_stop_unknown")).toBe(true);
+      expect(f.events.some((e) => e.state === "t3_stop_verified")).toBe(false);
+    },
+  );
 
-  test("lost stop acknowledgement reconciles the original command without retry", async () => {
+  test("lost stop acknowledgement preserves original identity and unknown outcome without retry", async () => {
     const f = fixture();
     f.ambiguous();
-    expect((await f.adapter.stopSession(receipt)).state).toBe("stopped");
+    await expect(f.adapter.stopSession(receipt)).rejects.toThrow("stop_unverified");
     expect(f.calls.filter((c) => c.method === "POST")).toHaveLength(1);
     const prepared = present(f.events.find((e) => e.state === "t3_dispatch_prepared"));
     const uncertain = present(f.events.find((e) => e.state === "t3_dispatch_unknown"));
@@ -396,10 +417,15 @@ describe("T3 recorded observation and conformance", () => {
     expect(f.calls.every((c) => c.method === "GET")).toBe(true);
   });
 
-  test("already-stopped session is read without dispatch", async () => {
+  test("already-stopped projection remains unknown without another dispatch", async () => {
     const f = fixture();
     present(f.snapshot.threads[0]).session.status = "stopped";
-    expect((await f.adapter.stopSession(receipt)).state).toBe("stopped");
+    await expect(f.adapter.stopSession(receipt)).rejects.toThrow("stop_unverified");
+    expect(await f.adapter.inspect(receipt)).toMatchObject({
+      state: "unknown",
+      recoveryRequired: true,
+      detail: "termination_unverified",
+    });
     expect(f.calls.every((c) => c.method === "GET")).toBe(true);
   });
 
@@ -425,10 +451,17 @@ describe("T3 recorded observation and conformance", () => {
     await f.adapter.reconnect({ ...receipt, unrelatedConversation: "private-data" } as T3Receipt);
     expect(JSON.stringify(f.events)).not.toContain("private-data");
   });
+
+  test("describe and lifecycle do not advertise unverified interruption", async () => {
+    const f = fixture();
+    expect((await f.adapter.describe()).capabilities.session_interrupt).toBeUndefined();
+    expect(f.adapter.capabilities.session_interrupt).toBeUndefined();
+    expect(f.adapter.lifecycle().capabilities.session_interrupt).toBeUndefined();
+  });
 });
 
-test.each(["verified", "unverified", "missing", "unavailable"])(
-  "existing lifecycle/store preserves real workspace and claim on %s stop",
+test.each(["projected-stopped", "unverified", "missing", "unavailable"])(
+  "existing lifecycle/store refuses unqualified stop and preserves workspace/claim for %s",
   async (outcome) => {
     const directory = mkdtempSync(join(tmpdir(), "t3-conformance-"));
     const marker = join(directory, "keep.txt");
@@ -474,16 +507,18 @@ test.each(["verified", "unverified", "missing", "unavailable"])(
         pause: async () => {},
       });
       const lifecycle = adapter.lifecycle();
+      if (outcome === "projected-stopped")
+        present(f.snapshot.threads[0]).session.status = "stopped";
       if (outcome === "unverified") f.unsettled();
       if (outcome === "missing") f.snapshot.threads = [];
       const coordinator = new LifecycleCoordinator(store, undefined, () => lifecycle, {
         now: () => new Date(),
       });
-      if (outcome === "verified") expect((await coordinator.stop(run.ref)).status).toBe("stopped");
-      else {
-        await expect(coordinator.stop(run.ref)).rejects.toThrow();
-        expect(store.run(run.ref).status).toBe("recovery_required");
-      }
+      await expect(coordinator.stop(run.ref)).rejects.toThrow("session_interrupt");
+      // Capability preflight cannot claim a stop happened or mutate an active run.
+      expect(store.run(run.ref)).toEqual(run);
+      await expect(lifecycle.stop(run)).rejects.toThrow("session_interrupt");
+      expect(f.calls).toHaveLength(0);
       expect(store.claim(claim.ref)).toEqual(claim);
       expect(store.run(run.ref).execution).toEqual(savedReceipt);
       expect(existsSync(marker)).toBe(true);

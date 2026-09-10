@@ -8,8 +8,9 @@ sending a message; missing/unreachable sessions require explicit recovery;
 stop verifies the provider outcome and preserves workspace and claim.
 
 `src/t3-adapter.ts` implements structured project registration, bootstrap,
-snapshot inspection, reconnect, explicit follow-up, verified session stop, and
-an existing `RunLifecycleAdapter` bridge. `src/platform/t3.ts` owns local runtime
+snapshot inspection, reconnect, explicit follow-up, a low-level session-stop request,
+and an observation-only `RunLifecycleAdapter` bridge. Verified termination is blocked
+by the pinned T3 API's evidence limits, documented below. `src/platform/t3.ts` owns local runtime
 discovery, HTTP, and Bun credential subprocesses. No public protocol or generic
 runtime abstraction changes, lane store, daemon, or tracker mutations are added.
 The copied handler MOVE rules and absent `docs/action-layer-plan.md` do not apply
@@ -46,11 +47,14 @@ to this repository, as clarified by the coordinating user.
   `unknown` with detail `turn_finished`. This is not stopped, accepted work, or Jira
   Done. Contradictory state, unknown enums, missing instance readback, or provider
   errors require recovery. Snapshot timestamps are not agent heartbeats.
-- Stop dispatches `thread.session.stop` for the scoped thread, then polls for
-  `session.status: stopped`, null active turn/error, and a nonrunning latest turn.
-  An acknowledgement or ended turn alone is insufficient. A lost stop acknowledgement
-  can be reconciled by readback without retry. Stop targets the entire session;
-  it does not claim a conditional interrupt guarantee for one particular turn.
+- Explicit `stopSession` requests `thread.session.stop` for the scoped thread and
+  reads subsequent state. It always rejects with `stop_unverified` after dispatch
+  and journals `t3_stop_unknown`: this build supplies no verified termination outcome.
+  Even `session.status: stopped`, null active turn/error, and an interrupted latest
+  turn remain `state: unknown`, `recoveryRequired: true`, detail `termination_unverified`.
+  An already-stopped projection is recorded as unknown without another dispatch.
+  Lost acknowledgements retain their original command evidence without retry.
+  Managed lifecycle stop is disabled before dispatch, including direct bridge calls.
 - Follow-up is explicit, requires a ready session, and observes a different turn
   after acknowledgement. That is host-state evidence, not proof of prompt compliance
   or work completion. Concurrent external writers are not fenced by this API.
@@ -60,12 +64,41 @@ to this repository, as clarified by the coordinating user.
   post-dispatch observations; unrelated sequence advances never prove stop.
 
 The adapter's implemented capability set is `process_launch`, `session_create`,
-`session_status`, and `session_interrupt`. `describe()` first verifies the local
+and `session_status`. `describe()` first verifies the local
 runtime and an authenticated snapshot. These are fake-conformance-qualified API
-operations; live lifecycle acceptance is pending. No `visible_multi_session`,
+operations; live lifecycle acceptance is pending. No `session_interrupt` is advertised:
+the adapter cannot verify termination. No `visible_multi_session`,
 `session_resume`, or `session_close` is advertised: UI activation, provider resume,
 and deletion have not been qualified. The synchronous command registry marks T3
 bundled but unavailable and advertises no runtime capabilities from executable lookup.
+
+## Termination evidence blocker
+
+The pinned installed T3 source can produce the entire formerly accepted stop snapshot
+before provider cleanup completes, and can hide a failed cleanup. Locators below refer
+to embedded source in the same source map recorded in [JWB-488](t3-code.md#evidence-and-reproducibility)
+(SHA-256 `3eca191f249234f5429f63e897ed70d20cf3608691820f2478688af8d1b2dab7`):
+
+| Source under `apps/server/src/` | Evidence |
+| --- | --- |
+| `provider/Layers/CodexSessionRuntime.ts:2307–2316` | Sets closed state and emits `session/closed` before `Scope.close(runtimeScope, ...)`. |
+| `provider/Layers/CodexAdapter.ts:1476–1483` | Maps the notification to `session.exited`. |
+| `orchestration/Layers/ProviderRuntimeIngestion.ts:1573–1607` | Projects stopped, clears active turn, and preserves the existing null error. |
+| `orchestration/Layers/ProjectionPipeline.ts:91–93,1311–1347` | Maps stopped to interrupted and updates running turns, satisfying the remaining snapshot predicate. |
+| `provider/Layers/CodexAdapter.ts:2669–2673` | Removes the session before cleanup and ignores errors from runtime/scope close. |
+
+For example, a Codex provider still closing (or whose close failed) is indistinguishable
+from successful termination in this HTTP snapshot. More polling, a higher sequence,
+or an absent provider session in a list does not establish a termination barrier.
+There is no adapter-owned process handle to verify separately. The adapter therefore
+withholds `session_interrupt` for this build instead of inventing proof. A supported
+termination barrier tied to the scoped session, including failure reporting, must be
+qualified before managed stop can be enabled. No upstream/server change is made here.
+
+Regression cases model pending, failed, and completed cleanup with identical wire
+snapshots. All remain unknown; inspection, reconnect, and low-level stop emit no
+`t3_stop_verified` receipt. Lifecycle capability preflight refuses stop without changing
+the active run, workspace, or claim. This replaces the earlier false verified-stop claim.
 
 ## Persistence and concrete composition blockers
 
@@ -81,7 +114,8 @@ Persist the `T3Receipt` unchanged as `run.execution`; existing `execution_json`
 preserves its adapter-owned fields without a schema migration. A prepared journal
 entry already contains the receipt before a dispatch can become uncertain. Bind
 one adapter/journal to its run; do not route evidence for different runs through
-the same bound callback. `host.lifecycle()` works with `LifecycleCoordinator`.
+the same bound callback. `host.lifecycle()` supplies observation to `LifecycleCoordinator`;
+stop fails capability preflight without dispatch because termination cannot be verified.
 The bridge maps a missing T3 session to portable `unknown`, because the existing
 coordinator otherwise treats `missing` as verified stopped. Fake tests use the
 real SQLite store and an actual temporary workspace to verify claim/file retention.
@@ -111,7 +145,8 @@ model/options and completed/ready state are retained. Required identity/session
 fields use the installed schema. It is not a raw snapshot and contains no conversation
 text, titles, provider errors, or credentials. Tests explicitly vary that recording
 to model committed-but-unacknowledged commands, projection delays, collisions,
-malformed fields, provider failures, and stop/reconnect transitions.
+malformed fields, provider failures, early closed notifications, failed cleanup,
+and stop/reconnect transitions.
 
 Run:
 
@@ -130,11 +165,18 @@ failure. It neither dumps snapshots nor logs tokens. Discovery/auth/snapshot/rev
 passed against environment `ba2e9684-35d3-4155-8c13-327fc80aec8e`, version
 `0.0.41-nightly.20260909.1426`. No live lifecycle commands were sent.
 
-`bun run src/cli.ts adapter test t3` fails closed with the pending-approval explanation.
+`bun run src/cli.ts adapter test t3` fails closed with the termination-blocker and
+pending-approval explanation.
 It cannot accidentally pass T3 to the external tracker JSON-lines protocol tester.
 Full repository check output is pasted in the draft PR.
 
 ## Exact proposed live acceptance packet — pending, not executed
+
+**Blocked on qualified termination evidence as well as separate authorization.**
+Do not execute this lifecycle packet until a stronger termination barrier has been
+implemented/tested and the exact evidence check added to step 5 for review. A successful
+snapshot-only live run cannot qualify verified stop. The resource IDs and prompts below
+remain reserved proposal values; no lifecycle step has been executed.
 
 This proposal requires separate disposable-session authorization. It is not a request
 to change existing sessions or the server. Freeze the reviewed PR commit as `HEAD`
@@ -163,7 +205,8 @@ before executing the packet; if runtime identity/version differs, stop for revie
 5. After observing ready, send exactly one explicit follow-up:
    `Use the shell tool to run sleep 120 in the current directory. Do not edit files or access the network. After it finishes, reply T3_ACCEPTANCE_WAIT_FINISHED.`
    Verify the new running turn. Invoke `stopSession` once while that turn is running;
-   require the stopped readback described above. If it ends too quickly, mark the
+   require the newly qualified termination barrier, not just the stopped snapshot.
+   This check is currently unavailable, so the packet cannot proceed. If it ends too quickly, mark the
    active-stop case unverified; do not send another turn without revised approval.
 6. Verify the sentinel, worktree, fake claim ownership, thread history, and saved
    receipt remain. Revoke every auth credential. Preserve the disposable thread and
