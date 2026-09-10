@@ -48,8 +48,20 @@ Automatic map progression follows. Preserve map scope and provider boundaries.
   preserve workspace and Jira ownership. Release and cleanup are separate explicit
   actions. An unverified stop must remain uncertain, not reported as stopped.
 
-Next question batches, after those answers: setup trust/failure/retry/cleanup;
-project requirements versus override rules; optional PR workflow boundaries.
+## Setup behavior — explicitly selected by Jaren
+
+- [ ] Given a setup recipe that has not been approved, show it and obtain approval
+  before executing its commands. Approval applies to that recipe and referenced
+  script versions. If either changes, require renewed approval before execution.
+  The exact mechanism for tracking script dependencies remains an implementation
+  question; do not claim arbitrary transitive code changes are detected without proof.
+- [ ] Given a failed setup step after earlier steps succeeded, preserve the
+  workspace and show the failed step. Do not automatically retry or discard the
+  workspace. An explicit retry runs the failed step and subsequent steps, with
+  preparation/readiness still required before agent launch.
+
+Next question batches: project requirements versus override rules;
+optional PR workflow boundaries. Setup cleanup details remain to be specified.
 Ask only product behavior choices. Investigate technical mechanisms separately.
 
 ## Concrete work sequence

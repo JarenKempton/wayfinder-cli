@@ -79,6 +79,10 @@ versus automatic-map-progression question below; Docker timing remains open.
   be assumed to be local-host paths.
 - Report failed steps and readiness. Do not launch work after failed preparation
   or blindly repeat partially completed setup after a crash.
+- Jaren selected approval once per setup recipe and referenced script versions;
+  recipe or script changes require renewed approval. A setup failure preserves
+  the workspace and identifies the failed step; the human explicitly retries
+  that step and subsequent steps. No automatic retry or workspace recreation.
 - Separate project requirements, overridable project defaults, and personal
   choices. Store explicit personal overrides in local SQLite, not permanent
   copies of every project default.
