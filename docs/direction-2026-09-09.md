@@ -64,8 +64,9 @@ versus automatic-map-progression question below; Docker timing remains open.
 - Make the instructions supplied to an execution inspectable. A receipt of loaded
   instructions is evidence of input, not proof that an agent obeyed them.
 - PR behavior should be consistent under project configuration, including initial
-  draft/ready state and title/body conventions. The actual initial state has NOT
-  been chosen. Templates guide content; they do not prove prose quality.
+  draft/ready state and title/body conventions. The selected default is draft at
+  initial feedback readiness, then ready after automated review and required checks.
+  Templates guide content; they do not prove prose quality.
 
 ### Project setup and personal choices
 
@@ -99,10 +100,15 @@ versus automatic-map-progression question below; Docker timing remains open.
 - Secret values stay out of committed config, process arguments, logs, and
   ordinary execution records. Recipes may refer to files or credential sources.
 
-## Recorded PR workflow preferences — placement still unresolved
+## Recorded PR workflow preferences — separate integration selected
 
-These preferences do NOT authorize putting a PR-review subsystem in the CLI core.
-Jaren explicitly questioned that scope and prefers external reviewers.
+Jaren selected a separately installable integration using Wayfinder public actions.
+Core exposes status and artifact links; it does not own a PR-review subsystem.
+This integration is outside the first single-ticket release.
+
+- Project default: open a draft PR when the initial implementation is ready for
+  feedback; mark it ready after automated review and required checks. Verify
+  compatibility with the selected reviewer. Human merge approval remains required.
 
 - Bring the human in when tests, required reviews, and applicable UI evidence are
   ready. Escalate blockers or repeated revisions earlier.
@@ -152,8 +158,8 @@ Jaren explicitly questioned that scope and prefers external reviewers.
 | Area | What remains to decide | Next responsibility |
 | --- | --- | --- |
 | Docker timing | Single-ticket T3 release is selected; whether Docker ships with it remains open | Present qualification evidence and delivery impact for Jaren |
-| Review workflow placement | Separate installable integration versus optional built-in workflow | Present tradeoffs for Jaren |
-| PR lifecycle | Initial draft/ready state, creation timing, promotion trigger, Done mapping | Jaren preference plus reviewer compatibility check |
+| Review workflow placement | Separate integration selected; exact public actions and packaging remain | Present tradeoffs for Jaren |
+| PR lifecycle | Draft at initial feedback and ready after reviews/checks selected; exact gates and Done mapping remain | Jaren preference plus reviewer compatibility check |
 | Workflow definition | Minimal structured gates versus Markdown guidance; supported initial stages | Propose small contract with examples |
 | Host qualification | Exact minimum operations, observation semantics, follow-up/interrupt guarantees | Verify T3; build conformance criteria |
 | Jira ownership/auth | Proven concurrency mechanism and per-developer credential integration | Technical investigation before asking for mechanism choice |

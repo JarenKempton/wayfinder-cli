@@ -70,8 +70,8 @@ Automatic map progression follows. Preserve map scope and provider boundaries.
   alternatives and require an explicit selection. Never silently substitute
   another host, agent, or model as part of resolving that failure.
 
-Next question batch: optional PR workflow boundaries. Setup cleanup details
-remain to be specified. These questions must not expand the selected first release.
+Remaining product questions include tracker completion and setup cleanup.
+Technical investigations remain engineering work, not speculative user decisions.
 Ask only product behavior choices. Investigate technical mechanisms separately.
 
 ## Concrete work sequence
@@ -88,3 +88,13 @@ Ask only product behavior choices. Investigate technical mechanisms separately.
 No live acceptance actions, production changes, PR merges, or automatic ticket
 claims are authorized by this checklist itself. Existing user authorization for
 specific tasks is tracked in their scoped handoffs.
+
+## Optional PR integration — selected, outside first release
+
+- [ ] Review/revision is separately installable and consumes public Wayfinder
+  actions. Core exposes status and artifact links without reviewer-specific logic.
+- [ ] Under the selected project default, open a draft PR once initial
+  implementation is ready for feedback. Mark ready after automated review and
+  required checks for the relevant revision. Human merge approval remains required.
+- [ ] Verify reviewer compatibility with draft PRs before enabling the integration.
+  Incompatibility must not silently alter the selected project policy.
