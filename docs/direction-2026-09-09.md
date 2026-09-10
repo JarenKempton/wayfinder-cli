@@ -11,6 +11,14 @@ discussed in chat are illustrative, not frozen public contracts.
 
 ## Agreed direction
 
+### Selected first-release milestone
+
+Jaren explicitly selected reliable single-ticket pickup, inspection, and
+reconnection through T3. Automatic map progression follows in a later milestone.
+Preserve map-scoped architecture, but do not make an unattended map controller
+a prerequisite for this release. This selection resolves the single-ticket
+versus automatic-map-progression question below; Docker timing remains open.
+
 ### Product boundary and integration
 
 - Ship a local TypeScript/Bun CLI first. MCP is a future interface, not a required
@@ -134,7 +142,7 @@ Jaren explicitly questioned that scope and prefers external reviewers.
 
 | Area | What remains to decide | Next responsibility |
 | --- | --- | --- |
-| Release boundary | Single-ticket managed pickup versus map automation in first release; Docker timing | Present bounded milestones for Jaren |
+| Docker timing | Single-ticket T3 release is selected; whether Docker ships with it remains open | Present qualification evidence and delivery impact for Jaren |
 | Review workflow placement | Separate installable integration versus optional built-in workflow | Present tradeoffs for Jaren |
 | PR lifecycle | Initial draft/ready state, creation timing, promotion trigger, Done mapping | Jaren preference plus reviewer compatibility check |
 | Workflow definition | Minimal structured gates versus Markdown guidance; supported initial stages | Propose small contract with examples |
