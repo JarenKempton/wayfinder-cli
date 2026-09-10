@@ -35,6 +35,7 @@ import {
   statusRepairAdapterBinding,
   statusRepairAdapterMatches,
 } from "./status-repair.ts";
+import { T3Adapter } from "./t3-adapter.ts";
 import { notifyAboutUpdate } from "./update.ts";
 
 declare const WAYFINDER_BUILD_VERSION: string | undefined;
@@ -515,24 +516,66 @@ function frontier(args: string[], write: (text: string) => void): void {
   for (const ticket of result) write(`${ticket.ref}\t${ticket.kind}\t${ticket.status}`);
 }
 
+type AdapterCommandHandler = (args: string[], write: (text: string) => void) => Promise<void>;
+
+const adapterUsage =
+  "adapter requires list, describe <name>, test <executable>, or conformance <fixture>";
+
+// Registration stays local to these CLI subcommands; handlers own argument validation.
+const adapterCommands = new Map<string, AdapterCommandHandler>([
+  ["list", async (_args, write) => writeJson(write, builtInAdapters())],
+  ["describe", async ([name], write) => writeJson(write, findAdapter(requireAdapterTarget(name)))],
+  [
+    "test",
+    async ([name, ...options], write) => testAdapter(requireAdapterTarget(name), options, write),
+  ],
+  [
+    "conformance",
+    async ([fixture], write) =>
+      writeJson(write, await runAdapterConformance(requireAdapterTarget(fixture), VERSION)),
+  ],
+]);
+
+function requireAdapterTarget(target: string | undefined): string {
+  if (!target) throw new Error(adapterUsage);
+  return target;
+}
+
 async function adapter(args: string[], write: (text: string) => void): Promise<void> {
-  const [subcommand, target] = args;
-  if (subcommand === "list") return writeJson(write, builtInAdapters());
-  if (subcommand === "describe" && target) return writeJson(write, findAdapter(target));
-  if (subcommand === "test" && target) {
-    const description = await new AdapterClient(adapterCommand(target)).initialize(
-      "tracker",
-      "conformance:test",
-      VERSION,
-    );
-    return writeJson(write, { ok: true, adapter: description });
-  }
-  if (subcommand === "conformance" && target) {
-    return writeJson(write, await runAdapterConformance(target, VERSION));
-  }
-  throw new Error(
-    "adapter requires list, describe <name>, test <executable>, or conformance <fixture>",
+  const [subcommand, ...commandArgs] = args;
+  const handler = adapterCommands.get(subcommand ?? "");
+  if (!handler) throw new Error(adapterUsage);
+  await handler(commandArgs, write);
+}
+
+async function testAdapter(target: string, options: string[], write: (text: string) => void) {
+  if (target === "t3") return testReadOnlyT3(options, write);
+  const description = await new AdapterClient(adapterCommand(target)).initialize(
+    "tracker",
+    "conformance:test",
+    VERSION,
   );
+  writeJson(write, { ok: true, adapter: description });
+}
+
+async function testReadOnlyT3(options: string[], write: (text: string) => void) {
+  if (options.length !== 1 || options[0] !== "--read-only") {
+    throw new Error(
+      "T3 live lifecycle acceptance is pending a disposable-session approval packet and blocked on verified provider termination; use adapter test t3 --read-only for discovery/auth/snapshot verification",
+    );
+  }
+  const t3 = new T3Adapter({
+    journal: async () => {
+      throw new Error("Read-only T3 probe cannot dispatch");
+    },
+  });
+  writeJson(write, {
+    ok: true,
+    mode: "read-only",
+    adapter: "t3",
+    ...(await t3.describe()),
+    liveLifecycleAcceptance: "pending",
+  });
 }
 
 function adapterCommand(executable: string): string | string[] {

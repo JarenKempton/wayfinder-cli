@@ -82,7 +82,7 @@ export function builtInAdapters(
     {
       name: "t3",
       kind: "harness",
-      bundled: false,
+      bundled: true,
       available: false,
       capabilities: capabilities(),
     },
