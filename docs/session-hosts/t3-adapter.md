@@ -16,7 +16,10 @@ runtime abstraction changes, lane store, daemon, or tracker mutations are added.
 The copied handler MOVE rules and absent `docs/action-layer-plan.md` do not apply
 to this repository, as clarified by the coordinating user. Merging this foundation
 does not complete JWB-489 or the first-release milestone. The remaining engineering
-work is verified termination, safe pickup recovery, and CLI pickup/inspect/reconnect composition.
+work is verified termination and approved live adapter acceptance (JWB-489), plus
+safe pickup recovery and CLI pickup/inspect/reconnect composition (JWB-492).
+The post-merge status and concrete closure checklist are in
+[the closure handoff](t3-closure.md).
 
 ## Behavior and evidence
 
@@ -208,7 +211,7 @@ passed against environment `ba2e9684-35d3-4155-8c13-327fc80aec8e`, version
 `bun run src/cli.ts adapter test t3` fails closed with the termination-blocker and
 pending-approval explanation.
 It cannot accidentally pass T3 to the external tracker JSON-lines protocol tester.
-Full repository check output is pasted in the draft PR.
+Full repository check output is pasted in PR #39, now merged.
 
 ## Exact proposed live acceptance packet — pending, not executed
 
@@ -255,7 +258,9 @@ Record the server's actual version with the resulting evidence.
 
 Deletion/cleanup is a **separate** explicit operation after verified stop and review;
 this packet does not authorize `thread.delete`, project deletion, or worktree removal.
-That supersedes the ticket's older delete-as-interrupt suggestion. This PR remains
-draft, live lifecycle acceptance remains pending, and only Jaren's merge can complete
-the ticket. The coordinator owns Jira evidence/comments/transitions and the eventual
-single map context pointer; this implementation session makes none of those writes.
+That supersedes the ticket's older delete-as-interrupt suggestion. PR #39 merged as
+`7ee3403`; JWB-489 remains incomplete and live lifecycle acceptance remains pending.
+Merge alone does not satisfy acceptance. The [closure handoff](t3-closure.md)
+supersedes this packet for further work. The coordinator owns Jira
+evidence/comments/transitions and the eventual single map context pointer;
+this implementation session makes none of those writes.
