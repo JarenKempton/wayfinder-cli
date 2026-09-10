@@ -120,12 +120,11 @@ describe("T3 recorded observation and conformance", () => {
     expect(f.closed()).toBe(1);
   });
 
-  test.each(["environment", "version", "branch", "path", "project", "duplicate"])(
+  test.each(["environment", "branch", "path", "project", "duplicate"])(
     "rejects %s identity collision without mutation",
     async (kind) => {
       const f = fixture();
       if (kind === "environment") f.runtime.environmentId = "other";
-      if (kind === "version") f.runtime.serverVersion = "other";
       if (kind === "branch") present(f.snapshot.threads[0]).branch = "other";
       if (kind === "path") present(f.snapshot.threads[0]).worktreePath = "/other";
       if (kind === "project") present(f.snapshot.projects[0]).workspaceRoot = "/other";
@@ -137,6 +136,39 @@ describe("T3 recorded observation and conformance", () => {
       expect(f.calls.every((c) => c.method === "GET")).toBe(true);
     },
   );
+
+  test("reconnect after a server update validates state and reports the current version without dispatch", async () => {
+    const f = fixture();
+    f.runtime.serverVersion = "a-later-build";
+    expect(await f.adapter.reconnect(receipt)).toMatchObject({
+      serverVersion: "a-later-build",
+      sessionStatus: "ready",
+      recoveryRequired: false,
+    });
+    expect(receipt.t3.serverVersion).toBe(version);
+    expect(f.calls.every((c) => c.method === "GET")).toBe(true);
+    expect(f.adapter.capabilities.session_interrupt).toBeUndefined();
+  });
+
+  test("an updated server still must supply compatible identity and model state", async () => {
+    const f = fixture();
+    f.runtime.serverVersion = "a-later-build";
+    Object.assign(present(f.snapshot.threads[0]), { modelSelection: { unexpectedSchema: true } });
+    expect(await f.adapter.reconnect(receipt)).toMatchObject({
+      state: "unknown",
+      recoveryRequired: true,
+    });
+    expect(f.calls.every((c) => c.method === "GET")).toBe(true);
+  });
+
+  test("bootstrap records the actual server version instead of the planning version", async () => {
+    const f = fixture();
+    f.runtime.serverVersion = "a-later-build";
+    f.snapshot.threads = [];
+    const result = await f.adapter.bootstrap({ ...receipt.t3, title: "Fixture", prompt: "Work" });
+    expect(result.receipt.t3.serverVersion).toBe("a-later-build");
+    expect(result.observation.serverVersion).toBe("a-later-build");
+  });
 
   test.each(["model", "instance", "missing-options", "extra-options", "option-value"])(
     "requires exact %s readback",
@@ -531,8 +563,11 @@ test.each(["projected-stopped", "unverified", "missing", "unavailable"])(
   },
 );
 
-test("CLI T3 lifecycle acceptance cannot accidentally run as adapter protocol discovery", async () => {
-  await expect(runCli(["adapter", "test", "t3"], () => {})).rejects.toThrow(
-    "pending a disposable-session approval packet",
-  );
-});
+test.each([{ options: [] }, { options: ["--live"] }, { options: ["--read-only", "extra"] }])(
+  "CLI T3 refuses lifecycle or ambiguous options %j",
+  async ({ options }) => {
+    await expect(runCli(["adapter", "test", "t3", ...options], () => {})).rejects.toThrow(
+      "pending a disposable-session approval packet",
+    );
+  },
+);

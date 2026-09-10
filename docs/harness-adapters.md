@@ -21,7 +21,7 @@ T3 Code is a structured host integration, not a generic executable wrapper. The 
 [T3 adapter](session-hosts/t3-adapter.md) has deterministic lifecycle conformance tests
 and a read-only live probe. The synchronous command registry keeps it unavailable with
 no capabilities: executable discovery cannot qualify the running server, and generic
-pickup compensation is not safe for an uncertain T3 dispatch. The pinned T3 build can
+pickup compensation is not safe for an uncertain T3 dispatch. The inspected T3 build can
 report stopped before cleanup finishes, so managed interruption is withheld until
 termination evidence is qualified. Live lifecycle acceptance and UI visibility remain pending.
 

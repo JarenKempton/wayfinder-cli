@@ -517,43 +517,54 @@ function frontier(args: string[], write: (text: string) => void): void {
 }
 
 async function adapter(args: string[], write: (text: string) => void): Promise<void> {
-  const [subcommand, target] = args;
+  const [subcommand, target, ...options] = args;
   if (subcommand === "list") return writeJson(write, builtInAdapters());
-  if (subcommand === "describe" && target) return writeJson(write, findAdapter(target));
-  if (subcommand === "test" && target) {
-    if (target === "t3") {
-      if (args.length !== 3 || args[2] !== "--read-only") {
-        throw new Error(
-          "T3 live lifecycle acceptance is pending a disposable-session approval packet and blocked on verified provider termination; use adapter test t3 --read-only for discovery/auth/snapshot verification",
-        );
-      }
-      const t3 = new T3Adapter({
-        journal: async () => {
-          throw new Error("Read-only T3 probe cannot dispatch");
-        },
-      });
-      const description = await t3.describe();
-      return writeJson(write, {
-        ok: true,
-        mode: "read-only",
-        adapter: "t3",
-        ...description,
-        liveLifecycleAcceptance: "pending",
-      });
-    }
-    const description = await new AdapterClient(adapterCommand(target)).initialize(
-      "tracker",
-      "conformance:test",
-      VERSION,
+  if (!target)
+    throw new Error(
+      "adapter requires list, describe <name>, test <executable>, or conformance <fixture>",
     );
-    return writeJson(write, { ok: true, adapter: description });
+  switch (subcommand) {
+    case "describe":
+      return writeJson(write, findAdapter(target));
+    case "test":
+      return testAdapter(target, options, write);
+    case "conformance":
+      return writeJson(write, await runAdapterConformance(target, VERSION));
+    default:
+      throw new Error(
+        "adapter requires list, describe <name>, test <executable>, or conformance <fixture>",
+      );
   }
-  if (subcommand === "conformance" && target) {
-    return writeJson(write, await runAdapterConformance(target, VERSION));
-  }
-  throw new Error(
-    "adapter requires list, describe <name>, test <executable>, or conformance <fixture>",
+}
+
+async function testAdapter(target: string, options: string[], write: (text: string) => void) {
+  if (target === "t3") return testReadOnlyT3(options, write);
+  const description = await new AdapterClient(adapterCommand(target)).initialize(
+    "tracker",
+    "conformance:test",
+    VERSION,
   );
+  writeJson(write, { ok: true, adapter: description });
+}
+
+async function testReadOnlyT3(options: string[], write: (text: string) => void) {
+  if (options.length !== 1 || options[0] !== "--read-only") {
+    throw new Error(
+      "T3 live lifecycle acceptance is pending a disposable-session approval packet and blocked on verified provider termination; use adapter test t3 --read-only for discovery/auth/snapshot verification",
+    );
+  }
+  const t3 = new T3Adapter({
+    journal: async () => {
+      throw new Error("Read-only T3 probe cannot dispatch");
+    },
+  });
+  writeJson(write, {
+    ok: true,
+    mode: "read-only",
+    adapter: "t3",
+    ...(await t3.describe()),
+    liveLifecycleAcceptance: "pending",
+  });
 }
 
 function adapterCommand(executable: string): string | string[] {

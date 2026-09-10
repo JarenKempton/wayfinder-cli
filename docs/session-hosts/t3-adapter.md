@@ -1,6 +1,6 @@
 # T3 adapter — JWB-489
 
-This is a narrow, version-pinned adapter for the API documented in the merged
+This is an incomplete adapter foundation for the API documented in the merged
 [T3 source/evidence record](t3-code.md), on top of main containing PR #38.
 The selected behavior comes from the coordinating September 9 direction and
 first-release acceptance records: reconnect reads the recorded session without
@@ -10,18 +10,26 @@ stop verifies the provider outcome and preserves workspace and claim.
 `src/t3-adapter.ts` implements structured project registration, bootstrap,
 snapshot inspection, reconnect, explicit follow-up, a low-level session-stop request,
 and an observation-only `RunLifecycleAdapter` bridge. Verified termination is blocked
-by the pinned T3 API's evidence limits, documented below. `src/platform/t3.ts` owns local runtime
+by T3's currently known evidence limits, documented below. `src/platform/t3.ts` owns local runtime
 discovery, HTTP, and Bun credential subprocesses. No public protocol or generic
 runtime abstraction changes, lane store, daemon, or tracker mutations are added.
 The copied handler MOVE rules and absent `docs/action-layer-plan.md` do not apply
-to this repository, as clarified by the coordinating user.
+to this repository, as clarified by the coordinating user. Merging this foundation
+does not complete JWB-489 or the first-release milestone. The remaining engineering
+work is verified termination, safe pickup recovery, and CLI pickup/inspect/reconnect composition.
 
 ## Behavior and evidence
 
-- Receipts bind `environmentId` plus `threadId`, pinned `serverVersion`, project,
+- Receipts bind `environmentId` plus `threadId`, project,
   repository/worktree paths, branch, runtime/interaction modes, and exact provider
   **instance**/model/options. A branch match never authorizes adoption of a thread.
   Duplicate, partial, deleted, malformed, or mismatched identities fail closed.
+- `serverVersion` is recorded evidence, not a compatibility gate. A server update
+  does not prevent reconnect to the same environment/thread. Each response still
+  must satisfy the adapter's consumed wire contract; unknown or contradictory state
+  remains unknown. Reconnect observations and command evidence record the current
+  reported version; original receipts retain their creation version. Bootstrap records
+  the actual version observed at dispatch. Version changes never enable stop capability.
 - Explicit model selection is mandatory. The adapter preserves reported options;
   it accepts neither omitted requested options nor extra/conflicting options as
   verified. It does not alias provider instances to driver names or substitute models.
@@ -35,8 +43,10 @@ to this repository, as clarified by the coordinating user.
   does not dispatch again. There is no replay API: recovery uses observations and
   the original evidence, not a reconstructed command with a new ID.
 - The old Python broad Nightly fallback, npx installation fallback, and deletion
-  compensation are deliberately excluded. Only `0.0.41-nightly.20260909.1426` is
-  admitted. Missing runtime-file discovery may try `dev`; development auth is
+  compensation are deliberately excluded. Only a missing primary runtime file permits
+  discovery to try `dev`; unreadable or invalid files fail without switching environments.
+  The `version: 1` discovery-file format is still validated; it is not a software-version pin.
+  Development auth is
   explicitly unqualified, so the adapter stops before issuing credentials there.
 - Inspection/reconnect fetch the snapshot, select only the intended identity, and
   expose state metadata. Reconnect opens the recorded session in the read model;
@@ -74,7 +84,7 @@ bundled but unavailable and advertises no runtime capabilities from executable l
 
 ## Termination evidence blocker
 
-The pinned installed T3 source can produce the entire formerly accepted stop snapshot
+The inspected `0.0.41-nightly.20260909.1426` T3 source can produce the entire formerly accepted stop snapshot
 before provider cleanup completes, and can hide a failed cleanup. Locators below refer
 to embedded source in the same source map recorded in [JWB-488](t3-code.md#evidence-and-reproducibility)
 (SHA-256 `3eca191f249234f5429f63e897ed70d20cf3608691820f2478688af8d1b2dab7`):
@@ -94,6 +104,9 @@ There is no adapter-owned process handle to verify separately. The adapter there
 withholds `session_interrupt` for this build instead of inventing proof. A supported
 termination barrier tied to the scoped session, including failure reporting, must be
 qualified before managed stop can be enabled. No upstream/server change is made here.
+
+This source version identifies the evidence; it is not an allowlist in the adapter.
+Wire-shape validation alone cannot qualify changed termination semantics in another build.
 
 Regression cases model pending, failed, and completed cleanup with identical wire
 snapshots. All remain unknown; inspection, reconnect, and low-level stop emit no
@@ -138,6 +151,20 @@ adapter methods and lifecycle bridge are implemented and tested here.
 
 ## Verification
 
+The connection sequence is intentionally small: `discoverLocalServer` reads the
+runtime file, `readEnvironment` checks the discovered server's identity, and
+`issueCredential` obtains a temporary credential. `connectT3` puts those steps in
+order and returns the connection; `close` revokes its credential. Identity is checked
+before a credential is issued. The named helpers remain local to the T3 platform module.
+
+The auth argument array represents **one** command, `t3 auth session issue`, followed
+by its flags. It is not a list of commands or an acceptance-test chain. The small
+`runCommand` wrapper uses `Bun.spawn` with argv, captures secret stdout only in memory,
+and bounds execution time. Requests otherwise use the standard Fetch and URL APIs;
+there is no custom HTTP protocol implementation or retry framework. The transport
+allows only descriptor GET, snapshot GET, and dispatch POST. Method/path mismatches,
+path traversal, and unexpected queries are rejected before sending credentials.
+
 The tests were written before implementation. `test/fixtures/t3-snapshot.json` is
 a minimal sanitized projection of the JWB-488 recorded snapshot at sequence 3421.
 Identity/path/turn identifiers are replaced with fixture values; exact observed
@@ -159,7 +186,7 @@ bun run src/cli.ts adapter test t3 --read-only
 
 The read-only command issues a two-minute credential in memory, performs descriptor
 and snapshot GETs, and revokes the credential in `finally`. It rejects nonliteral
-loopback HTTP origins and redirects, binds expected environment/version before auth
+loopback HTTP origins and redirects, binds expected environment identity before auth
 for recorded sessions, ignores raw HTTP/subprocess error bodies, and reports revocation
 failure. It neither dumps snapshots nor logs tokens. Discovery/auth/snapshot/revocation
 passed against environment `ba2e9684-35d3-4155-8c13-327fc80aec8e`, version
@@ -180,7 +207,8 @@ remain reserved proposal values; no lifecycle step has been executed.
 
 This proposal requires separate disposable-session authorization. It is not a request
 to change existing sessions or the server. Freeze the reviewed PR commit as `HEAD`
-before executing the packet; if runtime identity/version differs, stop for review.
+before executing the packet; if the environment identity differs, stop for review.
+Record the server's actual version with the resulting evidence.
 
 1. Prepare one temporary worktree from that commit at
    `/tmp/wayfinder-JWB-489-acceptance-b713cd89`, branch
@@ -188,7 +216,7 @@ before executing the packet; if runtime identity/version differs, stop for revie
    `worktreePath`. No project setup script. Create a local sentinel and SQLite run
    with a fake tracker claim, so workspace and ownership retention can be checked
    without a Jira mutation.
-2. Bind the environment/version above. Use project ID
+2. Bind the environment above and record the actual server version. Use project ID
    `b713cd89-8bf2-4851-9a5b-0e781eb6f200` and thread ID
    `b713cd89-8bf2-4851-9a5b-0e781eb6f201`; abort on any existing identity/path match.
    Title: `Wayfinder JWB-489 disposable acceptance`. Exact selection:

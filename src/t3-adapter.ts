@@ -11,7 +11,6 @@ import {
   connectT3,
   nonempty,
   object,
-  T3_SERVER_VERSION,
   type T3Connection,
   T3Error,
   type T3Runtime,
@@ -45,6 +44,7 @@ export interface T3Receipt extends LaunchReceipt {
 
 export interface T3Observation extends RunObservation {
   recoveryRequired: boolean;
+  serverVersion?: string;
   snapshotSequence?: number;
   turnId?: string;
   turnState?: string;
@@ -119,7 +119,6 @@ function identity(value: unknown): T3SessionIdentity {
     !["default", "plan"].includes(result.interactionMode)
   )
     throw new T3Error("invalid_identity");
-  if (result.serverVersion !== T3_SERVER_VERSION) throw new T3Error("unsupported_version");
   return result as T3SessionIdentity;
 }
 
@@ -245,13 +244,9 @@ export class T3Adapter {
       throw error instanceof T3Error ? error : new T3Error("server_unavailable");
     }
     try {
-      if (connection.runtime.serverVersion !== T3_SERVER_VERSION)
-        throw new T3Error("unsupported_version");
-      if (
-        expected &&
-        (connection.runtime.environmentId !== expected.environmentId ||
-          connection.runtime.serverVersion !== expected.serverVersion)
-      )
+      nonempty(connection.runtime.serverVersion);
+      nonempty(connection.runtime.environmentId);
+      if (expected && connection.runtime.environmentId !== expected.environmentId)
         throw new T3Error("identity_collision");
       return await operation(connection);
     } finally {
@@ -299,6 +294,7 @@ export class T3Adapter {
     const base = {
       observedAt: new Date().toISOString(),
       snapshotSequence: data.sequence,
+      serverVersion: c.runtime.serverVersion,
       recoveryRequired: true,
     };
     if (!thread) return { ...base, state: "missing", detail: "session_missing" };
@@ -328,7 +324,7 @@ export class T3Adapter {
       session.lastError !== null
     )
       return { ...observation, state: "unknown", detail: "session_unverified" };
-    // This pinned T3 build emits session/closed before provider cleanup and ignores
+    // The inspected T3 build emits session/closed before provider cleanup and ignores
     // cleanup errors. Its stopped projection is not a termination barrier, even
     // with a cleared active turn, interrupted latest turn, and no reported error.
     if (sessionStatus === "stopped")
@@ -357,6 +353,7 @@ export class T3Adapter {
   ): Promise<number | undefined> {
     const evidence = {
       receipt,
+      serverVersion: c.runtime.serverVersion,
       command: {
         type: command.type,
         commandId: command.commandId,
@@ -408,6 +405,7 @@ export class T3Adapter {
     const title = nonempty(input.title);
     const prompt = nonempty(input.prompt);
     return this.#using(receipt.t3, async (c) => {
+      receipt.t3.serverVersion = c.runtime.serverVersion;
       let data = snapshot(await c.request("GET", "/api/orchestration/snapshot"));
       if (!hasProject(data, receipt.t3)) {
         // Detect thread/workspace collisions before registering even the project.
