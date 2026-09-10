@@ -1,3 +1,4 @@
+import { dockerSandboxRegistryCapabilities } from "./docker-sandbox.ts";
 import { type CapabilitySet, capabilities } from "./domain.ts";
 import {
   type CommandToken,
@@ -88,6 +89,7 @@ export function builtInAdapters(
     },
   ];
 
+  const sandboxPresent = platform.which("sbx") !== null;
   return [
     ...trackers,
     ...harnesses,
@@ -97,6 +99,21 @@ export function builtInAdapters(
       bundled: true,
       available: true,
       capabilities: capabilities("workspace_prepare"),
+    },
+    {
+      name: "host",
+      kind: "environment" as const,
+      bundled: true,
+      available: true,
+      capabilities: capabilities("environment_start"),
+    },
+    {
+      name: "docker-sandbox",
+      kind: "environment" as const,
+      bundled: true,
+      available: sandboxPresent,
+      ...(sandboxPresent ? { executable: "sbx" } : {}),
+      capabilities: dockerSandboxRegistryCapabilities(sandboxPresent),
     },
   ].toSorted((left, right) =>
     left.kind === right.kind

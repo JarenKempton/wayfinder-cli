@@ -43,6 +43,12 @@ export const CAPABILITIES = [
   "environment_logs",
   "environment_resume",
   "environment_stop",
+  "environment_destroy",
+  "environment_recover",
+  "strong_isolation",
+  "service_publish",
+  "network_policy",
+  "scoped_credentials",
 ] as const;
 
 export type Capability = (typeof CAPABILITIES)[number];
