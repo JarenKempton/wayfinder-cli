@@ -2,6 +2,8 @@
 
 Evidence date: 2026-09-09. Installed CLI, package metadata, and running server
 descriptor all report **`0.0.41-nightly.20260909.1426`**, on Linux x64.
+Authenticated reads were captured at `2026-09-10T00:53:07.602614+00:00`
+(2026-09-09 in America/Phoenix).
 
 T3 has an addressable local orchestration HTTP API. This supersedes the
 “no session-control API” interpretation of the T3 findings in
@@ -21,8 +23,9 @@ existing surface; it introduces no Wayfinder protocol or configuration schema.
 
 Three evidence levels are used below:
 
-- **Live read:** local runtime file, unauthenticated descriptor, and HTTP access
-  checks against the running server. No orchestration dispatch was sent.
+- **Live read:** local runtime file, unauthenticated descriptor, authenticated
+  snapshot and JWB-534 detail reads, and HTTP access checks against the running
+  server. No orchestration dispatch was sent.
 - **Installed source:** contracts and implementation recovered in memory from
   the installed package's source map. These specify this build's behavior,
   without establishing a vendor compatibility promise or exercising mutations.
@@ -37,7 +40,9 @@ Verification record for this task:
 | Installed `package.json` version | `0.0.41-nightly.20260909.1426` |
 | Runtime discovery + descriptor GET through `T3Client.runtime()` | Success; descriptor `serverVersion` matches installed CLI/package |
 | Snapshot GET through `_request()` without credentials | HTTP 401 |
-| Auth issuance, authenticated snapshot/detail reads | Not performed; temporary credential issuance requires clarification of this session's no-new-sessions constraint |
+| Auth issuance through `T3Client._session()` | Success; two-minute credential captured only in memory |
+| Authenticated snapshot and `threads/:threadId?turnLimit=1` GETs through `_request()` | Success; both sequences 3421; manifest thread, branch, worktree, model, and options matched |
+| Credential revocation | CLI exit 0; subsequent snapshot GET with the revoked credential returned HTTP 401 |
 | Dispatch, interruption, deletion, restart, reconnect | Not performed; installed-source evidence only, with the historical launch receipt below |
 
 Source locators (line numbers refer to embedded original source, not the bundle):
@@ -143,8 +148,8 @@ not mean that every operation or provider has been live-tested in this task.
 | Request | Success body | Authorization / meaning |
 | --- | --- | --- |
 | `GET /.well-known/t3/environment` | Environment descriptor above | Unauthenticated; live verified |
-| `GET /api/orchestration/snapshot` | `{ snapshotSequence, projects, threads, updatedAt }` | `orchestration:read`; unauthenticated access returned 401 |
-| `GET /api/orchestration/threads/:threadId` | `{ snapshotSequence, thread, page? }` | `orchestration:read`; detail/model readback used by Python |
+| `GET /api/orchestration/snapshot` | `{ snapshotSequence, projects, threads, updatedAt }` | `orchestration:read`; authenticated read succeeded; unauthenticated and revoked-credential access returned 401 |
+| `GET /api/orchestration/threads/:threadId` | `{ snapshotSequence, thread, page? }` | `orchestration:read`; windowed JWB-534 detail/model readback succeeded |
 | `POST /api/orchestration/dispatch` | `{ sequence: nonnegative integer }` | `orchestration:operate`; accepted orchestration events, not provider completion |
 
 Snapshot sequence is a nonnegative integer, dates are ISO datetime strings,
@@ -317,6 +322,38 @@ This proves the launcher recorded a ready pickup with matching model evidence.
 It lacks server version, environment ID, command IDs, acknowledgement sequences,
 and a launch-path transcript. It does not prove turn/ticket completion, restart
 recovery, interrupt success, or delete compensation. The session was untouched.
+
+The subsequent authenticated reads matched the manifest's exact thread ID,
+branch, worktree, `codex` instance, `gpt-6-astra` model, and
+`reasoningEffort=high` option. Snapshot and detail also agreed on project and
+model selection. The detail response included window metadata keys
+`beforeCursor`, `hasMore`, `snapshotSequence`, and `threadSequence`.
+This sanitized projection records only selected observed fields, not a complete
+response fixture:
+
+```json
+{
+  "snapshotSequence": 3421,
+  "thread": {
+    "modelSelection": {
+      "instanceId": "codex",
+      "model": "gpt-6-astra",
+      "options": [{ "id": "reasoningEffort", "value": "high" }]
+    },
+    "latestTurn": { "state": "completed" },
+    "session": { "status": "ready", "activeTurnId": null, "lastError": null },
+    "deletedAt": null
+  }
+}
+```
+
+The verification used the existing Python transport with redirects disabled
+and the discovered origin restricted to local `http://127.0.0.1`. It selected
+only the manifest's thread from the snapshot and requested one turn of detail;
+response bodies remained in memory, with no conversation content emitted.
+Revocation ran in `finally` using a captured subprocess result, followed by a
+GET proving that the revoked credential was rejected. Only the short-lived auth
+credential was created/revoked; no agent thread or turn was created or changed.
 
 ## Observation, acknowledgement, and recovery limits
 
