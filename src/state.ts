@@ -1,7 +1,21 @@
 import { Database } from "bun:sqlite";
+import {
+  type PersonalSettings,
+  type ResolvedConfiguration,
+  validatePersonalSettings,
+  validateResolvedConfiguration,
+} from "./configuration.ts";
 import type { Claim, ClaimRef, Run, RunRef } from "./domain.ts";
 
 const schema = `
+CREATE TABLE IF NOT EXISTS configuration_overrides (
+  project_path TEXT PRIMARY KEY,
+  settings_json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS execution_configurations (
+  run_ref TEXT PRIMARY KEY REFERENCES runs(ref),
+  snapshot_json TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS runs (
   ref TEXT PRIMARY KEY,
   ticket TEXT NOT NULL,
@@ -105,6 +119,47 @@ export class StateStore {
 
   close(): void {
     this.#database.close();
+  }
+
+  updateConfigurationOverrides(
+    projectPath: string,
+    update: (settings: PersonalSettings) => PersonalSettings,
+  ): PersonalSettings {
+    return this.#database
+      .transaction(() => {
+        const row = this.#database
+          .query("SELECT settings_json FROM configuration_overrides WHERE project_path=?")
+          .get(projectPath) as { settings_json: string } | null;
+        const settings = validatePersonalSettings(
+          update(row ? validatePersonalSettings(JSON.parse(row.settings_json)) : {}),
+        );
+        if (Object.keys(settings).length === 0)
+          this.#database
+            .query("DELETE FROM configuration_overrides WHERE project_path=?")
+            .run(projectPath);
+        else
+          this.#database
+            .query(
+              "INSERT INTO configuration_overrides(project_path,settings_json) VALUES(?,?) ON CONFLICT(project_path) DO UPDATE SET settings_json=excluded.settings_json",
+            )
+            .run(projectPath, JSON.stringify(settings));
+        return settings;
+      })
+      .immediate();
+  }
+
+  /** Immutable initial snapshot. An explicit adoption checkpoint is separate future work. */
+  saveExecutionConfiguration(run: RunRef, configuration: ResolvedConfiguration): void {
+    this.#database
+      .query("INSERT INTO execution_configurations(run_ref,snapshot_json) VALUES(?,?)")
+      .run(run, JSON.stringify(validateResolvedConfiguration(configuration)));
+  }
+
+  getExecutionConfiguration(run: RunRef): ResolvedConfiguration | undefined {
+    const row = this.#database
+      .query("SELECT snapshot_json FROM execution_configurations WHERE run_ref=?")
+      .get(run) as { snapshot_json: string } | null;
+    return row ? validateResolvedConfiguration(JSON.parse(row.snapshot_json)) : undefined;
   }
 
   saveRun(run: Run): void {

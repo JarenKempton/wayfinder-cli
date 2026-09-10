@@ -252,3 +252,30 @@ function required<T>(items: readonly T[], index: number): T {
   if (item === undefined) throw new Error(`Missing item at index ${index}`);
   return item;
 }
+
+test("Jira requests and normalizes summary and ADF acceptance context without mutation", async () => {
+  const api = new FakeJira();
+  Object.assign(api.issues[0]?.fields ?? {}, {
+    summary: "Implement context",
+    description: {
+      type: "doc",
+      version: 1,
+      content: [
+        { type: "heading", content: [{ type: "text", text: "Acceptance Criteria" }] },
+        { type: "paragraph", content: [{ type: "text", text: "Preserve all ticket context." }] },
+      ],
+    },
+  });
+  const result = await adapter(api).getTicket(ticket);
+  expect(result.title).toBe("Implement context");
+  expect(result.description).toContain("Acceptance Criteria\nPreserve all ticket context.");
+  expect(api.requests[0]?.path).toContain("summary,description");
+  expect(
+    (
+      api.requests.find((request) => request.method === "POST")?.body as
+        | { fields: string[] }
+        | undefined
+    )?.fields,
+  ).toEqual(expect.arrayContaining(["summary", "description"]));
+  expect(api.mutationCount()).toBe(0);
+});

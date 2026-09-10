@@ -367,3 +367,16 @@ describe("MarkdownTrackerAdapter", () => {
     expect((await adapter.frontier({ map: otherMap })).map((item) => item.ref)).toEqual([ticket]);
   });
 });
+
+test("Markdown ticket context survives format and parse", () => {
+  const input = document();
+  const first = input.tickets[0];
+  if (!first) throw new Error("Missing fixture ticket");
+  first.description = "Outcome and instructions";
+  first.acceptanceCriteria = "Verify full context";
+  expect(parseMarkdownTracker(formatMarkdownTracker(input)).tickets[0]).toMatchObject({
+    title: "First",
+    description: "Outcome and instructions",
+    acceptanceCriteria: "Verify full context",
+  });
+});

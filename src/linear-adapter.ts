@@ -227,6 +227,8 @@ function normalizeLinearTicket(
   const state = object(node.state, "Linear state");
   return {
     ref,
+    ...(typeof node.title === "string" ? { title: node.title } : {}),
+    ...(typeof node.description === "string" ? { description: node.description } : {}),
     map: `${parsed.adapter}:${parsed.instance}:${parsed.workspace}:map:${mapId}` as MapRef,
     kind,
     state: node.canceledAt || node.completedAt ? "closed" : "open",
@@ -285,7 +287,7 @@ function linearRef(ref: string, kind: "map" | "ticket") {
   };
 }
 
-const ISSUE_FIELDS = `id identifier updatedAt completedAt canceledAt parent { id } assignee { id } state { name } labels(first: $nestedFirst) { nodes { name } pageInfo { hasNextPage endCursor } } inverseRelations(first: $nestedFirst) { nodes { type issue { id completedAt canceledAt } } pageInfo { hasNextPage endCursor } }`;
+const ISSUE_FIELDS = `id identifier title description updatedAt completedAt canceledAt parent { id } assignee { id } state { name } labels(first: $nestedFirst) { nodes { name } pageInfo { hasNextPage endCursor } } inverseRelations(first: $nestedFirst) { nodes { type issue { id completedAt canceledAt } } pageInfo { hasNextPage endCursor } }`;
 const ISSUE_QUERY = `query Issue($id: String!, $nestedFirst: Int!) { issue(id: $id) { ${ISSUE_FIELDS} } }`;
 const ASSIGNMENT_QUERY = `query Assignment($id: String!) { issue(id: $id) { updatedAt assignee { id } } }`;
 const ASSIGN_MUTATION = `mutation Assign($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }`;

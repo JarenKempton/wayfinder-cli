@@ -4,6 +4,7 @@ import type { HarnessAdapter, LaunchReceipt, LaunchRequest } from "./contracts.t
 import { HarnessLaunchError } from "./contracts.ts";
 import type { CapabilitySet } from "./domain.ts";
 import { capabilities } from "./domain.ts";
+import { buildLaunchPrompt } from "./launch-prompt.ts";
 
 export type NamedHarnessName = "pi" | "claude" | "codex" | "cursor" | "opencode";
 export type HarnessName = "command" | NamedHarnessName;
@@ -123,9 +124,9 @@ export class CommandHarnessAdapter implements HarnessAdapter {
   }
 
   #render(request: LaunchRequest): string[] {
-    const prompt = request.context
-      ? `Work on ${request.ticket.ref}.\n\n${request.context}`
-      : `Work on ${request.ticket.ref}.`;
+    const prompt = buildLaunchPrompt(request.ticket, {
+      ...(request.context ? { context: request.context } : {}),
+    });
     const values: Record<string, string | undefined> = {
       "{prompt}": prompt,
       "{workspace}": request.workspace.path,

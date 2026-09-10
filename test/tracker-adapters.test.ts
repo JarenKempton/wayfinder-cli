@@ -58,6 +58,8 @@ const linearIssue = (
 ) => ({
   id,
   identifier: `WAY-${id}`,
+  title: `Linear ${id}`,
+  description: "## Acceptance criteria\nRetain Linear context.",
   updatedAt: "2026-08-11T00:00:00.000Z",
   completedAt: options.completed ? "2026-08-11T00:00:00.000Z" : null,
   canceledAt: null,
@@ -86,6 +88,8 @@ const githubIssue = (
   repository = "o/r",
 ) => ({
   number,
+  title: `GitHub ${number}`,
+  body: "## Acceptance criteria\nRetain GitHub context.",
   state: "open",
   updated_at: `2026-08-11T00:00:0${number}.000Z`,
   html_url: `https://github.test/${repository}/issues/${number}`,
@@ -127,6 +131,10 @@ describe("Linear tracker adapter", () => {
       ),
     });
     const tickets = await adapter.listMapTickets("linear:api:team:map:map" as MapRef);
+    expect(tickets[0]).toMatchObject({
+      title: "Linear 1",
+      description: "## Acceptance criteria\nRetain Linear context.",
+    });
     expect(tickets.map((ticket) => [String(ticket.ref), ticket.order])).toEqual([
       ["linear:api:team:ticket:1", 0],
       ["linear:api:team:ticket:2", 1],
@@ -271,6 +279,10 @@ describe("GitHub Issues tracker adapter", () => {
       ]),
     });
     const tickets = await adapter.listMapTickets("github:github.com:o/r:map:5" as MapRef);
+    expect(tickets[0]).toMatchObject({
+      title: "GitHub 1",
+      description: "## Acceptance criteria\nRetain GitHub context.",
+    });
     expect(tickets.map((ticket) => String(ticket.ref))).toEqual([
       "github:github.com:o/r:ticket:1",
       "github:github.com:o/r:ticket:2",

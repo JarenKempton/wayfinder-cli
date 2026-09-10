@@ -124,6 +124,10 @@ export interface Dependency {
 }
 
 export interface Ticket {
+  /** Optional additions preserve protocol-major 1 fixtures and third-party adapters. */
+  title?: string;
+  description?: string;
+  acceptanceCriteria?: string;
   ref: TicketRef;
   map: MapRef;
   group?: GroupRef;

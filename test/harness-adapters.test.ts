@@ -122,10 +122,16 @@ describe("generic command harness", () => {
     platform.found.add("agent");
     const adapter = new CommandHarnessAdapter({ argv: ["agent", "{prompt}"], platform });
     try {
+      item.request.ticket.title = "Task title";
+      item.request.ticket.description = "## Acceptance criteria\nVerify argv context delivery.";
       const receipt = await adapter.launch(item.request);
+      const prompt = platform.calls[0]?.argv[1];
+      expect(prompt).toContain("Task title");
+      expect(prompt).toContain("Acceptance criteria:\nVerify argv context delivery.");
+      expect(prompt).toContain("Keep the change narrow.");
       expect(platform.calls).toEqual([
         {
-          argv: ["agent", "Work on jira:example:W:ticket:T-1.\n\nKeep the change narrow."],
+          argv: ["agent", expect.stringContaining("Ticket:\njira:example:W:ticket:T-1")],
           cwd: item.path,
         },
       ]);
@@ -190,7 +196,7 @@ describe("named harnesses", () => {
           {
             argv: profile.argv.map((token) =>
               token === "{prompt}"
-                ? "Work on jira:example:W:ticket:T-1.\n\nKeep the change narrow."
+                ? expect.stringContaining("Ticket:\njira:example:W:ticket:T-1")
                 : token,
             ),
             cwd: item.path,

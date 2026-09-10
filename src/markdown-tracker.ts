@@ -747,6 +747,8 @@ function validateTicket(value: unknown, index: number): MarkdownTicketRecord {
       "priority",
       "metadata",
       "title",
+      "description",
+      "acceptanceCriteria",
       "claim",
       "claimHistory",
       "comments",
@@ -817,6 +819,12 @@ function validateTicket(value: unknown, index: number): MarkdownTicketRecord {
       : { priority: integer(item.priority, `${path}.priority`) }),
     ...(item.metadata === undefined ? {} : { metadata: object(item.metadata, `${path}.metadata`) }),
     title: string(item.title, `${path}.title`),
+    ...(item.description === undefined
+      ? {}
+      : { description: string(item.description, `${path}.description`) }),
+    ...(item.acceptanceCriteria === undefined
+      ? {}
+      : { acceptanceCriteria: string(item.acceptanceCriteria, `${path}.acceptanceCriteria`) }),
     ...(claim ? { claim } : {}),
     claimHistory,
     comments: stringArray(item.comments, `${path}.comments`),

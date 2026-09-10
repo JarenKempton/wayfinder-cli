@@ -4,6 +4,13 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { builtInAdapters, findAdapter } from "./adapters.ts";
 import { completionScript, parseCompletionShell } from "./completions.ts";
+import {
+  configurationActions,
+  configurationHelp,
+  describeConfigurationAction,
+  parseConfigurationInput,
+  validateConfigurationOutput,
+} from "./config-actions.ts";
 import { runAdapterConformance } from "./conformance.ts";
 import type { RecoveryVerification, RunLifecycleAdapter, TrackerAdapter } from "./contracts.ts";
 import type {
@@ -20,6 +27,10 @@ import { evaluateFrontier, type FrontierScope, reconcileDependencyStatuses } fro
 import { LifecycleCoordinator, Supervisor } from "./lifecycle.ts";
 import { manPage } from "./manpage.ts";
 import { databasePath } from "./paths.ts";
+import {
+  type ConfigurationPlatformOptions,
+  configurationOperations,
+} from "./platform/configuration.ts";
 import { ProcessLifecycleAdapter } from "./platform/process-lifecycle.ts";
 import { AdapterClient, PROTOCOL_VERSION } from "./protocol.ts";
 import { parseRef } from "./reference.ts";
@@ -43,6 +54,7 @@ export const VERSION =
   typeof WAYFINDER_BUILD_VERSION === "string" ? WAYFINDER_BUILD_VERSION : "0.1.0-dev";
 
 export interface RuntimeServices {
+  configuration?: ConfigurationPlatformOptions;
   tracker?: TrackerAdapter;
   lifecycle?(run: Run): RunLifecycleAdapter;
   statePath?: string;
@@ -62,6 +74,54 @@ export async function run(
   services: RuntimeServices = {},
 ): Promise<void> {
   const [command, ...rest] = args;
+  if (command === "init" || command === "config") {
+    if (command === "config" && (rest.length === 0 || rest[0] === "--help")) {
+      if (
+        rest.some((arg) => arg !== "--help" && arg !== "--json") ||
+        new Set(rest).size !== rest.length
+      )
+        throw new Error("config help accepts --help and --json");
+      write(
+        rest.includes("--json")
+          ? JSON.stringify({
+              version: 1,
+              actions: configurationActions.map(describeConfigurationAction),
+            })
+          : configurationHelp(),
+      );
+      return;
+    }
+    const action = configurationActions.find(
+      (item) => item.command[0] === command && (command === "init" || item.command[1] === rest[0]),
+    );
+    if (!action) throw new Error("config requires show or edit");
+    const input = parseConfigurationInput(action, command === "init" ? rest : rest.slice(1));
+    if (input.help) {
+      write(
+        input.json
+          ? JSON.stringify(describeConfigurationAction(action))
+          : configurationHelp(action),
+      );
+      return;
+    }
+    const result = validateConfigurationOutput(
+      await action.handler(
+        configurationOperations(
+          services.configuration ?? {
+            cwd: process.cwd(),
+            ...(services.statePath ? { statePath: services.statePath } : {}),
+          },
+        ),
+        input,
+      ),
+    );
+    write(
+      input.json
+        ? JSON.stringify(result, null, 2)
+        : `${result.action}: ${result.path}\n${JSON.stringify(result.configuration, null, 2)}`,
+    );
+    return;
+  }
   switch (command) {
     case undefined:
     case "help":
@@ -102,8 +162,6 @@ export async function run(
     case "pickup":
     case "resume":
     case "workspace":
-    case "init":
-    case "config":
       throw new Error(
         `${command} is reserved by the stable contract but is not implemented safely in this pre-release`,
       );
@@ -136,6 +194,7 @@ function usage(services: RuntimeServices): string {
   if (services.verifyAttention) {
     commands.push("wayfinder supervisor reconcile <run-id> --evidence <json>");
   }
+  commands.push(...configurationActions.map((action) => `wayfinder ${action.usage}`));
   commands.push("wayfinder version");
   commands.push("wayfinder completions <bash|zsh|fish>");
   commands.push("wayfinder man");

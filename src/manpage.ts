@@ -1,3 +1,4 @@
+import { configurationActions } from "./config-actions.ts";
 export function manPage(version: string): string {
   return `.TH WAYFINDER 1 "" "wayfinder ${version}" "User Commands"
 .SH NAME
@@ -11,6 +12,7 @@ Wayfinder discovers eligible work from maps and coordinates claims, deterministi
 workspaces, harness launches, supervision, and recovery. Tracker state remains the
 durable coordination truth.
 .SH COMMANDS
+${configurationActions.map((action) => `.TP\n.B ${action.usage}\n${action.description}`).join("\n")}
 .TP
 .B doctor
 Check whether the executable and local state directory are usable.

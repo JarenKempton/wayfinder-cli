@@ -1,6 +1,8 @@
+import { configurationActions } from "./config-actions.ts";
 export type CompletionShell = "bash" | "fish" | "zsh";
 
 const commands = [
+  ...new Set(configurationActions.map((action) => action.command[0])),
   "doctor",
   "resolve",
   "frontier",

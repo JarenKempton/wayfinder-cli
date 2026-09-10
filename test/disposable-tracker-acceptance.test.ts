@@ -620,7 +620,7 @@ describe("JWB-295 disposable-tracker acceptance", () => {
       });
       expect(launch.tier).toBe("launch");
       expect(spawned[0]?.slice(0, 2)).toEqual(["fake-harness", wsPath]);
-      expect(spawned[0]?.[2]).toContain(`Work on ${ta}`);
+      expect(spawned[0]?.[2]).toContain(`Ticket:\n${ta}`);
     }
   });
 

@@ -152,6 +152,8 @@ export class GitHubIssuesTrackerAdapter
     return {
       ref,
       map,
+      ...(typeof issue.title === "string" ? { title: issue.title } : {}),
+      ...(typeof issue.body === "string" ? { description: issue.body } : {}),
       kind,
       state: issue.state === "closed" ? "closed" : "open",
       status: string(issue.state, "issue state"),

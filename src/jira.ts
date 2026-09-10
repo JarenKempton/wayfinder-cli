@@ -17,6 +17,7 @@ import {
   type TrackerSnapshot,
   UnsupportedCapabilityError,
 } from "./domain.ts";
+import { jiraDescription } from "./launch-prompt.ts";
 import { parseRef } from "./reference.ts";
 
 export interface JiraResponse<T = unknown> {
@@ -255,9 +256,12 @@ export class JiraTrackerAdapter implements FrontierTrackerAdapter {
         });
       }
     }
+    const description = jiraDescription(issue.fields.description);
     return {
       ref,
       map,
+      ...(typeof issue.fields.summary === "string" ? { title: issue.fields.summary } : {}),
+      ...(description === undefined ? {} : { description }),
       kind: this.#kind(issue.fields.issuetype.name),
       state: issue.fields.status.statusCategory?.key === "done" ? "closed" : "open",
       status: issue.fields.status.name,
@@ -296,6 +300,8 @@ export class JiraTrackerAdapter implements FrontierTrackerAdapter {
 
   #fields(): string[] {
     return [
+      "summary",
+      "description",
       "updated",
       "assignee",
       "status",
