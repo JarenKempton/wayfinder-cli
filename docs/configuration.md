@@ -54,6 +54,12 @@ no separate command switch, usage-string list, or completion-name list. See
 
 ## Minimal schema
 
+`configuration/schema.ts` uses strict Zod schemas and infers the project/personal/
+snapshot types and supported setting keys from them. Project policy and snapshot
+consistency remain explicit application rules. Validation diagnostics omit input
+values and dynamic record keys. See the [library evaluation](cli-library-evaluation.md)
+for the measured code reduction, dependency cost and pending CLI parser decision.
+
 The repository/map/tracker/T3 names preserve the Python reader's existing shape.
 The additions are schema version, defaults, requirements, and optional project
 instruction/setup references. `version = 1` identifies the file format: users do

@@ -1,0 +1,59 @@
+CLI library research: Bun 1.3.11; temporary dependencies, source and stores.
+bun install v1.3.11 (af24e281)
+
++ @commander-js/extra-typings@15.0.0
++ @optique/core@1.2.6
++ @optique/man@1.2.6
++ @optique/zod@1.2.6
++ @types/bun@1.3.14
++ commander@15.0.0
++ typescript@5.9.3
++ zod@4.6.2
+
+12 packages installed [20.00ms]
+PASS typed definitions: inferred handler inputs, shared Zod choices, exclusive operations, value completion, deferred execution
+PASS Commander: help and registered commands derive from actual available actions
+PASS Commander: real init/non-overwrite, read-only show, set/follow via SQLite, spaces and equals syntax, malformed inputs rejected
+GAP Commander: duplicate flag accepted; Wayfinder currently rejects it
+PASS Optique: derived help, man, Bash/zsh/fish scripts and live candidate queries; unbound stop absent, bound stop present; zero lifecycle calls
+Usage: wayfinder config edit [--json] [--path STRING] [--editor STRING] [--set STRING STRING] [--follow STRING]
+
+"Edit a staged project file, set a personal choice, or follow the current project default."
+
+  --json                    
+  --path STRING               "Project configuration file (default: wayfinder.toml in the current directory)."
+  --editor STRING             "Executable used to edit a staged copy; defaults to VISUAL or EDITOR."
+  --follow STRING             "Personal setting (host, agent, model, effort, context_window, runtime_mode, interaction_mode)"
+  --set STRING                "Persist one explicit personal choice in local SQLite."
+  STRING
+PASS Optique: real init/non-overwrite, read-only show, set/follow via SQLite, spaces and equals syntax, malformed inputs rejected
+PASS Optique: duplicate flag rejected
+GAP Commander: native two-placeholder option does not consume two values; bridge uses variadic + action tuple validation
+GAP both: default parser diagnostics can repeat input; retain a sanitized error boundary
+PASS Bun node:util.parseArgs: equals syntax; command routing/help/completions still need another layer
+All probe assertions passed on linux/x64, Bun 1.3.11. No tracker/host/setup calls.
+  [17ms]  bundle  172 modules
+  [24ms] compile  /tmp/wayfinder-cli-research-Mx19hL/probe
+PASS typed definitions: inferred handler inputs, shared Zod choices, exclusive operations, value completion, deferred execution
+PASS Commander: help and registered commands derive from actual available actions
+PASS Commander: real init/non-overwrite, read-only show, set/follow via SQLite, spaces and equals syntax, malformed inputs rejected
+GAP Commander: duplicate flag accepted; Wayfinder currently rejects it
+PASS Optique: derived help, man, Bash/zsh/fish scripts and live candidate queries; unbound stop absent, bound stop present; zero lifecycle calls
+Usage: wayfinder config edit [--json] [--path STRING] [--editor STRING] [--set STRING STRING] [--follow STRING]
+
+"Edit a staged project file, set a personal choice, or follow the current project default."
+
+  --json                    
+  --path STRING               "Project configuration file (default: wayfinder.toml in the current directory)."
+  --editor STRING             "Executable used to edit a staged copy; defaults to VISUAL or EDITOR."
+  --follow STRING             "Personal setting (host, agent, model, effort, context_window, runtime_mode, interaction_mode)"
+  --set STRING                "Persist one explicit personal choice in local SQLite."
+  STRING
+PASS Optique: real init/non-overwrite, read-only show, set/follow via SQLite, spaces and equals syntax, malformed inputs rejected
+PASS Optique: duplicate flag rejected
+GAP Commander: native two-placeholder option does not consume two values; bridge uses variadic + action tuple validation
+GAP both: default parser diagnostics can repeat input; retain a sanitized error boundary
+PASS Bun node:util.parseArgs: equals syntax; command routing/help/completions still need another layer
+All probe assertions passed on linux/x64, Bun 1.3.11. No tracker/host/setup calls.
+PASS source execution, strict typecheck, standalone build and compiled execution.
+Temporary research dependencies, copied source, executable and stores removed.

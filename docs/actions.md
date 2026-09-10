@@ -4,6 +4,11 @@ An action is the callable implementation plus its input contract and required
 service bindings. Help and completion are views of those objects. Registering an
 action once changes what can be called and what can be discovered together.
 
+The [CLI library evaluation](cli-library-evaluation.md) tests replacing the custom
+transport mechanics with existing libraries. Optique is the leading candidate;
+the production dispatcher has not switched. Project configuration now uses Zod,
+while migration of action input fields is part of that pending transport decision.
+
 ```ts
 const app = createApplication(services);
 const result = await app.config.show.execute({ path: "wayfinder.toml" });

@@ -6,6 +6,11 @@ tracker mutation, closure or map-update authority. Project/workflow instructions
 own completion policy; passing tests cannot bypass required human approvals or
 configured gates. This is prompt guidance, not a new gate-enforcement subsystem.
 
+Subsequent requested research: [CLI library evaluation](cli-library-evaluation.md).
+Zod now owns configuration schemas; Commander and Optique are tested prototypes,
+with the CLI replacement decision still pending. New PR review comments were not
+read as part of that research.
+
 ## Try the implemented path
 
 From this checkout:
