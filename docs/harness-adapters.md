@@ -17,10 +17,12 @@ future protocol adapters. Executable discovery does not prove a durable session 
 | OpenCode | `opencode run <prompt>` | macOS, Linux, Windows | `prompt_generation` | prepare plus `process_launch` |
 | T3 Code | none | none | none | none |
 
-T3 Code is a host integration, not a generic executable wrapper. The registry retains an
-unavailable T3 descriptor so configuration can name the planned integration, but it has no
-executable and advertises neither `process_launch` nor `visible_multi_session` until a
-supported host protocol is implemented and tested.
+T3 Code is a structured host integration, not a generic executable wrapper. The bundled
+[T3 adapter](session-hosts/t3-adapter.md) has deterministic lifecycle conformance tests
+and a read-only live probe. The synchronous command registry keeps it unavailable with
+no capabilities: executable discovery cannot qualify the running server, and generic
+pickup compensation is not safe for an uncertain T3 dispatch. Live lifecycle acceptance
+and UI visibility remain pending.
 
 All command adapters launch with argument arrays and retain the exact child handle for
 same-process failure compensation. They do not reconstruct ownership from a PID and do not

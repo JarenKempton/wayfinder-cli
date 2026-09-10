@@ -266,7 +266,7 @@ describe("named harnesses", () => {
     expect(t3).toEqual({
       name: "t3",
       kind: "harness",
-      bundled: false,
+      bundled: true,
       available: false,
       capabilities: {},
     });

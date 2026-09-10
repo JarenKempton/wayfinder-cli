@@ -35,6 +35,7 @@ import {
   statusRepairAdapterBinding,
   statusRepairAdapterMatches,
 } from "./status-repair.ts";
+import { T3Adapter } from "./t3-adapter.ts";
 import { notifyAboutUpdate } from "./update.ts";
 
 declare const WAYFINDER_BUILD_VERSION: string | undefined;
@@ -520,6 +521,26 @@ async function adapter(args: string[], write: (text: string) => void): Promise<v
   if (subcommand === "list") return writeJson(write, builtInAdapters());
   if (subcommand === "describe" && target) return writeJson(write, findAdapter(target));
   if (subcommand === "test" && target) {
+    if (target === "t3") {
+      if (args.length !== 3 || args[2] !== "--read-only") {
+        throw new Error(
+          "T3 live lifecycle acceptance is pending a disposable-session approval packet; use adapter test t3 --read-only for discovery/auth/snapshot verification",
+        );
+      }
+      const t3 = new T3Adapter({
+        journal: async () => {
+          throw new Error("Read-only T3 probe cannot dispatch");
+        },
+      });
+      const description = await t3.describe();
+      return writeJson(write, {
+        ok: true,
+        mode: "read-only",
+        adapter: "t3",
+        ...description,
+        liveLifecycleAcceptance: "pending",
+      });
+    }
     const description = await new AdapterClient(adapterCommand(target)).initialize(
       "tracker",
       "conformance:test",
