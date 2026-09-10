@@ -1,5 +1,8 @@
 # Open PR disposition — September 9 review session
 
+Historical snapshot: current dispositions are in
+[September 10 reconciliation](pr-reconciliation-2026-09-10.md).
+
 This is a scoped architecture/readiness assessment, not blanket approval or a
 complete security review. No PR was merged, closed, or superseded by this review.
 
