@@ -89,6 +89,11 @@ versus automatic-map-progression question below; Docker timing remains open.
 - A setting may follow the current project default or retain an explicit local
   choice. Required setup must not become stale because a developer initialized
   before the project changed.
+- Explicit project requirements reject conflicting personal settings with an
+  explanation. Changing a requirement requires a project-config change, not a
+  personal or one-run bypass. If the preferred host or agent is unavailable,
+  show available supported alternatives and require explicit selection; never
+  silently substitute.
 - Persist a resolved configuration and source/configuration identity for each
   execution. Existing work does not silently change when defaults change.
 - Secret values stay out of committed config, process arguments, logs, and

@@ -60,8 +60,18 @@ Automatic map progression follows. Preserve map scope and provider boundaries.
   workspace. An explicit retry runs the failed step and subsequent steps, with
   preparation/readiness still required before agent launch.
 
-Next question batches: project requirements versus override rules;
-optional PR workflow boundaries. Setup cleanup details remain to be specified.
+## Configuration behavior — explicitly selected by Jaren
+
+- [ ] Given a personal setting that conflicts with an explicitly required
+  project setting, reject the conflict and identify the requirement and its
+  source. Changing the requirement requires a project-configuration change;
+  no personal or one-run bypass is permitted.
+- [ ] Given an unavailable preferred host or agent, show supported available
+  alternatives and require an explicit selection. Never silently substitute
+  another host, agent, or model as part of resolving that failure.
+
+Next question batch: optional PR workflow boundaries. Setup cleanup details
+remain to be specified. These questions must not expand the selected first release.
 Ask only product behavior choices. Investigate technical mechanisms separately.
 
 ## Concrete work sequence
