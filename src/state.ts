@@ -4,7 +4,7 @@ import {
   type ResolvedConfiguration,
   validatePersonalSettings,
   validateResolvedConfiguration,
-} from "./configuration.ts";
+} from "./configuration/schema.ts";
 import type { Claim, ClaimRef, Run, RunRef } from "./domain.ts";
 
 const schema = `

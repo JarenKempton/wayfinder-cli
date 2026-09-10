@@ -497,7 +497,7 @@ describe("reconcile statuses CLI", () => {
   test("requires and validates the positional qualified scope", async () => {
     await expect(
       run(["reconcile", "statuses", "--input", fixture()], () => undefined),
-    ).rejects.toThrow("qualified <scope>");
+    ).rejects.toThrow("Invalid scope");
     await expect(
       run(["reconcile", "statuses", "wayfinder-run:123", "--input", fixture()], () => undefined),
     ).rejects.toThrow("not a frontier scope");

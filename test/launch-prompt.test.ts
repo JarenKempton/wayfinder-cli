@@ -2,15 +2,15 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveProjectConfiguration } from "../src/configuration.ts";
-import { planConfiguredLaunch } from "../src/configuration-plan.ts";
-import { acceptanceCriteria, buildLaunchPrompt, jiraDescription } from "../src/launch-prompt.ts";
 import {
   configurationVersion,
-  INITIAL_CONFIGURATION,
   loadConfigurationInstructions,
   parseProjectToml,
-} from "../src/platform/configuration.ts";
+} from "../src/configuration/files.ts";
+import { INITIAL_CONFIGURATION } from "../src/configuration/project-files.ts";
+import { resolveProjectConfiguration } from "../src/configuration/schema.ts";
+import { planConfiguredLaunch } from "../src/configuration-plan.ts";
+import { acceptanceCriteria, buildLaunchPrompt, jiraDescription } from "../src/launch-prompt.ts";
 import { fakeConfigurationPlan, fakePlanningTicket } from "./fixtures/configuration-plan.ts";
 
 test("pure fake planning includes T3 selection and entire title, description, and VERIFY context", () => {

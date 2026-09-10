@@ -2,7 +2,7 @@ import {
   type ResolvedConfiguration,
   requireAvailableSelections,
   validateResolvedConfiguration,
-} from "./configuration.ts";
+} from "./configuration/schema.ts";
 import type { Ticket } from "./domain.ts";
 import { buildLaunchPrompt } from "./launch-prompt.ts";
 

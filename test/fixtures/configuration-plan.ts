@@ -1,11 +1,8 @@
-import { resolveProjectConfiguration } from "../../src/configuration.ts";
+import { configurationVersion, parseProjectToml } from "../../src/configuration/files.ts";
+import { INITIAL_CONFIGURATION } from "../../src/configuration/project-files.ts";
+import { resolveProjectConfiguration } from "../../src/configuration/schema.ts";
 import { planConfiguredLaunch } from "../../src/configuration-plan.ts";
 import type { Ticket } from "../../src/domain.ts";
-import {
-  configurationVersion,
-  INITIAL_CONFIGURATION,
-  parseProjectToml,
-} from "../../src/platform/configuration.ts";
 
 export const fakePlanningTicket: Ticket = {
   ref: "jira:example:TEST:ticket:TEST-491" as Ticket["ref"],

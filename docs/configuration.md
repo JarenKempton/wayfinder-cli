@@ -45,15 +45,23 @@ create/migrate a database. SQLite may create its normal WAL coordination sidecar
 when reading an existing database; project content and durable records are not
 modified. Tests inject temporary config paths and SQLite stores.
 
-The three commands have an explicit catalog in `src/config-actions.ts`, shared
-argument validation, result validation, descriptions and generated help/manual
-entries. Existing commands retain their current dispatch and public interfaces.
+All commands now come from the typed application tree in `src/application.ts`.
+Configuration action definitions live in `src/actions/configuration.ts`; their
+input fields infer caller/handler types and generate parsing and help. CLI dispatch,
+help, manual entries, and live completion queries consume that same tree. There is
+no separate command switch, usage-string list, or completion-name list. See
+[the action boundary](actions.md) for composition and availability semantics.
 
 ## Minimal schema
 
 The repository/map/tracker/T3 names preserve the Python reader's existing shape.
 The additions are schema version, defaults, requirements, and optional project
-instruction/setup references. No credential values belong in any of these fields.
+instruction/setup references. `version = 1` identifies the file format: users do
+not increment it when changing settings. Every read computes a content hash for
+execution identity automatically. These are different from a future format
+migration, which must explicitly support earlier formats rather than ask users
+to update counters. The version-controlled starter is
+`src/configuration/default.toml`, embedded as a text asset when compiling the CLI. No credential values belong in any of these fields.
 
 ```toml
 version = 1
@@ -199,7 +207,7 @@ The Jira acceptance command remains **pending JWB-492 composition**:
 bun run src/cli.ts pickup JWB-<disposable> --dry-run --json
 ```
 
-`pickup` still rejects as reserved. A fake plan is not end-to-end Jira pickup
+`pickup` is not registered and rejects as an unknown command. A fake plan is not end-to-end Jira pickup
 acceptance. No live claim, T3 session, Jira write, or setup run was performed for
 JWB-491. The TypeScript baseline contained no macOS contract path; new paths are
 explicit project references, with no hardcoded developer-home fallback. This

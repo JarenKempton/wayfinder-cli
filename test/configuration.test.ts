@@ -10,18 +10,24 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { describeAction, registeredActions } from "../src/actions/catalog.ts";
+import { configurationActions } from "../src/actions/configuration.ts";
 import { run } from "../src/cli.ts";
-import { configurationActions } from "../src/config-actions.ts";
-import { requireAvailableSelections, resolveProjectConfiguration } from "../src/configuration.ts";
-import type { Run } from "../src/domain.ts";
 import {
-  configurationOperations,
   configurationReference,
   configurationVersion,
-  INITIAL_CONFIGURATION,
   parseProjectToml,
-  readPersonalSettings,
-} from "../src/platform/configuration.ts";
+} from "../src/configuration/files.ts";
+import { readPersonalSettings } from "../src/configuration/local-settings.ts";
+import {
+  configurationOperations,
+  INITIAL_CONFIGURATION,
+} from "../src/configuration/project-files.ts";
+import {
+  requireAvailableSelections,
+  resolveProjectConfiguration,
+} from "../src/configuration/schema.ts";
+import type { Run } from "../src/domain.ts";
 import { StateStore } from "../src/state.ts";
 
 const directories: string[] = [];
@@ -93,7 +99,7 @@ test("show does not initialize a SQLite store; local choices survive reopen and 
   const before = readdirSync(f.cwd);
   await f.ops.show(input);
   expect(readdirSync(f.cwd)).toEqual(before);
-  await f.ops.edit({ ...input, set: { key: "model", value: "chosen" } });
+  await f.ops.edit({ ...input, set: ["model", "chosen"] });
   expect(readPersonalSettings(f.statePath, f.path)).toEqual({ model: "chosen" });
   writeFileSync(
     f.path,
@@ -110,14 +116,12 @@ test("show does not initialize a SQLite store; local choices survive reopen and 
 test("required conflict rolls back local write and leaves earlier choice intact", async () => {
   const f = fixture();
   await f.ops.init(input);
-  await f.ops.edit({ ...input, set: { key: "model", value: "allowed" } });
+  await f.ops.edit({ ...input, set: ["model", "allowed"] });
   writeFileSync(
     f.path,
     INITIAL_CONFIGURATION.replace("[required]", '[required]\nmodel = "allowed"'),
   );
-  await expect(f.ops.edit({ ...input, set: { key: "model", value: "conflict" } })).rejects.toThrow(
-    "requirement",
-  );
+  await expect(f.ops.edit({ ...input, set: ["model", "conflict"] })).rejects.toThrow("requirement");
   expect(readPersonalSettings(f.statePath, f.path)).toEqual({ model: "allowed" });
 });
 
@@ -272,7 +276,9 @@ test("successful editor commits validated staged content and reports its identit
 test("configuration catalog drives help, JSON help, registration and man page", async () => {
   const f = fixture();
   const services = { configuration: { cwd: f.cwd, statePath: f.statePath } };
-  for (const action of configurationActions) {
+  const actions = registeredActions(configurationActions(services.configuration));
+  for (const entry of actions) {
+    const action = describeAction(entry);
     const human: string[] = [];
     const json: string[] = [];
     await run([...action.command, "--help"], (text) => human.push(text), services);
@@ -280,12 +286,12 @@ test("configuration catalog drives help, JSON help, registration and man page", 
     expect(human.join("")).toContain(action.description);
     expect(JSON.parse(json[0] as string)).toMatchObject({
       description: action.description,
-      options: action.options,
+      input: action.input,
     });
   }
   const manual: string[] = [];
   await run(["man"], (text) => manual.push(text), services);
-  expect(manual[0]).toContain(configurationActions[1].description);
+  expect(manual[0]).toContain(actions[1]?.action.description);
   const output: string[] = [];
   await run(["init", "--json"], (text) => output.push(text), services);
   expect(JSON.parse(output[0] as string).action).toBe("initialized");
@@ -318,7 +324,7 @@ test.each(
 test("show reads an existing local database without changing durable data", async () => {
   const f = fixture();
   await f.ops.init(input);
-  await f.ops.edit({ ...input, set: { key: "model", value: "chosen" } });
+  await f.ops.edit({ ...input, set: ["model", "chosen"] });
   const before = readFileSync(f.statePath);
   await f.ops.show(input);
   expect(readFileSync(f.statePath).equals(before)).toBe(true);
@@ -328,9 +334,9 @@ test("show reads an existing local database without changing durable data", asyn
 test("invalid personal setting fails before creating local state", async () => {
   const f = fixture();
   await f.ops.init(input);
-  await expect(
-    f.ops.edit({ ...input, set: { key: "runtime_mode", value: "invalid" } }),
-  ).rejects.toThrow("settings.runtime_mode");
+  await expect(f.ops.edit({ ...input, set: ["runtime_mode", "invalid"] })).rejects.toThrow(
+    "settings.runtime_mode",
+  );
   expect(existsSync(f.statePath)).toBe(false);
 });
 
@@ -339,6 +345,10 @@ test("config group JSON help lists the same registered action contracts", async 
   await run(["config", "--help", "--json"], (text) => output.push(text));
   expect(
     JSON.parse(output[0] as string).actions.map((action: { command: string[] }) => action.command),
-  ).toEqual(configurationActions.map((action) => [...action.command]));
-  await expect(run(["config", "--help", "--unknown"], () => {})).rejects.toThrow("config help");
+  ).toEqual(
+    registeredActions(configurationActions({ cwd: "/unused" }))
+      .filter((entry) => entry.command[0] === "config")
+      .map((entry) => entry.command),
+  );
+  await expect(run(["config", "--help", "--unknown"], () => {})).rejects.toThrow("Group help");
 });

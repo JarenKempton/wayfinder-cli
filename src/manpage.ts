@@ -1,5 +1,6 @@
-import { configurationActions } from "./config-actions.ts";
-export function manPage(version: string): string {
+import { actionUsage, availableActions } from "./actions/catalog.ts";
+import type { ActionTree } from "./actions/definition.ts";
+export function manPage(version: string, tree: ActionTree): string {
   return `.TH WAYFINDER 1 "" "wayfinder ${version}" "User Commands"
 .SH NAME
 wayfinder \\- portable work orchestration for agents
@@ -12,40 +13,9 @@ Wayfinder discovers eligible work from maps and coordinates claims, deterministi
 workspaces, harness launches, supervision, and recovery. Tracker state remains the
 durable coordination truth.
 .SH COMMANDS
-${configurationActions.map((action) => `.TP\n.B ${action.usage}\n${action.description}`).join("\n")}
-.TP
-.B doctor
-Check whether the executable and local state directory are usable.
-.TP
-.B resolve REFERENCE
-Normalize a qualified tracker reference.
-.TP
-.B frontier --input FILE [--scope REFERENCE] [--json]
-Evaluate a read-only frontier from normalized ticket input.
-.TP
-.B reconcile statuses SCOPE --input FILE [--repair [--dry-run]] [--json]
-Audit dependency-derived statuses and, when a conforming service is present, repair them.
-.TP
-.B adapter list|describe|test|conformance
-Inspect or verify adapter capabilities.
-.TP
-.B runs list|show|export
-Inspect durable local run state.
-.TP
-.B claim show CLAIM-ID
-Inspect durable local claim state.
-.TP
-.B supervisor status
-Inspect runs requiring supervision.
-.TP
-.B completions bash|zsh|fish
-Print a shell completion script to standard output.
-.TP
-.B man
-Print this manual page in roff format.
-.TP
-.B version
-Print the embedded build version.
+${availableActions(tree)
+  .map((entry) => `.TP\n.B ${actionUsage(entry)}\n${entry.action.description}`)
+  .join("\n")}
 .SH ENVIRONMENT
 .TP
 .B WAYFINDER_NO_UPDATE_CHECK
