@@ -567,7 +567,7 @@ test.each([{ options: [] }, { options: ["--live"] }, { options: ["--read-only", 
   "CLI T3 refuses lifecycle or ambiguous options %j",
   async ({ options }) => {
     await expect(runCli(["adapter", "test", "t3", ...options], () => {})).rejects.toThrow(
-      "pending a disposable-session approval packet",
+      "For T3, this command supports read-only discovery only",
     );
   },
 );

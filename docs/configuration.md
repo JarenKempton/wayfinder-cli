@@ -190,6 +190,26 @@ still owns isolation/readiness. No setup runner or environment replacement is ad
    Configured role templates replace the built-in role guidance; full ticket
    description and an explicit AC field or recognized AC/VERIFY section are
    always appended, along with map/ticket/role and required evidence output.
+   Generic output asks for artifacts, acceptance evidence and blockers; it grants
+   no tracker mutation, closure or map-update authority. Project/workflow
+   instructions own completion policy, including configured gates and required
+   human approvals. Role templates carry that policy as versioned text; this
+   configuration seam does not interpret or enforce a completion-gate engine.
+   Optional PR integration remains outside core. The example project requires
+   human merge approval in its task template, not in the generic prompt builder.
+
+For a developer handoff with review dispositions, the actual typed action and
+readable terminal output, see [the JWB-491 handoff](jwb-491-handoff.md). Run the real
+configuration actions against disposable files and SQLite with:
+
+```sh
+bun run examples/configuration.ts
+```
+
+That demo loads a populated example repository/map and a versioned project role
+template, then renders a prompt with fake ticket input. It does not contact a
+tracker or host or execute its configured setup step. Its output summarizes
+configuration results for readability; it does not change the CLI's JSON output.
 
 Run the bounded, fake-input planning demonstration:
 

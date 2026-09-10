@@ -45,10 +45,11 @@ export function buildLaunchPrompt(ticket: Ticket, options: LaunchPromptOptions =
     `Map:\n${ticket.map}`,
     `Ticket:\n${ticket.ref}${ticket.title ? ` — ${ticket.title}` : ""}`,
     `Role:\n${ticket.kind}`,
-    `Allowed action:\n${options.roleTemplate ?? ROLE_TEMPLATES[ticket.kind]}`,
+    `Role guidance:\n${options.roleTemplate ?? ROLE_TEMPLATES[ticket.kind]}`,
     `Description:\n${ticket.description ?? "Not supplied by tracker."}`,
     `Acceptance criteria:\n${criteria ?? "Not supplied by tracker; verify with the ticket owner before completion."}`,
-    "Required output:\n- resolution comment with evidence when resolving\n- linked implementation/findings artifact\n- close only after acceptance is verified\n- append exactly one map context pointer after close",
+    "Required output:\n- Report the work performed and link any resulting artifacts.\n- Report acceptance evidence, unverified criteria, and remaining blockers.",
+    "Authorization and completion:\nThis prompt does not grant authority to mutate tracker state, close tickets, or update maps. Follow the project/workflow instructions and explicit authorization for those actions. Passing acceptance checks alone does not authorize completion; all configured completion gates and required human approvals must also be satisfied.",
     ...(options.context ? [`Session-specific instructions:\n${options.context}`] : []),
   ].join("\n\n");
 }

@@ -1,0 +1,41 @@
+# Offline demonstration only. Model labels are examples, not verified host models.
+version = 1
+
+[repositories.example]
+github = "example/project"
+path = "."
+worktree_root = "../worktrees"
+base_branch = "main"
+
+[maps.DEMO-470]
+repository = "example"
+claim_status = "In Progress"
+available_statuses = ["To Do"]
+
+[tracker.jira]
+site = "https://example.atlassian.net"
+cli = "acli"
+
+[t3]
+provider = "codex"
+runtime_mode = "approval-required"
+interaction_mode = "default"
+open = "none"
+
+[defaults]
+host = "t3"
+model = "demo-default-v1"
+
+[required]
+runtime_mode = "approval-required"
+
+[instructions.role_templates]
+task = "task.md"
+
+[setup]
+version = "recipe-v1"
+
+[[setup.steps]]
+argv = ["bun", "install", "--frozen-lockfile"]
+location = "workspace"
+scripts = []

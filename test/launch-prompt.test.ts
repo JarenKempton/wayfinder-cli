@@ -10,8 +10,40 @@ import {
 import { INITIAL_CONFIGURATION } from "../src/configuration/project-files.ts";
 import { resolveProjectConfiguration } from "../src/configuration/schema.ts";
 import { planConfiguredLaunch } from "../src/configuration-plan.ts";
+import type { TicketKind } from "../src/domain.ts";
 import { acceptanceCriteria, buildLaunchPrompt, jiraDescription } from "../src/launch-prompt.ts";
 import { fakeConfigurationPlan, fakePlanningTicket } from "./fixtures/configuration-plan.ts";
+
+test.each<TicketKind>(["task", "research", "prototype", "decision"])(
+  "%s guidance requests evidence without granting completion authority or choosing a workflow",
+  (kind) => {
+    const prompt = buildLaunchPrompt({ ...fakePlanningTicket, kind });
+    expect(prompt).toContain(
+      "Report acceptance evidence, unverified criteria, and remaining blockers.",
+    );
+    expect(prompt).toContain(
+      "does not grant authority to mutate tracker state, close tickets, or update maps",
+    );
+    expect(prompt).toContain("Passing acceptance checks alone does not authorize completion");
+    expect(prompt).toContain("all configured completion gates and required human approvals");
+    expect(prompt).not.toContain("resolution comment");
+    expect(prompt).not.toContain("append exactly one map context pointer");
+    expect(prompt).not.toContain("close only after acceptance is verified");
+    expect(prompt).not.toMatch(/pull request|\bPR\b|merge/i);
+  },
+);
+
+test("session restrictions and project completion gates survive alongside passing acceptance evidence", () => {
+  const workflow =
+    "Completion gate: Jaren must approve and merge the implementation. Keep the ticket open until then.";
+  const context =
+    "All tests passed. Report evidence only; no Jira mutations are authorized in this session.";
+  const prompt = buildLaunchPrompt(fakePlanningTicket, { roleTemplate: workflow, context });
+  expect(prompt).toContain(`Role guidance:\n${workflow}`);
+  expect(prompt).toContain(`Session-specific instructions:\n${context}`);
+  expect(prompt).toContain("Passing acceptance checks alone does not authorize completion");
+  expect(prompt).toContain(fakePlanningTicket.description as string);
+});
 
 test("pure fake planning includes T3 selection and entire title, description, and VERIFY context", () => {
   const original = structuredClone(fakePlanningTicket);
@@ -100,7 +132,9 @@ test("configured instruction paths are loaded read-only, versioned, and used in 
     const content = `${INITIAL_CONFIGURATION}\n[instructions]\nruntime_contract = "contract.md"\n[instructions.role_templates]\ntask = "task.md"`;
     writeFileSync(path, content);
     writeFileSync(join(cwd, "contract.md"), "Runtime guidance");
-    writeFileSync(join(cwd, "task.md"), "Implement exactly this task; report evidence.");
+    const workflow =
+      "Implement exactly this task; report evidence. Completion requires human merge approval; keep the ticket open pending approval.";
+    writeFileSync(join(cwd, "task.md"), workflow);
     const configuration = resolveProjectConfiguration(
       parseProjectToml(content),
       {},
@@ -116,7 +150,8 @@ test("configured instruction paths are loaded read-only, versioned, and used in 
     const instructions = loadConfigurationInstructions(configuration, "task");
     const plan = planConfiguredLaunch({ ...args, instructions });
     expect(plan.prompt).toContain(join(cwd, "contract.md"));
-    expect(plan.prompt).toContain("Allowed action:\nImplement exactly this task; report evidence.");
+    expect(plan.prompt).toContain(`Role guidance:\n${workflow}`);
+    expect(plan.prompt).toContain("Passing acceptance checks alone does not authorize completion");
     expect(plan.instructions).toHaveLength(2);
     expect(plan.instructions[0]?.version).toBe(configurationVersion("Runtime guidance"));
     expect(readdirSync(cwd).map((file) => [file, readFileSync(join(cwd, file), "utf8")])).toEqual(

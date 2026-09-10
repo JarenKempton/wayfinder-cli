@@ -7,7 +7,7 @@ import { defineAction } from "./definition.ts";
 import { flag, positional, text } from "./input.ts";
 
 const probeDescription =
-  "Probe an adapter. T3 live lifecycle acceptance is pending a disposable-session approval packet; use adapter test t3 --read-only.";
+  "Probe an adapter. For T3, this command supports read-only discovery only; use adapter test t3 --read-only.";
 
 export function adapterActions() {
   return {
