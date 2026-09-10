@@ -26,6 +26,8 @@ read-only in pickup coordination. Product-specific session lifecycle adapters
 must pass their conformance suites before being advertised as supported. The
 [command harness adapters](docs/harness-adapters.md) provide only executable-qualified
 prepare/launch integration; their documented richer session protocols are not yet claimed.
+The [T3 Code orchestration API evidence](docs/session-hosts/t3-code.md) records
+the locally verified version, transport, schemas, and remaining host qualification gaps.
 
 ## Tracker credentials
 
