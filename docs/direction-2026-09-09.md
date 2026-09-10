@@ -159,7 +159,7 @@ This integration is outside the first single-ticket release.
 | --- | --- | --- |
 | Docker timing | Single-ticket T3 release is selected; whether Docker ships with it remains open | Present qualification evidence and delivery impact for Jaren |
 | Review workflow placement | Separate integration selected; exact public actions and packaging remain | Present tradeoffs for Jaren |
-| PR lifecycle | Draft at initial feedback and ready after reviews/checks selected; exact gates and Done mapping remain | Jaren preference plus reviewer compatibility check |
+| PR lifecycle | Draft at initial feedback and ready after reviews/checks selected; exact gate definitions and reviewer compatibility remain | Jaren preference plus reviewer compatibility check |
 | Workflow definition | Minimal structured gates versus Markdown guidance; supported initial stages | Propose small contract with examples |
 | Host qualification | Exact minimum operations, observation semantics, follow-up/interrupt guarantees | Verify T3; build conformance criteria |
 | Jira ownership/auth | Proven concurrency mechanism and per-developer credential integration | Technical investigation before asking for mechanism choice |
@@ -182,3 +182,16 @@ References: [JWB-470](https://responsibid.atlassian.net/browse/JWB-470),
 [ADR 0001](adr/0001-lanes-environments-and-session-hosts.md),
 [ADR 0002](adr/0002-tracker-write-minimalism.md),
 [ADR 0003](adr/0003-organization-policy-and-enforced-configuration.md).
+
+## Completion/cleanup follow-up decisions
+
+Jaren selected automatic tracker Done by the optional PR integration after
+verification of the human-approved merge and the ticket's configured completion
+gates. This does not make merge alone sufficient for tickets requiring deployment
+or acceptance evidence.
+
+After work completes, offer cleanup immediately and require explicit confirmation
+before deleting its workspace or sandbox. Preserve resources when the offer is
+declined or unanswered. Existing ownership and dirty-work checks are retained.
+These are future product behavior requirements, not approval to clean up current
+worktrees or close unrelated tickets.

@@ -70,8 +70,8 @@ Automatic map progression follows. Preserve map scope and provider boundaries.
   alternatives and require an explicit selection. Never silently substitute
   another host, agent, or model as part of resolving that failure.
 
-Remaining product questions include tracker completion and setup cleanup.
-Technical investigations remain engineering work, not speculative user decisions.
+Tracker completion and cleanup preferences are selected below. Remaining
+technical investigations are engineering work, not speculative user decisions.
 Ask only product behavior choices. Investigate technical mechanisms separately.
 
 ## Concrete work sequence
@@ -98,3 +98,15 @@ specific tasks is tracked in their scoped handoffs.
   required checks for the relevant revision. Human merge approval remains required.
 - [ ] Verify reviewer compatibility with draft PRs before enabling the integration.
   Incompatibility must not silently alter the selected project policy.
+
+## Completion and cleanup — explicitly selected by Jaren
+
+- [ ] For the optional PR integration, after human-approved merge, verify the
+  linked PR merge and all configured ticket completion gates before automatically
+  marking the ticket Done. An agent turn ending or a PR becoming ready is not
+  sufficient. Failed or unknown verification must not advance tracker state.
+- [ ] Immediately after verified work completion, offer workspace/sandbox cleanup
+  and require explicit human confirmation before deletion. The offer is not
+  consent. Preserve resources if declined or unanswered. Existing ownership and
+  dirty-work safeguards still apply; confirming an ordinary cleanup is not
+  blanket permission to discard uncommitted work.
