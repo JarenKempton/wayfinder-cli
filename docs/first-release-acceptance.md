@@ -38,17 +38,15 @@ Automatic map progression follows. Preserve map scope and provider boundaries.
   authoritative definition used by command registration and generated help.
   Application handlers remain independent of terminal formatting and future MCP.
 
-## Immediate human decisions — questions opened
+## Lifecycle behavior — explicitly selected by Jaren
 
-These are pending, not adopted defaults. Record the selected answer and then add
-its acceptance criterion before implementing the corresponding mutation behavior.
-
-1. Reconnect to an existing session: open/status only, or automatically send a
-   continuation message? Recommendation: no new message.
-2. Missing/unreachable session: explicit recovery versus replacement automation?
-   Recommendation: preserve state and require explicit recovery.
-3. Stop semantics: preserve workspace/claim versus automatic release?
-   Recommendation: verified stop; release and cleanup are separate explicit actions.
+- [ ] Given an existing recorded T3 session, reconnect opens the existing session
+  and shows current state without sending an agent message or starting a turn.
+- [ ] Given a missing or unreachable recorded session, preserve workspace and
+  claim, explain the problem, and require explicit recovery before replacement.
+- [ ] Given a stop request, stop the agent and verify the observed outcome;
+  preserve workspace and Jira ownership. Release and cleanup are separate explicit
+  actions. An unverified stop must remain uncertain, not reported as stopped.
 
 Next question batches, after those answers: setup trust/failure/retry/cleanup;
 project requirements versus override rules; optional PR workflow boundaries.
@@ -59,7 +57,7 @@ Ask only product behavior choices. Investigate technical mechanisms separately.
 | Work | Current evidence | Next action |
 | --- | --- | --- |
 | JWB-488 T3 contract | PR #38 merged as 5cce9353; Jira Done; JWB-278 supersession recorded | Use merged source-qualified evidence |
-| JWB-489 T3 adapter | No open Jira blockers; pickup dry-run passed; not launched | Prepare typed API validation and fake conformance cases now; settle the three lifecycle choices before implementation of those behaviors |
+| JWB-489 T3 adapter | PR #38 merged; lifecycle expectations now selected | Implement typed API validation and conformance against the selected reconnect/recovery/stop criteria; deliver tested draft PR |
 | PR #32 invocation/runtime separation | Two capability/local-preflight defects reproduced | Revise existing work; do not assume argv is the universal T3 host interface |
 | Jira ownership | Existing adapter rejects mutations; ticket assumes unsupported conditional semantics | Investigate a provable mechanism before enabling claims |
 | Setup and action catalog | Direction captured; detailed schema not selected | Define the smallest implementation against this checklist, preserving existing public contract compatibility |
