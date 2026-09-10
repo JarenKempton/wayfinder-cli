@@ -76,6 +76,10 @@ Ask only product behavior choices. Investigate technical mechanisms separately.
 
 ## Concrete work sequence
 
+For current owners, PR evidence and the next human actions, use
+[release-next-steps.md](release-next-steps.md). The table below is the earlier
+planning snapshot; the linked checklist supersedes its status statements.
+
 | Work | Current evidence | Next action |
 | --- | --- | --- |
 | JWB-488 T3 contract | PR #38 merged as 5cce9353; Jira Done; JWB-278 supersession recorded | Use merged source-qualified evidence |
