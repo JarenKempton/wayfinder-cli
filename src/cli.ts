@@ -516,25 +516,36 @@ function frontier(args: string[], write: (text: string) => void): void {
   for (const ticket of result) write(`${ticket.ref}\t${ticket.kind}\t${ticket.status}`);
 }
 
+type AdapterCommandHandler = (args: string[], write: (text: string) => void) => Promise<void>;
+
+const adapterUsage =
+  "adapter requires list, describe <name>, test <executable>, or conformance <fixture>";
+
+// Registration stays local to these CLI subcommands; handlers own argument validation.
+const adapterCommands = new Map<string, AdapterCommandHandler>([
+  ["list", async (_args, write) => writeJson(write, builtInAdapters())],
+  ["describe", async ([name], write) => writeJson(write, findAdapter(requireAdapterTarget(name)))],
+  [
+    "test",
+    async ([name, ...options], write) => testAdapter(requireAdapterTarget(name), options, write),
+  ],
+  [
+    "conformance",
+    async ([fixture], write) =>
+      writeJson(write, await runAdapterConformance(requireAdapterTarget(fixture), VERSION)),
+  ],
+]);
+
+function requireAdapterTarget(target: string | undefined): string {
+  if (!target) throw new Error(adapterUsage);
+  return target;
+}
+
 async function adapter(args: string[], write: (text: string) => void): Promise<void> {
-  const [subcommand, target, ...options] = args;
-  if (subcommand === "list") return writeJson(write, builtInAdapters());
-  if (!target)
-    throw new Error(
-      "adapter requires list, describe <name>, test <executable>, or conformance <fixture>",
-    );
-  switch (subcommand) {
-    case "describe":
-      return writeJson(write, findAdapter(target));
-    case "test":
-      return testAdapter(target, options, write);
-    case "conformance":
-      return writeJson(write, await runAdapterConformance(target, VERSION));
-    default:
-      throw new Error(
-        "adapter requires list, describe <name>, test <executable>, or conformance <fixture>",
-      );
-  }
+  const [subcommand, ...commandArgs] = args;
+  const handler = adapterCommands.get(subcommand ?? "");
+  if (!handler) throw new Error(adapterUsage);
+  await handler(commandArgs, write);
 }
 
 async function testAdapter(target: string, options: string[], write: (text: string) => void) {

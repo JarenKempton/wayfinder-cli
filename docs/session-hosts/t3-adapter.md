@@ -30,6 +30,9 @@ work is verified termination, safe pickup recovery, and CLI pickup/inspect/recon
   remains unknown. Reconnect observations and command evidence record the current
   reported version; original receipts retain their creation version. Bootstrap records
   the actual version observed at dispatch. Version changes never enable stop capability.
+  There is no software-version comparison, range, or version-dependent behavior in
+  the adapter. Version numbers in fixtures and source records identify historical
+  evidence only; they do not determine which installations may run.
 - Explicit model selection is mandatory. The adapter preserves reported options;
   it accepts neither omitted requested options nor extra/conflicting options as
   verified. It does not alias provider instances to driver names or substitute models.
@@ -164,6 +167,16 @@ and bounds execution time. Requests otherwise use the standard Fetch and URL API
 there is no custom HTTP protocol implementation or retry framework. The transport
 allows only descriptor GET, snapshot GET, and dispatch POST. Method/path mismatches,
 path traversal, and unexpected queries are rejected before sending credentials.
+
+T3 protects its conversation API with authentication, even on the local machine:
+the JWB-488 unauthenticated snapshot read returned HTTP 401. The temporary credential
+lets Wayfinder make those HTTP calls. T3 calls this an **auth session**; it does not
+create a conversation, start an agent, create a user account, or claim a Jira ticket.
+`label` and `subject` are optional client-identification fields in T3's auth records;
+the adapter chooses `wayfinder` so the credential's origin is recognizable. Those
+strings do not select a model, assign ownership, or grant the credential's permissions.
+Two minutes is the adapter's chosen expiry as a backstop if the process crashes;
+normal completion revokes the credential immediately. No API key is stored in config.
 
 The tests were written before implementation. `test/fixtures/t3-snapshot.json` is
 a minimal sanitized projection of the JWB-488 recorded snapshot at sequence 3421.

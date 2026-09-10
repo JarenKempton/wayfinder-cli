@@ -165,6 +165,8 @@ async function revokeCredential(io: T3Platform, command: string, home: string, s
 async function issueCredential(io: T3Platform, command: string, home: string) {
   let auth: Record<string, unknown>;
   try {
+    // T3 requires a bearer credential even for snapshot reads. This is API auth,
+    // not an agent session. Label/subject identify the calling client in T3's auth records.
     // One CLI invocation: `t3 auth session issue` plus flags for a two-minute credential.
     const issued = await io.run([
       command,
