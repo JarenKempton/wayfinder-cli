@@ -30,6 +30,19 @@ same-process failure compensation. They do not reconstruct ownership from a PID 
 advertise `session_create`, `session_resume`, `session_status`, `session_interrupt`, or
 `session_close`.
 
+## Invocation and execution boundary
+
+Launching an agent is separated from executing it (JWB-327). A command adapter is an
+`AgentAdapter`: `invoke` renders a portable `AgentInvocation` (`agent`, `argv`, `cwd`) and
+never spawns a process. Execution is owned by an `AgentRuntime`. `host` is the first
+runtime — an explicit, named `HostRuntime` that spawns the invocation as a child process
+and owns its handle; container and remote runtimes are peers that execute the identical
+invocation. The v1 `HarnessAdapter` surface remains: `launch` is `invoke` followed by the
+adapter's runtime `execute`, and `stop` delegates to that runtime, so the default host path
+is unchanged. The runtime is explicit, never an implicit inline fallback, and a runtime
+advertises `process_launch` only when it can actually launch — capability negotiation for
+model, effort, context, launch, stop, and observation is preserved unchanged.
+
 ## Command evidence
 
 The argv above follows the vendors' documented non-interactive surfaces:

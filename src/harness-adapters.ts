@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
-import type { HarnessAdapter, LaunchReceipt, LaunchRequest } from "./contracts.ts";
+import type {
+  AgentAdapter,
+  AgentInvocation,
+  AgentRuntime,
+  HarnessAdapter,
+  LaunchReceipt,
+  LaunchRequest,
+} from "./contracts.ts";
 import { HarnessLaunchError } from "./contracts.ts";
 import type { CapabilitySet } from "./domain.ts";
 import { capabilities } from "./domain.ts";
@@ -32,6 +39,8 @@ export interface CommandHarnessOptions {
   argv: readonly CommandToken[];
   platform?: HarnessPlatform;
   supportedPlatforms?: readonly NodeJS.Platform[];
+  /** Execution runtime; defaults to the {@link HostRuntime} bound to `platform`. */
+  runtime?: AgentRuntime;
 }
 
 const bunPlatform: HarnessPlatform = {
@@ -48,14 +57,66 @@ const bunPlatform: HarnessPlatform = {
   },
 };
 
-/** An argv-only harness. It owns child handles, never shell text or bare-PID signaling. */
-export class CommandHarnessAdapter implements HarnessAdapter {
+/**
+ * The `host` execution runtime. It executes an {@link AgentInvocation} as a
+ * child process on the host and owns the exact child handle for its lifecycle.
+ * It never signals a bare PID and never reconstructs ownership from a receipt it
+ * did not mint. This is an explicit, named runtime, not an implicit fallback.
+ */
+export class HostRuntime implements AgentRuntime {
+  readonly name = "host";
+  readonly #platform: HarnessPlatform;
+  readonly #children = new Map<string, HarnessProcess>();
+  readonly #exited = new Set<string>();
+
+  constructor(platform: HarnessPlatform = bunPlatform) {
+    this.#platform = platform;
+  }
+
+  async describe(): Promise<CapabilitySet> {
+    return capabilities("process_launch");
+  }
+
+  async execute(invocation: AgentInvocation): Promise<LaunchReceipt> {
+    const id = `${invocation.agent}:${randomUUID()}`;
+    try {
+      const child = this.#platform.spawn(invocation.argv, invocation.cwd);
+      this.#children.set(id, child);
+      void child.exited.finally(() => {
+        this.#children.delete(id);
+        this.#exited.add(id);
+      });
+      return { sessionId: id, pid: child.pid, tier: "launch" };
+    } catch (error) {
+      throw new HarnessLaunchError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async stop(receipt: LaunchReceipt): Promise<void> {
+    const id = receipt.sessionId;
+    const child = id ? this.#children.get(id) : undefined;
+    if (id && this.#exited.delete(id)) return;
+    if (!id || !child)
+      throw new Error("Host runtime child handle is unavailable; refusing bare-PID stop");
+    child.kill("SIGTERM");
+    await child.exited;
+    this.#children.delete(id);
+  }
+}
+
+/**
+ * An argv-only agent adapter. It describes a portable invocation and delegates
+ * execution to an {@link AgentRuntime} (the host runtime by default), so the
+ * same invocation can be executed on isolated runtimes. It never emits shell
+ * text or signals a bare PID. `launch`/`stop` keep the v1 {@link HarnessAdapter}
+ * surface by binding the adapter to its runtime.
+ */
+export class CommandHarnessAdapter implements HarnessAdapter, AgentAdapter {
   readonly name: HarnessName;
   readonly #argv: readonly CommandToken[];
   readonly #platform: HarnessPlatform;
   readonly #supportedPlatforms: readonly NodeJS.Platform[] | undefined;
-  readonly #children = new Map<string, HarnessProcess>();
-  readonly #exited = new Set<string>();
+  readonly #runtime: AgentRuntime;
 
   constructor(options: CommandHarnessOptions) {
     if (options.argv.length === 0 || !options.argv[0]) throw new Error("Harness argv is required");
@@ -63,6 +124,7 @@ export class CommandHarnessAdapter implements HarnessAdapter {
     this.#argv = [...options.argv];
     this.#platform = options.platform ?? bunPlatform;
     this.#supportedPlatforms = options.supportedPlatforms;
+    this.#runtime = options.runtime ?? new HostRuntime(this.#platform);
   }
 
   async describe(): Promise<CapabilitySet> {
@@ -87,31 +149,18 @@ export class CommandHarnessAdapter implements HarnessAdapter {
     this.#render(request);
   }
 
-  async launch(request: LaunchRequest): Promise<LaunchReceipt> {
+  /** Describe how to invoke the agent without launching it anywhere. */
+  async invoke(request: LaunchRequest): Promise<AgentInvocation> {
     await this.preflight(request);
-    const id = `${this.name}:${randomUUID()}`;
-    try {
-      const child = this.#platform.spawn(this.#render(request), request.workspace.path);
-      this.#children.set(id, child);
-      void child.exited.finally(() => {
-        this.#children.delete(id);
-        this.#exited.add(id);
-      });
-      return { sessionId: id, pid: child.pid, tier: "launch" };
-    } catch (error) {
-      throw new HarnessLaunchError(error instanceof Error ? error.message : String(error));
-    }
+    return { agent: this.name, argv: this.#render(request), cwd: request.workspace.path };
+  }
+
+  async launch(request: LaunchRequest): Promise<LaunchReceipt> {
+    return this.#runtime.execute(await this.invoke(request));
   }
 
   async stop(receipt: LaunchReceipt): Promise<void> {
-    const id = receipt.sessionId;
-    const child = id ? this.#children.get(id) : undefined;
-    if (id && this.#exited.delete(id)) return;
-    if (!id || !child)
-      throw new Error("Harness child handle is unavailable; refusing bare-PID stop");
-    child.kill("SIGTERM");
-    await child.exited;
-    this.#children.delete(id);
+    return this.#runtime.stop(receipt);
   }
 
   #available(): boolean {
