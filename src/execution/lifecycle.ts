@@ -177,10 +177,17 @@ export class Supervisor {
           })
           .parse(pending.request);
         const now = this.options.clock.now();
-        if (claimStatusAt(claim, now) !== "active") throw new Error("Claim is stale");
-        if (now.getTime() >= Date.parse(request.leaseExpiresAt)) {
-          this.options.store.discardRenewal(run.ref);
-          throw new Error("Pending renewal lease is already stale");
+        const staleClaim = claimStatusAt(claim, now) !== "active";
+        if (staleClaim || now.getTime() >= Date.parse(request.leaseExpiresAt)) {
+          run.status = "attention_required";
+          run.updatedAt = now.toISOString();
+          this.options.store.retireRenewal(
+            run,
+            request,
+            new Error(staleClaim ? "Claim is stale" : "Pending renewal lease is already stale"),
+          );
+          results.push({ run: run.ref, outcome: "attention_required" });
+          continue;
         }
         renewLock();
         await this.options.tracker.verifyLease(request);

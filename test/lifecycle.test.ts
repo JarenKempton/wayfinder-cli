@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 import { ProcessLifecycleAdapter } from "../src/adapters/harnesses/process-lifecycle.ts";
 import { run as runCli } from "../src/cli.ts";
 import type {
@@ -638,4 +639,76 @@ describe("lifecycle coordinator", () => {
       rmSync(directory, { recursive: true, force: true });
     }
   });
+});
+
+test.each(["expired claim", "released claim", "superseded claim", "expired intent"])(
+  "stale renewal retirement preserves evidence and does not churn on later ticks: %s",
+  async (scenario) => {
+    const item = fixture();
+    const { run, claim } = item.add("a");
+    const request: RenewLeaseRequest = {
+      claim: claim.ref,
+      ticket: claim.ticket,
+      expectedVersion: "2",
+      leaseExpiresAt: "2026-08-10T12:20:00.000Z",
+    };
+    if (scenario === "expired claim") claim.leaseExpiresAt = "2026-08-10T12:04:00.000Z";
+    if (scenario === "released claim") claim.status = "released";
+    if (scenario === "superseded claim") claim.status = "superseded";
+    if (scenario === "expired intent") request.leaseExpiresAt = "2026-08-10T12:04:00.000Z";
+    item.store.saveClaim(claim);
+    item.store.beginRenewal(run.ref, claim.ref, request, run.createdAt);
+    const tracker = new Tracker();
+    try {
+      expect(await supervisor(item.store, tracker).tick()).toEqual([
+        { run: run.ref, outcome: "attention_required" },
+      ]);
+      expect(item.store.pendingRenewals()).toEqual([]);
+      const steps = item.store.steps(run.ref);
+      expect(steps).toHaveLength(1);
+      expect(
+        JSON.parse(z.object({ receipt_json: z.string() }).parse(steps[0]).receipt_json),
+      ).toEqual({ phase: "renewal_reconciliation", request });
+      expect(await supervisor(item.store, tracker).tick()).toEqual([]);
+      expect(await supervisor(item.store, tracker).tick()).toEqual([]);
+      expect(item.store.steps(run.ref)).toEqual(steps);
+      expect(item.store.run(run.ref).status).toBe("attention_required");
+      expect(item.store.run(run.ref).workspace).toEqual(run.workspace);
+      expect(item.store.claim(claim.ref)).toEqual(claim);
+      expect(tracker.renewed).toEqual([]);
+    } finally {
+      item.cleanup();
+    }
+  },
+);
+
+test("failed renewal retirement preserves both the pending intent and original run", () => {
+  const item = fixture();
+  const { run, claim } = item.add("a");
+  const request: RenewLeaseRequest = {
+    claim: claim.ref,
+    ticket: claim.ticket,
+    expectedVersion: "2",
+    leaseExpiresAt: claim.leaseExpiresAt,
+  };
+  item.store.beginRenewal(run.ref, claim.ref, request, run.createdAt);
+  const recordStep = item.store.recordStep;
+  try {
+    item.store.recordStep = () => {
+      throw new Error("simulated receipt write failure");
+    };
+    expect(() =>
+      item.store.retireRenewal(
+        { ...run, status: "attention_required" },
+        request,
+        new Error("Claim is stale"),
+      ),
+    ).toThrow("simulated receipt write failure");
+    expect(item.store.run(run.ref)).toEqual(run);
+    expect(item.store.pendingRenewals()).toEqual([{ run: run.ref, claim: claim.ref, request }]);
+    expect(item.store.steps(run.ref)).toEqual([]);
+  } finally {
+    item.store.recordStep = recordStep;
+    item.cleanup();
+  }
 });

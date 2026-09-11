@@ -1,4 +1,5 @@
 import {
+  existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -20,6 +21,7 @@ import type {
 } from "./inputs.ts";
 import { readPersonalSettings } from "./local-settings.ts";
 import {
+  type PersonalSettings,
   type ResolvedConfiguration,
   resolveProjectConfiguration,
   validateResolvedConfiguration,
@@ -85,7 +87,10 @@ export function configurationOperations(options: ConfigurationPlatformOptions) {
         : INITIAL_CONFIGURATION;
       const configuration = resolved(path, content);
       // wx rejects existing files and symlinks, including dangling symlinks.
-      writeFileSync(path, content, { flag: "wx", mode: 0o600 });
+      writeFileSync(resolve(options.cwd, input.path ?? "wayfinder.toml"), content, {
+        flag: "wx",
+        mode: 0o600,
+      });
       return output("initialized", path, configuration);
     },
     async show(input: ShowConfigurationInput) {
@@ -97,18 +102,21 @@ export function configurationOperations(options: ConfigurationPlatformOptions) {
       const original = readFileSync(path, "utf8");
       if (input.set || input.follow) {
         // Only explicit choices are persisted; defaults are always read from the project.
-        const candidate = readPersonalSettings(storePath(), path);
-        if (input.set) candidate[input.set[0]] = input.set[1];
-        if (input.follow) delete candidate[input.follow];
+        const update = (settings: PersonalSettings) => {
+          if (input.follow === "all") return {};
+          if (input.set) settings[input.set[0]] = input.set[1];
+          if (input.follow) delete settings[input.follow];
+          return settings;
+        };
+        const candidate = update(readPersonalSettings(storePath(), path));
         resolved(path, original, candidate);
         mkdirSync(dirname(storePath()), { recursive: true });
         const store = new StateStore(storePath());
         try {
           const personal = store.updateConfigurationOverrides(path, (settings) => {
-            if (input.set) settings[input.set[0]] = input.set[1];
-            if (input.follow) delete settings[input.follow];
-            resolved(path, original, settings);
-            return settings;
+            const next = update(settings);
+            resolved(path, original, next);
+            return next;
           });
           return output("edited", path, resolved(path, original, personal));
         } finally {
@@ -120,7 +128,8 @@ export function configurationOperations(options: ConfigurationPlatformOptions) {
         throw new Error(
           "config edit requires --editor EXECUTABLE, --set KEY VALUE, or --follow KEY",
         );
-      if (!lstatSync(path).isFile() || lstatSync(path).isSymbolicLink())
+      const requestedPath = resolve(options.cwd, input.path ?? "wayfinder.toml");
+      if (!lstatSync(requestedPath).isFile() || lstatSync(requestedPath).isSymbolicLink())
         throw new Error("Project edit requires a regular file, not a symlink");
       const staging = mkdtempSync(join(dirname(path), ".wayfinder-edit-"));
       const stagedPath = join(staging, "wayfinder.toml");
@@ -142,8 +151,16 @@ export function configurationOperations(options: ConfigurationPlatformOptions) {
           throw new Error("Project configuration changed during editing; refusing overwrite");
         renameSync(stagedPath, path);
         return output("edited", path, configuration);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : "Configuration edit failed";
+        throw new Error(
+          existsSync(stagedPath)
+            ? `${reason}. Edited draft retained at ${stagedPath}`
+            : `${reason}. No edited draft remains; project configuration was preserved`,
+        );
       } finally {
-        rmSync(staging, { recursive: true, force: true });
+        // A successful rename consumes the draft. Failed edits remain available for recovery.
+        if (!existsSync(stagedPath)) rmSync(staging, { recursive: true, force: true });
       }
     },
   };

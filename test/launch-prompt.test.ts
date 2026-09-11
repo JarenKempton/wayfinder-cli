@@ -122,7 +122,7 @@ test("ADF description preserves paragraph, list, code, hard break and link conte
     ],
   };
   expect(jiraDescription(value)).toBe(
-    "Acceptance Criteria\nFirst\ncontinued\nbun test\nEvidence (https://example.com/evidence)",
+    "# Acceptance Criteria\nFirst\ncontinued\n\n```\nbun test\n```\nEvidence (https://example.com/evidence)",
   );
   expect(jiraDescription(null)).toBeUndefined();
   expect(() => jiraDescription({ type: "doc", content: "bad" })).toThrow(
@@ -193,4 +193,41 @@ test("T3 planning uses selected-host provider availability, independent of stand
       available: { hosts: ["t3"], agents: ["codex"] },
     }),
   ).toThrow("Available supported alternatives");
+});
+
+test("nested acceptance headings and fenced commands stay inside the acceptance section", () => {
+  const criteria =
+    "### Required behavior\n- Keep the workspace\n```sh\n# comment\nVERIFY\n```\n### Recovery\n- Retry explicitly";
+  expect(acceptanceCriteria(`## Acceptance criteria\n${criteria}\n## Notes\nOther notes`)).toBe(
+    criteria,
+  );
+});
+
+test("Jira mentions, smart links and unsupported nodes remain visible in launch context", () => {
+  const description = jiraDescription({
+    type: "doc",
+    content: [
+      {
+        type: "heading",
+        attrs: { level: 2 },
+        content: [{ type: "text", text: "Acceptance criteria" }],
+      },
+      {
+        type: "paragraph",
+        content: [
+          { type: "text", text: "Ask " },
+          { type: "mention", attrs: { id: "fake-owner", text: "@Owner" } },
+          { type: "text", text: " to approve " },
+          { type: "inlineCard", attrs: { url: "https://example.com/spec" } },
+        ],
+      },
+      { type: "blockCard", attrs: { url: "https://example.com/evidence" } },
+      { type: "unknownExtension" },
+    ],
+  });
+  expect(description).toContain("Ask @Owner to approve https://example.com/spec");
+  expect(description).toContain("https://example.com/evidence");
+  expect(description).toContain("[Unsupported Jira content]");
+  const prompt = buildLaunchPrompt({ ...fakePlanningTicket, description });
+  expect(prompt).toContain("Acceptance criteria:\nAsk @Owner to approve https://example.com/spec");
 });

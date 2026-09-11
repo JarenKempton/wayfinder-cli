@@ -2,11 +2,11 @@ import { z } from "zod";
 import type { Ticket, TicketKind } from "../domain/model.ts";
 
 const ROLE_TEMPLATES: Record<TicketKind, string> = {
-  task: "Implement only the selected task and verify its acceptance criteria. Record the implementation artifact and verification evidence.",
+  task: "Implement only the selected task and verify its acceptance criteria. Report the implementation artifact and verification evidence.",
   research:
-    "Investigate only the selected research question using primary sources. Record a linked findings artifact and evidence.",
+    "Investigate only the selected research question using primary sources. Report a linked findings artifact and evidence.",
   prototype:
-    "Build only the selected prototype to answer its decision question. Record the artifact and verdict.",
+    "Build only the selected prototype to answer its decision question. Report the artifact and verdict.",
   decision:
     "Gather the human's decision for the selected ticket. Do not answer on the human's behalf.",
 };
@@ -19,10 +19,26 @@ export function acceptanceCriteria(description: string): string | undefined {
     ),
   );
   if (start < 0) return undefined;
-  const end = lines.findIndex(
-    (line, index) =>
-      index > start && /^(?:#{1,6}\s+|h[1-6]\.\s+|[A-Z][A-Z /_-]{2,}:?\s*$)/.test(line),
-  );
+  const level = (line: string) => {
+    const markdown = /^(#{1,6})\s+/.exec(line.trim());
+    const jira = /^h([1-6])\.\s+/.exec(line.trim());
+    return markdown?.[1]?.length ?? (jira ? Number(jira[1]) : undefined);
+  };
+  const sectionLevel = level(lines[start] ?? "");
+  let fence: string | undefined;
+  const end = lines.findIndex((line, index) => {
+    if (index <= start) return false;
+    const marker = /^\s*(`{3,}|~{3,})/.exec(line)?.[1];
+    if (marker) {
+      if (!fence) fence = marker;
+      else if (marker[0] === fence[0] && marker.length >= fence.length) fence = undefined;
+      return false;
+    }
+    if (fence) return false;
+    const nextLevel = level(line);
+    if (nextLevel !== undefined) return sectionLevel === undefined || nextLevel <= sectionLevel;
+    return /^[A-Z][A-Z /_-]{2,}:?\s*$/.test(line);
+  });
   return (
     lines
       .slice(start + 1, end < 0 ? undefined : end)
@@ -70,6 +86,26 @@ export function jiraDescription(value: unknown): string | undefined {
       return node.text + (typeof link === "string" ? ` (${link})` : "");
     }
     if (node.type === "hardBreak") return "\n";
+    const attrs = z.record(z.string(), z.unknown()).safeParse(node.attrs).data ?? {};
+    if (node.type === "mention")
+      return typeof attrs.text === "string"
+        ? attrs.text
+        : typeof attrs.id === "string"
+          ? `@${attrs.id}`
+          : "[Jira mention]";
+    if (node.type === "inlineCard" || node.type === "blockCard")
+      return typeof attrs.url === "string"
+        ? attrs.url + (node.type === "blockCard" ? "\n" : "")
+        : "[Jira link card unavailable]";
+    if (node.type === "emoji" || node.type === "status")
+      return typeof attrs.text === "string"
+        ? attrs.text
+        : typeof attrs.shortName === "string"
+          ? attrs.shortName
+          : "[Jira label]";
+    if (node.type === "date")
+      return typeof attrs.timestamp === "string" ? attrs.timestamp : "[Jira date]";
+    if (node.type === "rule") return "\n---\n";
     if (node.content !== undefined && !Array.isArray(node.content))
       throw new Error("Invalid Jira description content");
     const content = z
@@ -77,13 +113,22 @@ export function jiraDescription(value: unknown): string | undefined {
       .parse(node.content ?? [])
       .map(render)
       .join("");
+    if (node.type === "heading") {
+      const level = z.number().int().min(1).max(6).safeParse(attrs.level).data ?? 1;
+      return `${"#".repeat(level)} ${content.trimEnd()}\n`;
+    }
+    if (node.type === "codeBlock") return `\n\`\`\`\n${content}\n\`\`\`\n`;
+    if (["paragraph", "listItem", "blockquote", "tableRow"].includes(node.type))
+      return `${content.trimEnd()}\n`;
     if (
-      ["paragraph", "heading", "listItem", "codeBlock", "blockquote", "tableRow"].includes(
+      ["doc", "bulletList", "orderedList", "table", "tableCell", "tableHeader", "panel"].includes(
         node.type,
       )
     )
-      return `${content.trimEnd()}\n`;
-    return content;
+      return content;
+    if (node.type === "expand" || node.type === "nestedExpand")
+      return `${typeof attrs.title === "string" ? attrs.title : ""}\n${content}`;
+    return `[Unsupported Jira content]${content}`;
   }
   return render(value).trimEnd();
 }

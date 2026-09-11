@@ -1,6 +1,6 @@
-import { formatUsage, object, option } from "@optique/core";
+import { formatUsage } from "@optique/core";
 import { type ActionTree, type ActionView, isAction } from "./definition.ts";
-import { fieldDescription } from "./parser.ts";
+import { fieldDescription, invocationParser } from "./parser.ts";
 export interface RegisteredAction {
   command: string[];
   action: ActionView;
@@ -15,10 +15,7 @@ export function availableActions(tree: ActionTree): RegisteredAction[] {
   return registeredActions(tree).filter((entry) => entry.action.availability.available);
 }
 export function actionUsage({ command, action }: RegisteredAction): string {
-  return formatUsage(
-    command.join(" "),
-    object({ input: action.parser, json: option("--json") }).usage,
-  );
+  return formatUsage(command.join(" "), invocationParser(action).usage);
 }
 export function describeAction(entry: RegisteredAction) {
   return {

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 import { createApplication } from "../src/application.ts";
 import { availableActions, composeActions, registeredActions } from "../src/cli/catalog.ts";
 import { actionHelp, dispatch } from "../src/cli/command-line.ts";
@@ -132,6 +133,7 @@ test("direct typed calls also validate untrusted inputs at runtime", async () =>
 
 test("current completion queries derive subcommands and options from the live tree", async () => {
   const app = createApplication();
+  expect(actionHelp(app, ["completions"])).toContain("--at PREFIX");
   expect(await app.completions.execute({ shell: "bash", at: "config" })).toBe("show\nedit");
   expect(await app.completions.execute({ shell: "bash", at: "config edit" })).toContain("--follow");
   expect(await app.completions.execute({ shell: "bash", at: "" })).not.toContain("stop");
@@ -178,6 +180,7 @@ test("Optique completes schema enum values through the real shell transport with
     "context_window",
     "runtime_mode",
     "interaction_mode",
+    "all",
   ]);
   expect(actionHelp(app, ["config", "edit"])).toContain("--set SETTING VALUE");
 });
@@ -196,4 +199,75 @@ test("library parsing preserves spaces and equals syntax while diagnostics redac
     expect(String(error)).toContain("Invalid arguments");
     expect(String(error)).not.toContain("DO_NOT_ECHO");
   }
+});
+
+test("CLI and typed invocation apply Zod transforms exactly once, including changed output types", async () => {
+  let calls = 0;
+  const action = defineAction({
+    description: "Transform once",
+    input: {
+      value: z.string().transform((value) => {
+        calls++;
+        return `${value}!`;
+      }),
+      count: z.string().transform(Number),
+    },
+    handler: (input) => input,
+  });
+  expect(calls).toBe(0);
+  expect(await action.execute({ value: "hello", count: "4" })).toEqual({
+    value: "hello!",
+    count: 4,
+  });
+  const output: string[] = [];
+  await dispatch(
+    { sample: action },
+    ["sample", "--value", "hello", "--count", "4", "--json"],
+    (line) => output.push(line),
+  );
+  expect(JSON.parse(output[0] ?? "")).toEqual({ value: "hello!", count: 4 });
+  actionHelp({ sample: action });
+  completionCandidates({ sample: action }, ["sample"]);
+  expect(calls).toBe(2);
+  const typeChecks = () => {
+    // @ts-expect-error execute accepts the schema's input, not its transformed output.
+    void action.execute({ value: "hello", count: 4 });
+  };
+  void typeChecks;
+});
+
+test("schema defaults agree across typed calls, CLI and JSON help", async () => {
+  const action = defineAction({
+    description: "Defaults",
+    input: { name: z.string().default("world"), enabled: z.boolean().default(true) },
+    handler: (input) => input,
+  });
+  const output: string[] = [];
+  await dispatch({ sample: action }, ["sample"], (line) => output.push(line));
+  expect(JSON.parse(output[0] ?? "")).toEqual(await action.execute({}));
+  expect(JSON.parse(output[0] ?? "")).toEqual({ name: "world", enabled: true });
+  const help = JSON.parse(actionHelp({ sample: action }, [], true));
+  expect(help.actions[0].input.name.required).toBe(false);
+  expect(help.actions[0].input.enabled.required).toBe(false);
+});
+
+test("help respects end-of-options, accepts omitted required fields, and shares usage flags", async () => {
+  let calls = 0;
+  const action = defineAction({
+    description: "Echo",
+    input: { value: positional(text("Literal", "VALUE")) },
+    handler: ({ value }) => {
+      calls++;
+      return value;
+    },
+  });
+  const output: string[] = [];
+  await dispatch({ echo: action }, ["echo", "--", "--help"], (line) => output.push(line));
+  expect(output).toEqual(["--help"]);
+  await dispatch({ echo: action }, ["echo", "--help", "--json"], (line) => output.push(line));
+  const help = JSON.parse(output[1] ?? "");
+  expect(help.usage).toContain("--help");
+  expect(help.usage).toContain("--json");
+  expect(calls).toBe(1);
+  await expect(dispatch({ echo: action }, ["echo"], () => {})).rejects.toThrow(help.usage);
 });

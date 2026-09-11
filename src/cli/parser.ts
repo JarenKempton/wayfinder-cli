@@ -27,7 +27,23 @@ export type Invocation = {
 export type CommandParser = Parser<"sync", Invocation, unknown>;
 
 function unwrap(schema: z.core.$ZodType): z.core.$ZodType {
-  return schema instanceof z.ZodOptional ? unwrap(schema.unwrap()) : schema;
+  if (
+    schema instanceof z.ZodOptional ||
+    schema instanceof z.ZodDefault ||
+    schema instanceof z.ZodPrefault
+  )
+    return unwrap(schema.unwrap());
+  if (schema instanceof z.ZodPipe) return unwrap(schema.in);
+  return schema;
+}
+function acceptsOmission(schema: z.core.$ZodType): boolean {
+  if (
+    schema instanceof z.ZodOptional ||
+    schema instanceof z.ZodDefault ||
+    schema instanceof z.ZodPrefault
+  )
+    return true;
+  return schema instanceof z.ZodPipe && acceptsOmission(schema.in);
 }
 export function fieldDescription(schema: z.core.$ZodType): {
   description: string;
@@ -49,29 +65,36 @@ export function fieldDescription(schema: z.core.$ZodType): {
         : base instanceof z.ZodTuple
           ? base.def.items.flatMap((item) => fieldDescription(item).values)
           : [metavar],
-    required: !(schema instanceof z.ZodOptional),
+    required: !acceptsOmission(schema),
     positional: metadata?.positional === true,
   };
 }
-export function inputParser(shape: z.ZodRawShape): InputParser {
+export function inputParser(shape: z.ZodRawShape, forHelp = false): InputParser {
   const fields: Record<string, Parser<"sync", unknown, unknown>> = {};
   for (const [name, schema] of Object.entries(shape)) {
     const base = unwrap(schema);
     const info = fieldDescription(schema);
     const description = [text(info.description)];
     // Library validation errors can echo raw input; Wayfinder emits only schema-owned diagnostics.
-    const value = (item: z.core.$ZodType) => {
+    const value = (
+      item: z.core.$ZodType,
+      metavar = fieldDescription(item).values[0] ?? "VALUE",
+    ) => {
       if (!(item instanceof z.ZodType)) throw new Error("CLI fields require a Zod schema");
-      const metavar = fieldDescription(item).values[0] ?? "VALUE";
       ensureNonEmptyString(metavar);
-      return zod(item, {
-        placeholder: undefined,
-        metavar,
-        errors: { zodError: () => message`Invalid value` },
-      });
+      return {
+        ...zod(item, {
+          placeholder: undefined,
+          metavar,
+          errors: { zodError: () => message`Invalid value` },
+        }),
+        // Preserve raw tokens until the action's single Zod validation boundary.
+        // The library still supplies schema-aware suggestions and value formatting.
+        parse: (input: string) => ({ success: true as const, value: input }),
+      };
     };
     let parser: Parser<"sync", unknown, unknown>;
-    if (info.positional) parser = argument(value(base), { description });
+    if (info.positional) parser = argument(value(base, info.values[0]), { description });
     else if (base instanceof z.ZodBoolean) parser = option(`--${name}`, { description });
     else if (base instanceof z.ZodTuple) {
       const [first, ...rest] = base.def.items;
@@ -80,10 +103,19 @@ export function inputParser(shape: z.ZodRawShape): InputParser {
         option(`--${name}`, value(first), { description }),
         ...rest.map((item) => argument(value(item))),
       );
-    } else parser = option(`--${name}`, value(base), { description });
-    fields[name] = info.required ? parser : optional(parser);
+    } else parser = option(`--${name}`, value(base, info.values[0]), { description });
+    fields[name] = info.required && !forHelp ? parser : optional(parser);
   }
   return object(fields);
+}
+export function transportOptions() {
+  return { json: option("--json"), help: option("--help", "-h") };
+}
+export function invocationParser(action: ActionView, forHelp = false) {
+  return object({
+    input: forHelp ? inputParser(action.fields, true) : action.parser,
+    ...transportOptions(),
+  });
 }
 export function commandParser(tree: ActionTree, includeUnavailable = false): CommandParser {
   const branches: CommandParser[] = [];
@@ -94,10 +126,12 @@ export function commandParser(tree: ActionTree, includeUnavailable = false): Com
       continue;
     }
     if (!includeUnavailable && !entry.availability.available) continue;
-    const parser = map(
-      object({ input: entry.parser, json: option("--json"), help: option("--help", "-h") }),
-      ({ input, json, help }) => ({ action: entry, input, json, help }),
-    );
+    const parser = map(invocationParser(entry), ({ input, json, help }) => ({
+      action: entry,
+      input,
+      json,
+      help,
+    }));
     branches.push(command(name, parser, { description: [text(entry.description)] }));
   }
   return branches.reduce((left, right) => or(left, right), fail<Invocation>());

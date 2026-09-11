@@ -1,6 +1,6 @@
 import type { z } from "zod";
 import { type InputParser, inputParser } from "./parser.ts";
-import { type Input, parseInput } from "./schema.ts";
+import { type Input, parseInput, type RawInput } from "./schema.ts";
 
 export function dependency<T>(value: T | undefined, description: string) {
   return {
@@ -62,7 +62,7 @@ export function defineAction<S extends z.ZodRawShape, O>(definition: {
     parser: inputParser(definition.input),
     availability,
     invoke,
-    execute(input: Input<S>): Promise<O> {
+    execute(input: RawInput<S>): Promise<O> {
       return invoke(input);
     },
     async call(input: unknown, json: boolean): Promise<string[]> {

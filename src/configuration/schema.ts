@@ -170,7 +170,7 @@ export function validatePersonalSettings(value: unknown): PersonalSettings {
 export function validateProjectConfiguration(value: unknown): ProjectConfiguration {
   return parseConfiguration(projectConfigurationSchema, value, "project");
 }
-function t3Defaults(project: ProjectConfiguration): PersonalSettings {
+function t3DefaultsV1(project: ProjectConfiguration): PersonalSettings {
   const defaults: PersonalSettings = { host: "t3" };
   const entries = [
     ["agent", project.t3.provider],
@@ -190,9 +190,20 @@ export function resolveProjectConfiguration(
   personal: PersonalSettings,
   source: ResolvedConfiguration["source"],
 ): ResolvedConfiguration {
+  return resolveConfigurationV1(project, personal, source);
+}
+
+// Version 1 is a persisted format, including its resolution semantics. Future
+// behavior changes must introduce a new version and retain this decoder for old
+// receipts; validation must never dispatch through the latest-execution resolver.
+function resolveConfigurationV1(
+  project: ProjectConfiguration,
+  personal: PersonalSettings,
+  source: ResolvedConfiguration["source"],
+): ResolvedConfiguration {
   project = validateProjectConfiguration(project);
   personal = validatePersonalSettings(personal);
-  const settings = { ...t3Defaults(project), ...project.defaults };
+  const settings = { ...t3DefaultsV1(project), ...project.defaults };
   const sources: ResolvedConfiguration["sources"] = {};
   for (const key of SETTING_KEYS) {
     if (settings[key] !== undefined) sources[key] = "default";
@@ -204,7 +215,7 @@ export function resolveProjectConfiguration(
     if (required !== undefined) {
       if (personal[key] !== undefined && personal[key] !== required)
         throw new Error(
-          `Personal ${key} conflicts with project requirement in ${source.path}; change the project requirement or follow its default`,
+          `Personal ${key} conflicts with project requirement in ${source.path}; use --follow KEY to remove one choice or --follow all to clear all personal choices`,
         );
       settings[key] = required;
       sources[key] = "required";
@@ -236,7 +247,7 @@ export function validateResolvedConfiguration(value: unknown): ResolvedConfigura
     if (item.sources[key] === "personal" && item.settings[key] !== undefined)
       personal[key] = item.settings[key];
   }
-  const resolved = resolveProjectConfiguration(item.project, personal, item.source);
+  const resolved = resolveConfigurationV1(item.project, personal, item.source);
   for (const key of SETTING_KEYS)
     if (
       resolved.settings[key] !== item.settings[key] ||

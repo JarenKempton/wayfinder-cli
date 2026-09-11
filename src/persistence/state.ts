@@ -358,6 +358,20 @@ export class StateStore {
     this.#database.query("DELETE FROM renewal_intents WHERE run_ref=?").run(run);
   }
 
+  /** Retire a stale intent atomically with the evidence needed for explicit recovery. */
+  retireRenewal(run: Run, request: unknown, error: Error): void {
+    this.#transaction(() => {
+      this.saveRun(run);
+      this.recordStep(
+        run.ref,
+        "attention_required",
+        { phase: "renewal_reconciliation", request },
+        error,
+      );
+      this.discardRenewal(run.ref);
+    });
+  }
+
   commitRenewal(run: Run, claim: Claim, receipt: unknown): void {
     this.#transaction(() => {
       this.saveRun(run);

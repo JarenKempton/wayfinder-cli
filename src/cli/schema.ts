@@ -23,6 +23,7 @@ export const pair = <A extends z.ZodType, B extends z.ZodType>(
   second: B,
   description: string,
 ) => z.tuple([first, second]).describe(description);
+export type RawInput<S extends z.ZodRawShape> = z.input<z.ZodObject<S>>;
 export type Input<S extends z.ZodRawShape> = z.output<z.ZodObject<S>>;
 
 export function parseInput<S extends z.ZodRawShape>(fields: S, raw: unknown): Input<S> {

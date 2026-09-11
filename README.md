@@ -35,7 +35,7 @@ bun run src/cli.ts config edit --follow model
 ```
 
 `--follow` removes that personal choice so future executions use the project
-setting. `config show` displays resolved values and their sources without writing
+setting. Use `--follow all` to clear every personal choice. `config show` displays resolved values and their sources without writing
 configuration or initializing the database.
 
 ## Work on the code

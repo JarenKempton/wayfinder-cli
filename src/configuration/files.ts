@@ -1,12 +1,19 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { readFileSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { type ProjectConfiguration, validateProjectConfiguration } from "./schema.ts";
 export function configurationVersion(content: string): string {
   return `sha256:${createHash("sha256").update(content).digest("hex")}`;
 }
 export function projectConfigPath(cwd: string, path = "wayfinder.toml"): string {
-  return resolve(cwd, path);
+  const requested = resolve(cwd, path);
+  try {
+    return realpathSync(requested);
+  } catch (error) {
+    if (!(error instanceof Error) || !("code" in error) || error.code !== "ENOENT") throw error;
+    // Initialization has no file yet; canonicalize its existing parent instead.
+    return resolve(realpathSync(dirname(requested)), basename(requested));
+  }
 }
 /** Resolve local config references only. Setup locations belong to the future environment runner. */
 export function configurationReference(configPath: string, path: string): string {

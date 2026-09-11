@@ -1,4 +1,4 @@
-import { formatDocPage, getDocPageSync, object, option, parseSync } from "@optique/core";
+import { formatDocPage, getDocPageSync, object, parseSync } from "@optique/core";
 import {
   actionUsage,
   availableActions,
@@ -8,7 +8,7 @@ import {
 } from "./catalog.ts";
 import { completeShell } from "./completions.ts";
 import { type ActionTree, type ActionView, isAction } from "./definition.ts";
-import { commandParser } from "./parser.ts";
+import { commandParser, invocationParser, transportOptions } from "./parser.ts";
 
 export function actionHelp(tree: ActionTree, prefix: string[] = [], json = false): string {
   if (json)
@@ -31,10 +31,12 @@ export function actionHelp(tree: ActionTree, prefix: string[] = [], json = false
     : "No actions are available.\n";
 }
 export function parseArguments(entry: RegisteredAction, args: string[]) {
-  const result = parseSync(
-    object({ input: entry.action.parser, json: option("--json"), help: option("--help", "-h") }),
-    args,
-  );
+  const result = parseSync(invocationParser(entry.action), args);
+  if (!result.success) {
+    // Help may omit required inputs, but still respects the parser's token boundaries.
+    const help = parseSync(invocationParser(entry.action, true), args);
+    if (help.success && help.value.help) return help.value;
+  }
   if (!result.success)
     throw new Error(
       `${entry.command.join(" ")}: Invalid arguments. Usage: ${actionUsage(entry)}. Use --help.`,
@@ -73,10 +75,7 @@ export async function dispatch(
   if (alias) args = [...alias.command, ...args.slice(1)];
   const selected = selectCommand(tree, args);
   if (!isAction(selected.node)) {
-    const flags = parseSync(
-      object({ help: option("--help", "-h"), json: option("--json") }),
-      selected.args,
-    );
+    const flags = parseSync(object(transportOptions()), selected.args);
     if (!flags.success) throw new Error("Group help accepts --help and --json");
     write(actionHelp(tree, selected.command, flags.value.json));
     return;
@@ -84,14 +83,14 @@ export async function dispatch(
   const entry = { command: selected.command, action: selected.node };
   if (!entry.action.availability.available)
     throw new Error(`Action is unavailable: ${entry.action.availability.reasons.join("; ")}`);
-  if (selected.args.includes("--help") || selected.args.includes("-h")) {
+  const parsed = parseArguments(entry, selected.args);
+  if (parsed.help) {
     write(
-      selected.args.includes("--json")
+      parsed.json
         ? JSON.stringify(describeAction(entry), null, 2)
         : actionHelp(tree, selected.command),
     );
     return;
   }
-  const parsed = parseArguments(entry, selected.args);
   for (const line of await entry.action.call(parsed.input, parsed.json)) write(line);
 }

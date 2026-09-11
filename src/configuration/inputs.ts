@@ -23,7 +23,11 @@ export const editInput = {
     .tuple([setting, configText.meta({ metavar: "VALUE" })])
     .describe("Save one explicit personal choice in local SQLite; never supply secrets.")
     .optional(),
-  follow: setting.describe("Remove a personal choice and follow the project default.").optional(),
+  follow: z
+    .enum([...personalSettingsSchema.keyof().options, "all"])
+    .describe("Follow a project setting, or use all to clear every personal choice.")
+    .meta({ metavar: "SETTING" })
+    .optional(),
 };
 export type InitConfigurationInput = z.output<z.ZodObject<typeof initInput>>;
 export type ShowConfigurationInput = z.output<z.ZodObject<typeof showInput>>;

@@ -28,3 +28,23 @@ describe("distribution documentation", () => {
     expect(page).toContain("Print shell completion for currently available actions.");
   });
 });
+
+test("generated manual retains operational contracts alongside available commands", () => {
+  const page = manPage("test", createApplication());
+  for (const heading of ["ENVIRONMENT", "FILES", "EXIT STATUS", "SEE ALSO"])
+    expect(page).toContain(heading);
+  for (const variable of [
+    "WAYFINDER_NO_UPDATE_CHECK",
+    "WAYFINDER_UPDATE_URL",
+    "XDG_STATE_HOME",
+    "LOCALAPPDATA",
+    "VISUAL",
+    "EDITOR",
+  ])
+    expect(page).toContain(variable);
+  expect(page).toContain("Secrets must not be placed");
+  expect(page).toContain("command arguments, logs, or receipts");
+  expect(page).toContain("wayfinder.db");
+  expect(page).toContain("config show");
+  expect(page).not.toContain("Stop a recorded run");
+});
