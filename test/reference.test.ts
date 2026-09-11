@@ -4,10 +4,8 @@ import {
   capabilities,
   missingCapabilities,
   requireCapabilities,
-  type UnsupportedCapabilityError,
-} from "../src/domain.ts";
-import type { RefKind } from "../src/reference.ts";
-import { parseRef, workspaceRefOf } from "../src/reference.ts";
+} from "../src/domain/model.ts";
+import { parseRef, workspaceRefOf } from "../src/domain/reference.ts";
 
 describe("parseRef", () => {
   test.each([
@@ -18,7 +16,7 @@ describe("parseRef", () => {
     ["jira:responsibid:JWB:ticket:JWB-245", "ticket"],
     ["wayfinder-run:018f", "run"],
     ["wayfinder-claim:018f", "claim"],
-  ] as const)("parses %s", (raw, kind) => expect(parseRef(raw).kind).toBe(kind as RefKind));
+  ] as const)("parses %s", (raw, kind) => expect(parseRef(raw).kind).toBe(kind));
 
   test.each([
     "JWB-245",
@@ -63,6 +61,6 @@ test("unsupported capabilities fail explicitly with a stable code", () => {
       name: "UnsupportedCapabilityError",
       code: "unsupported_capability",
       missing: ["conditional_update", "claim_comments"],
-    }) as UnsupportedCapabilityError,
+    }),
   );
 });

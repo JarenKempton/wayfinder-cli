@@ -1,23 +1,31 @@
 import { describe, expect, test } from "bun:test";
-import { builtInAdapters } from "../src/adapters.ts";
-import type { ReleaseClaimRequest, RestoreClaimRequest } from "../src/contracts.ts";
+import { z } from "zod";
+import { builtInAdapters } from "../src/adapters/registry.ts";
+import {
+  type JiraResponse,
+  JiraTrackerAdapter,
+  type JiraTransport,
+} from "../src/adapters/trackers/jira.ts";
+import type { ReleaseClaimRequest, RestoreClaimRequest } from "../src/domain/contracts.ts";
+import {
+  actorRefSchema,
+  claimRefSchema,
+  mapRefSchema,
+  runRefSchema,
+  ticketRefSchema,
+} from "../src/domain/identifiers.ts";
 import {
   type ActorRef,
-  type ClaimRef,
   capabilities,
-  type MapRef,
-  type RunRef,
   requireCapabilities,
-  type TicketRef,
   type TrackerSnapshot,
   UnsupportedCapabilityError,
-} from "../src/domain.ts";
-import { evaluateFrontier, selectFrontierTicket } from "../src/frontier.ts";
-import { type JiraResponse, JiraTrackerAdapter, type JiraTransport } from "../src/jira.ts";
+} from "../src/domain/model.ts";
+import { evaluateFrontier, selectFrontierTicket } from "../src/frontier/evaluate.ts";
 
-const ticket = "jira:responsibid:JWB:ticket:JWB-288" as TicketRef;
-const map = "jira:responsibid:JWB:map:JWB-274" as MapRef;
-const owner = "account" as ActorRef;
+const ticket = ticketRefSchema.parse("jira:responsibid:JWB:ticket:JWB-288");
+const map = mapRefSchema.parse("jira:responsibid:JWB:map:JWB-274");
+const owner = actorRefSchema.parse("account");
 
 interface FakeIssueOptions {
   assignee?: string | null;
@@ -49,25 +57,23 @@ class FakeJira implements JiraTransport {
   claimProperty: unknown = null;
   requests: Array<{ method: string; path: string; body?: unknown }> = [];
 
-  async request<T>(method: string, path: string, body?: unknown): Promise<JiraResponse<T>> {
+  async request(method: string, path: string, body?: unknown): Promise<JiraResponse> {
     this.requests.push({ method, path, ...(body === undefined ? {} : { body }) });
     if (method === "GET" && path.includes("/properties/")) {
-      return (
-        this.claimProperty === null
-          ? { status: 404 }
-          : { status: 200, body: { value: this.claimProperty } }
-      ) as JiraResponse<T>;
+      return this.claimProperty === null
+        ? { status: 404 }
+        : { status: 200, body: { value: this.claimProperty } };
     }
     if (method === "GET" && path.includes("/issue/")) {
       const key = decodeURIComponent(path.match(/\/issue\/([^?]+)/)?.[1] ?? "");
       const found = this.issues.find((item) => item.key === key);
-      return found ? { status: 200, body: found as T } : { status: 404 };
+      return found ? { status: 200, body: found } : { status: 404 };
     }
     if (method === "POST" && path === "/rest/api/3/search/jql") {
       const sorted = this.issues.toSorted((left, right) =>
         left.fields.customfield_rank.localeCompare(right.fields.customfield_rank),
       );
-      return { status: 200, body: { issues: sorted, isLast: true } as T };
+      return { status: 200, body: { issues: sorted, isLast: true } };
     }
     return { status: 500 };
   }
@@ -96,7 +102,7 @@ function snapshot(): TrackerSnapshot {
 function restoreRequest(claimedOwner: ActorRef | null = owner): RestoreClaimRequest {
   return {
     ticket,
-    claim: "wayfinder-claim:c" as ClaimRef,
+    claim: claimRefSchema.parse("wayfinder-claim:c"),
     ...(claimedOwner ? { claimedOwner } : {}),
     originalSnapshot: snapshot(),
   };
@@ -147,7 +153,7 @@ describe("Jira tracker read adapter", () => {
     const current = required(tickets, 1);
     expect(current.dependencies).toEqual([
       {
-        blocking: "jira:responsibid:JWB:ticket:JWB-279" as TicketRef,
+        blocking: ticketRefSchema.parse("jira:responsibid:JWB:ticket:JWB-279"),
         blocked: current.ref,
         kind: "blocks",
       },
@@ -220,8 +226,8 @@ describe("Jira tracker read adapter", () => {
     const subject = adapter(api);
     const claim = {
       ticket,
-      claim: "wayfinder-claim:c" as ClaimRef,
-      run: "wayfinder-run:r" as RunRef,
+      claim: claimRefSchema.parse("wayfinder-claim:c"),
+      run: runRefSchema.parse("wayfinder-run:r"),
       owner,
       leaseExpiresAt: "2026-08-11T12:15:00.000Z",
       expectedVersion: "v1",
@@ -271,11 +277,10 @@ test("Jira requests and normalizes summary and ADF acceptance context without mu
   expect(result.description).toContain("Acceptance Criteria\nPreserve all ticket context.");
   expect(api.requests[0]?.path).toContain("summary,description");
   expect(
-    (
-      api.requests.find((request) => request.method === "POST")?.body as
-        | { fields: string[] }
-        | undefined
-    )?.fields,
+    z
+      .object({ fields: z.array(z.string()) })
+      .optional()
+      .parse(api.requests.find((request) => request.method === "POST")?.body)?.fields,
   ).toEqual(expect.arrayContaining(["summary", "description"]));
   expect(api.mutationCount()).toBe(0);
 });

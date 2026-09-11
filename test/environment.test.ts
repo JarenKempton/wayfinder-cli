@@ -1,17 +1,14 @@
 import { expect, test } from "bun:test";
-import type {
-  AdapterRef,
-  EnvironmentProfileRef,
-  EnvironmentStartAuthorization,
-} from "../src/domain.ts";
+import { adapterRefSchema, environmentProfileRefSchema } from "../src/domain/identifiers.ts";
+import type { EnvironmentStartAuthorization } from "../src/domain/model.ts";
 import {
   requireEnvironmentSettings,
   requireEnvironmentStartAuthorization,
   resolveEnvironmentSettings,
-} from "../src/environment.ts";
+} from "../src/execution/environment.ts";
 
-const adapter = (value: string) => value as AdapterRef;
-const profile = (value: string) => value as EnvironmentProfileRef;
+const adapter = (value: string) => adapterRefSchema.parse(value);
+const profile = (value: string) => environmentProfileRefSchema.parse(value);
 
 test("workspace environment defaults are retained without higher layers", () => {
   expect(

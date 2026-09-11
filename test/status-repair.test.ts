@@ -1,18 +1,19 @@
 import { describe, expect, test } from "bun:test";
-import type { DependencyStatusTransition } from "../src/frontier.ts";
+import { ticketRefSchema } from "../src/domain/identifiers.ts";
+import type { DependencyStatusTransition } from "../src/frontier/evaluate.ts";
 import {
   evaluateStatusRepairBatch,
   FakeStatusRepairService,
   opaqueVersionContract,
   type StatusRepairBatchResult,
-} from "../src/status-repair.ts";
+} from "../src/reconciliation/status-repair.ts";
 
 const transition = (id: string, version: string): DependencyStatusTransition => ({
-  ticket: `jira:x:W:ticket:${id}` as DependencyStatusTransition["ticket"],
+  ticket: ticketRefSchema.parse(`jira:x:W:ticket:${id}`),
   from: "To Do",
   to: "Blocked",
   expectedVersion: version,
-  unresolvedBlockers: ["jira:x:W:ticket:A" as DependencyStatusTransition["ticket"]],
+  unresolvedBlockers: [ticketRefSchema.parse("jira:x:W:ticket:A")],
 });
 
 describe("verified status repair conformance", () => {
@@ -161,16 +162,19 @@ describe("verified status repair conformance", () => {
     const valid = await fake.repair([request]);
     expect(evaluateStatusRepairBatch([request], valid).verified).toBeTrue();
     expect(
-      evaluateStatusRepairBatch([request], {
-        ...valid,
-        adapter: {
-          ...valid.adapter,
-          capabilities: {
-            conditional_update: false,
-            workflow_transition: false,
-          } as unknown as typeof valid.adapter.capabilities,
+      Reflect.apply(evaluateStatusRepairBatch, undefined, [
+        [request],
+        {
+          ...valid,
+          adapter: {
+            ...valid.adapter,
+            capabilities: {
+              conditional_update: false,
+              workflow_transition: false,
+            },
+          },
         },
-      }).verified,
+      ]).verified,
     ).toBeFalse();
     const outcome = valid.outcomes[0];
     if (!outcome?.proof) throw new Error("fake did not produce proof");

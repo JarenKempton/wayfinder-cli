@@ -2,8 +2,11 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 import { run } from "../src/cli.ts";
-import type { Ticket } from "../src/domain.ts";
+import { actorRefSchema, mapRefSchema, ticketRefSchema } from "../src/domain/identifiers.ts";
+import type { Ticket } from "../src/domain/model.ts";
+import { parseTickets } from "../src/domain/tickets.ts";
 import {
   FakeStatusRepairService,
   type StatusRepairAdapterIdentity,
@@ -11,9 +14,9 @@ import {
   type StatusRepairRecoveryReceipt,
   type StatusRepairService,
   statusRepairAdapterBinding,
-} from "../src/status-repair.ts";
+} from "../src/reconciliation/status-repair.ts";
 
-const map = "jira:x:W:map:M" as Ticket["map"];
+const map = mapRefSchema.parse("jira:x:W:map:M");
 const scope = String(map);
 
 class MemoryReceipts implements StatusRepairReceiptStore {
@@ -75,7 +78,7 @@ function refreshIdentityService(
 function fixture(): string {
   const directory = mkdtempSync(join(tmpdir(), "wayfinder-reconcile-"));
   const blocker: Ticket = {
-    ref: "jira:x:W:ticket:A" as Ticket["ref"],
+    ref: ticketRefSchema.parse("jira:x:W:ticket:A"),
     map,
     kind: "task",
     state: "open",
@@ -85,40 +88,40 @@ function fixture(): string {
   };
   const blocked: Ticket = {
     ...blocker,
-    ref: "jira:x:W:ticket:B" as Ticket["ref"],
+    ref: ticketRefSchema.parse("jira:x:W:ticket:B"),
     order: 1,
     metadata: { version: "v-B" },
     dependencies: [
       {
         blocking: blocker.ref,
-        blocked: "jira:x:W:ticket:B" as Ticket["ref"],
+        blocked: ticketRefSchema.parse("jira:x:W:ticket:B"),
         kind: "blocks",
       },
     ],
   };
   const active: Ticket = {
     ...blocked,
-    ref: "jira:x:W:ticket:C" as Ticket["ref"],
+    ref: ticketRefSchema.parse("jira:x:W:ticket:C"),
     status: "In Review",
     order: 2,
     dependencies: [
       {
         blocking: blocker.ref,
-        blocked: "jira:x:W:ticket:C" as Ticket["ref"],
+        blocked: ticketRefSchema.parse("jira:x:W:ticket:C"),
         kind: "blocks",
       },
     ],
   };
   const unmanaged: Ticket = {
     ...blocked,
-    ref: "jira:x:W:ticket:D" as Ticket["ref"],
+    ref: ticketRefSchema.parse("jira:x:W:ticket:D"),
     status: "Backlog",
-    assignee: "human" as NonNullable<Ticket["assignee"]>,
+    assignee: actorRefSchema.parse("human"),
     order: 3,
     dependencies: [
       {
         blocking: blocker.ref,
-        blocked: "jira:x:W:ticket:D" as Ticket["ref"],
+        blocked: ticketRefSchema.parse("jira:x:W:ticket:D"),
         kind: "blocks",
       },
     ],
@@ -130,16 +133,21 @@ function fixture(): string {
 
 function partialFixture(): string {
   const path = fixture();
-  const tickets = JSON.parse(readFileSync(path, "utf8")) as Ticket[];
-  const blocker = tickets[0] as Ticket;
-  const template = tickets[1] as Ticket;
+  const tickets = parseTickets(JSON.parse(readFileSync(path, "utf8")));
+  const blocker = tickets[0];
+  const template = tickets[1];
+  if (!blocker || !template) throw new Error("Missing fixture tickets");
   tickets.push({
     ...template,
-    ref: "jira:x:W:ticket:E" as Ticket["ref"],
+    ref: ticketRefSchema.parse("jira:x:W:ticket:E"),
     order: 4,
     metadata: { version: "v-E" },
     dependencies: [
-      { blocking: blocker.ref, blocked: "jira:x:W:ticket:E" as Ticket["ref"], kind: "blocks" },
+      {
+        blocking: blocker.ref,
+        blocked: ticketRefSchema.parse("jira:x:W:ticket:E"),
+        kind: "blocks",
+      },
     ],
   });
   writeFileSync(path, JSON.stringify(tickets));
@@ -316,7 +324,9 @@ describe("reconcile statuses CLI", () => {
     const restartedReceipts = new MemoryReceipts(receiptRows);
     const service = new FakeStatusRepairService(records);
     const output: string[] = [];
-    const recoveryArgv = JSON.parse(initialOutput[0] ?? "null").recoveryArgv as string[];
+    const recoveryArgv = z
+      .array(z.string())
+      .parse(JSON.parse(initialOutput[0] ?? "null").recoveryArgv);
     await run(recoveryArgv, output.push.bind(output), {
       statusRepair: service,
       statusRepairReceipts: restartedReceipts,
@@ -491,13 +501,13 @@ describe("reconcile statuses CLI", () => {
   test("requires a recovery receipt reference", async () => {
     await expect(
       run(["reconcile", "statuses", scope, "--recover"], () => undefined),
-    ).rejects.toThrow("--recover requires <receipt-ref>");
+    ).rejects.toThrow("--recover receipt-ref");
   });
 
   test("requires and validates the positional qualified scope", async () => {
     await expect(
       run(["reconcile", "statuses", "--input", fixture()], () => undefined),
-    ).rejects.toThrow("Invalid scope");
+    ).rejects.toThrow("Invalid arguments");
     await expect(
       run(["reconcile", "statuses", "wayfinder-run:123", "--input", fixture()], () => undefined),
     ).rejects.toThrow("not a frontier scope");

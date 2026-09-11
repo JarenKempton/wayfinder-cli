@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 import {
   configurationVersion,
   loadConfigurationInstructions,
@@ -9,9 +10,13 @@ import {
 } from "../src/configuration/files.ts";
 import { INITIAL_CONFIGURATION } from "../src/configuration/project-files.ts";
 import { resolveProjectConfiguration } from "../src/configuration/schema.ts";
-import { planConfiguredLaunch } from "../src/configuration-plan.ts";
-import type { TicketKind } from "../src/domain.ts";
-import { acceptanceCriteria, buildLaunchPrompt, jiraDescription } from "../src/launch-prompt.ts";
+import type { TicketKind } from "../src/domain/model.ts";
+import { planConfiguredLaunch } from "../src/execution/configuration-plan.ts";
+import {
+  acceptanceCriteria,
+  buildLaunchPrompt,
+  jiraDescription,
+} from "../src/execution/launch-prompt.ts";
 import { fakeConfigurationPlan, fakePlanningTicket } from "./fixtures/configuration-plan.ts";
 
 test.each<TicketKind>(["task", "research", "prototype", "decision"])(
@@ -42,7 +47,7 @@ test("session restrictions and project completion gates survive alongside passin
   expect(prompt).toContain(`Role guidance:\n${workflow}`);
   expect(prompt).toContain(`Session-specific instructions:\n${context}`);
   expect(prompt).toContain("Passing acceptance checks alone does not authorize completion");
-  expect(prompt).toContain(fakePlanningTicket.description as string);
+  expect(prompt).toContain(z.string().parse(fakePlanningTicket.description));
 });
 
 test("pure fake planning includes T3 selection and entire title, description, and VERIFY context", () => {
@@ -53,8 +58,8 @@ test("pure fake planning includes T3 selection and entire title, description, an
     dryRun: true,
     t3: { provider: "codex", verification: "pending-host-preflight" },
   });
-  expect(plan.prompt).toContain(fakePlanningTicket.title as string);
-  expect(plan.prompt).toContain(fakePlanningTicket.description as string);
+  expect(plan.prompt).toContain(z.string().parse(fakePlanningTicket.title));
+  expect(plan.prompt).toContain(z.string().parse(fakePlanningTicket.description));
   expect(plan.prompt).toContain("Acceptance criteria:\n- Prompt contains ticket title");
   expect(plan.prompt).toContain("Role:\ntask");
   expect(fakePlanningTicket).toEqual(original);
@@ -77,7 +82,7 @@ test.each([
 test("explicit acceptance field takes precedence; absent content is reported honestly", () => {
   const prompt = buildLaunchPrompt({ ...fakePlanningTicket, acceptanceCriteria: "Explicit AC" });
   expect(prompt).toContain("Acceptance criteria:\nExplicit AC");
-  expect(prompt).toContain(fakePlanningTicket.description as string);
+  expect(prompt).toContain(z.string().parse(fakePlanningTicket.description));
   const { title: _title, description: _description, ...legacy } = fakePlanningTicket;
   expect(buildLaunchPrompt(legacy)).toContain("Not supplied by tracker");
   expect(buildLaunchPrompt(legacy)).not.toContain("/Users/");
@@ -164,4 +169,28 @@ test("configured instruction paths are loaded read-only, versioned, and used in 
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }
+});
+
+test("T3 planning uses selected-host provider availability, independent of standalone harness profiles", () => {
+  const configuration = resolveProjectConfiguration(
+    parseProjectToml(
+      INITIAL_CONFIGURATION.replace('provider = "codex"', 'provider = "host-managed-provider"'),
+    ),
+    {},
+    { path: "wayfinder.toml", version: "test" },
+  );
+  const plan = planConfiguredLaunch({
+    ticket: fakePlanningTicket,
+    configuration,
+    available: { hosts: ["t3"], agents: ["host-managed-provider"] },
+  });
+  expect(plan.t3?.provider).toBe("host-managed-provider");
+  expect(plan.t3?.verification).toBe("pending-host-preflight");
+  expect(() =>
+    planConfiguredLaunch({
+      ticket: fakePlanningTicket,
+      configuration,
+      available: { hosts: ["t3"], agents: ["codex"] },
+    }),
+  ).toThrow("Available supported alternatives");
 });

@@ -1,7 +1,14 @@
 import type { ConfigurationPlatformOptions } from "./configuration/project-files.ts";
-import type { RecoveryVerification, RunLifecycleAdapter, TrackerAdapter } from "./contracts.ts";
-import type { Claim, Run, RunObservation } from "./domain.ts";
-import type { StatusRepairReceiptStore, StatusRepairService } from "./status-repair.ts";
+import type {
+  RecoveryVerification,
+  RunLifecycleAdapter,
+  TrackerAdapter,
+} from "./domain/contracts.ts";
+import type { Claim, Run, RunObservation } from "./domain/model.ts";
+import type {
+  StatusRepairReceiptStore,
+  StatusRepairService,
+} from "./reconciliation/status-repair.ts";
 export interface RuntimeServices {
   configuration?: ConfigurationPlatformOptions;
   tracker?: TrackerAdapter;

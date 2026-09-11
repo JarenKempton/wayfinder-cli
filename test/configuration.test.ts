@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
 import {
   existsSync,
@@ -10,9 +11,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describeAction, registeredActions } from "../src/actions/catalog.ts";
-import { configurationActions } from "../src/actions/configuration.ts";
+import { z } from "zod";
+import { describeAction, registeredActions } from "../src/cli/catalog.ts";
 import { run } from "../src/cli.ts";
+import { configurationActions } from "../src/configuration/commands.ts";
 import {
   configurationReference,
   configurationVersion,
@@ -32,8 +34,10 @@ import {
   validateProjectConfiguration,
   validateResolvedConfiguration,
 } from "../src/configuration/schema.ts";
-import type { Run } from "../src/domain.ts";
-import { StateStore } from "../src/state.ts";
+import { adapterRefSchema, runRefSchema, ticketRefSchema } from "../src/domain/identifiers.ts";
+import type { Run } from "../src/domain/model.ts";
+import { configurationStore } from "../src/persistence/configuration.ts";
+import { StateStore } from "../src/persistence/state.ts";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -47,7 +51,7 @@ function fixture() {
   const ops = configurationOperations({ cwd, statePath });
   return { cwd, path, statePath, ops };
 }
-const input = { json: true, help: false };
+const input = {};
 
 test("Zod schemas own configuration types and setting discovery", () => {
   expect(SETTING_KEYS).toEqual(personalSettingsSchema.keyof().options);
@@ -71,10 +75,9 @@ test("Zod schemas own configuration types and setting discovery", () => {
 test.each(["unknown-field", "record-key", "record-value", "nested-array", "null-section"])(
   "Zod rejects malformed %s without exposing untrusted keys or values",
   (scenario) => {
-    const project = structuredClone(Bun.TOML.parse(INITIAL_CONFIGURATION)) as Record<
-      string,
-      unknown
-    >;
+    const project = z
+      .record(z.string(), z.unknown())
+      .parse(structuredClone(Bun.TOML.parse(INITIAL_CONFIGURATION)));
     if (scenario === "unknown-field") project.instructions = { DO_NOT_ECHO: "DO_NOT_ECHO" };
     if (scenario === "record-key") project.maps = { DO_NOT_ECHO: {} };
     if (scenario === "record-value")
@@ -95,7 +98,7 @@ test.each(["unknown-field", "record-key", "record-value", "nested-array", "null-
     expect(String(error)).toContain("Invalid configuration at project");
     expect(String(error)).not.toContain("DO_NOT_ECHO");
     // Wrapping does not retain a raw ZodError containing untrusted issue data.
-    expect((error as Error).cause).toBeUndefined();
+    expect(z.instanceof(Error).parse(error).cause).toBeUndefined();
   },
 );
 
@@ -199,16 +202,16 @@ test("required conflict rolls back local write and leaves earlier choice intact"
 test("execution snapshots persist independently and cannot be silently replaced", () => {
   const f = fixture();
   let store = new StateStore(f.statePath);
-  const run = {
-    ref: "wayfinder-run:config",
-    ticket: "jira:example:P:ticket:P-1" as Run["ticket"],
-    harness: "codex" as Run["harness"],
+  const run: Run = {
+    ref: runRefSchema.parse("wayfinder-run:config"),
+    ticket: ticketRefSchema.parse("jira:example:P:ticket:P-1"),
+    harness: adapterRefSchema.parse("codex"),
     workspace: { path: "/workspace" },
     capabilities: {},
     status: "planning",
     createdAt: "now",
     updatedAt: "now",
-  } as Run;
+  };
   store.saveRun(run);
   const original = resolve(INITIAL_CONFIGURATION, { model: "original" });
   store.saveExecutionConfiguration(run.ref, original);
@@ -312,7 +315,7 @@ test.each(["failure", "malformed", "concurrent"])(
       editFile: async (argv) => {
         expect(argv[0]).toBe("editor with spaces");
         writeFileSync(
-          argv[1] as string,
+          z.string().parse(argv[1]),
           scenario === "malformed" ? "broken = [" : `${INITIAL_CONFIGURATION}\n# edit`,
         );
         if (scenario === "concurrent")
@@ -335,7 +338,7 @@ test("successful editor commits validated staged content and reports its identit
     cwd: f.cwd,
     statePath: f.statePath,
     editFile: async (argv) => {
-      writeFileSync(argv[1] as string, content);
+      writeFileSync(z.string().parse(argv[1]), content);
       return 0;
     },
   });
@@ -355,7 +358,7 @@ test("configuration catalog drives help, JSON help, registration and man page", 
     await run([...action.command, "--help"], (text) => human.push(text), services);
     await run([...action.command, "--help", "--json"], (text) => json.push(text), services);
     expect(human.join("")).toContain(action.description);
-    expect(JSON.parse(json[0] as string)).toMatchObject({
+    expect(JSON.parse(z.string().parse(json[0]))).toMatchObject({
       description: action.description,
       input: action.input,
     });
@@ -365,25 +368,23 @@ test("configuration catalog drives help, JSON help, registration and man page", 
   expect(manual[0]).toContain(actions[1]?.action.description);
   const output: string[] = [];
   await run(["init", "--json"], (text) => output.push(text), services);
-  expect(JSON.parse(output[0] as string).action).toBe("initialized");
+  expect(JSON.parse(z.string().parse(output[0])).action).toBe("initialized");
   const show: string[] = [];
   await run(["config", "show", "--json"], (text) => show.push(text), services);
-  expect(JSON.parse(show[0] as string).configuration).toEqual(
-    JSON.parse(output[0] as string).configuration,
+  expect(JSON.parse(z.string().parse(show[0])).configuration).toEqual(
+    JSON.parse(z.string().parse(output[0])).configuration,
   );
 });
 
 test.each(
-  (
-    [
-      ["init", "--path"],
-      ["init", "--json", "--json"],
-      ["config", "show", "--unknown"],
-      ["config", "edit", "--set", "secret", "DO_NOT_ECHO"],
-      ["config", "edit", "--set", "model"],
-      ["config", "edit", "--follow", "model", "--editor", "vi"],
-    ] as string[][]
-  ).map((args) => ({ args })),
+  [
+    ["init", "--path"],
+    ["init", "--json", "--json"],
+    ["config", "show", "--unknown"],
+    ["config", "edit", "--set", "secret", "DO_NOT_ECHO"],
+    ["config", "edit", "--set", "model"],
+    ["config", "edit", "--follow", "model", "--editor", "vi"],
+  ].map((args) => ({ args })),
 )("CLI rejects malformed configuration arguments without mutations: %j", async ({ args }) => {
   const f = fixture();
   await expect(
@@ -415,11 +416,66 @@ test("config group JSON help lists the same registered action contracts", async 
   const output: string[] = [];
   await run(["config", "--help", "--json"], (text) => output.push(text));
   expect(
-    JSON.parse(output[0] as string).actions.map((action: { command: string[] }) => action.command),
+    JSON.parse(z.string().parse(output[0])).actions.map(
+      (action: { command: string[] }) => action.command,
+    ),
   ).toEqual(
     registeredActions(configurationActions({ cwd: "/unused" }))
       .filter((entry) => entry.command[0] === "config")
       .map((entry) => entry.command),
   );
   await expect(run(["config", "--help", "--unknown"], () => {})).rejects.toThrow("Group help");
+});
+
+test("Drizzle reads the existing schema, respects read-only handles and redacts driver parameters", () => {
+  const f = fixture();
+  const database = new Database(f.statePath, { create: true });
+  database.exec(
+    "CREATE TABLE configuration_overrides (project_path TEXT PRIMARY KEY, settings_json TEXT NOT NULL)",
+  );
+  database
+    .query("INSERT INTO configuration_overrides VALUES (?, ?)")
+    .run(f.path, '{"model":"existing-choice"}');
+  database.close();
+  const before = readFileSync(f.statePath);
+  const readonly = new Database(f.statePath, { readonly: true });
+  try {
+    const settings = configurationStore(readonly);
+    expect(settings.readPersonal(f.path)).toEqual({ model: "existing-choice" });
+    try {
+      settings.savePersonal(f.path, { model: "DO_NOT_ECHO" });
+      throw new Error("Expected read-only rejection");
+    } catch (error) {
+      expect(String(error)).toContain("Local configuration database operation failed");
+      expect(String(error)).not.toContain("DO_NOT_ECHO");
+      expect(String(error)).not.toContain("INSERT");
+    }
+  } finally {
+    readonly.close();
+  }
+  expect(readFileSync(f.statePath).equals(before)).toBe(true);
+});
+
+test("persisted configuration JSON is validated before it can become a personal override", () => {
+  const db = new Database(":memory:");
+  try {
+    db.exec(
+      "CREATE TABLE configuration_overrides (project_path TEXT PRIMARY KEY, settings_json TEXT NOT NULL)",
+    );
+    for (const value of ["{", '{"model":42}', '{"token":"DO_NOT_ECHO"}']) {
+      db.query("INSERT OR REPLACE INTO configuration_overrides VALUES (?, ?)").run(
+        "project",
+        value,
+      );
+      try {
+        configurationStore(db).readPersonal("project");
+        throw new Error("Expected malformed record rejection");
+      } catch (error) {
+        expect(String(error)).toContain("Invalid");
+        expect(String(error)).not.toContain("DO_NOT_ECHO");
+      }
+    }
+  } finally {
+    db.close();
+  }
 });

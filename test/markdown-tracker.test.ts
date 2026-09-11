@@ -2,9 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { findAdapter } from "../src/adapters.ts";
-import { ClaimCollisionError } from "../src/contracts.ts";
-import type { ActorRef, MapRef, TicketRef, WorkspaceRef } from "../src/domain.ts";
+import { z } from "zod";
+import { findAdapter } from "../src/adapters/registry.ts";
 import {
   formatMarkdownTracker,
   MarkdownTrackerAdapter,
@@ -13,15 +12,22 @@ import {
   MarkdownTrackerLockError,
   MarkdownTrackerValidationError,
   parseMarkdownTracker,
-} from "../src/markdown-tracker.ts";
+} from "../src/adapters/trackers/markdown.ts";
+import { ClaimCollisionError } from "../src/domain/contracts.ts";
+import {
+  actorRefSchema,
+  mapRefSchema,
+  ticketRefSchema,
+  workspaceRefSchema,
+} from "../src/domain/identifiers.ts";
 
-const map = "markdown:local:fixtures:map:map-1" as MapRef;
-const otherMap = "markdown:local:fixtures:map:map-2" as MapRef;
-const workspace = "markdown:local:fixtures" as WorkspaceRef;
-const blocker = "markdown:local:fixtures:ticket:a" as TicketRef;
-const ticket = "markdown:local:fixtures:ticket:b" as TicketRef;
-const owner = "jaren" as ActorRef;
-const foreignOwner = "other-human" as ActorRef;
+const map = mapRefSchema.parse("markdown:local:fixtures:map:map-1");
+const otherMap = mapRefSchema.parse("markdown:local:fixtures:map:map-2");
+const workspace = workspaceRefSchema.parse("markdown:local:fixtures");
+const blocker = ticketRefSchema.parse("markdown:local:fixtures:ticket:a");
+const ticket = ticketRefSchema.parse("markdown:local:fixtures:ticket:b");
+const owner = actorRefSchema.parse("jaren");
+const foreignOwner = actorRefSchema.parse("other-human");
 const directories: string[] = [];
 const now = new Date("2026-08-11T12:00:00.000Z");
 const clock: MarkdownTrackerClock = { now: () => new Date(now) };
@@ -110,7 +116,9 @@ describe("MarkdownTrackerAdapter", () => {
   });
 
   test("validates nested hand edits with an explicit path", () => {
-    const value = document() as unknown as { tickets: Array<Record<string, unknown>> };
+    const value = z
+      .looseObject({ tickets: z.array(z.record(z.string(), z.unknown())) })
+      .parse(document());
     const firstTicket = value.tickets[0];
     if (!firstTicket) throw new Error("fixture ticket missing");
     firstTicket.comments = [42];
@@ -120,7 +128,7 @@ describe("MarkdownTrackerAdapter", () => {
         name: "MarkdownTrackerValidationError",
         code: "invalid_markdown_tracker",
         path: "document.tickets[0].comments[0]",
-      }) as MarkdownTrackerValidationError,
+      }),
     );
   });
 
@@ -134,7 +142,7 @@ describe("MarkdownTrackerAdapter", () => {
       (value: MarkdownTrackerDocument) => {
         const target = value.maps[0];
         if (!target) throw new Error("fixture map missing");
-        target.ref = "jira:local:fixtures:map:map-1" as MapRef;
+        target.ref = mapRefSchema.parse("jira:local:fixtures:map:map-1");
       },
     ],
     [
@@ -142,7 +150,7 @@ describe("MarkdownTrackerAdapter", () => {
       (value: MarkdownTrackerDocument) => {
         const target = value.tickets[0];
         if (!target) throw new Error("fixture ticket missing");
-        target.ref = "markdown:local:fixtures:map:a" as TicketRef;
+        target.ref = ticketRefSchema.parse("markdown:local:fixtures:map:a");
       },
     ],
     [
@@ -150,7 +158,7 @@ describe("MarkdownTrackerAdapter", () => {
       (value: MarkdownTrackerDocument) => {
         const target = value.tickets[0];
         if (!target) throw new Error("fixture ticket missing");
-        target.ref = "markdown:local:elsewhere:ticket:a" as TicketRef;
+        target.ref = ticketRefSchema.parse("markdown:local:elsewhere:ticket:a");
       },
     ],
     [
@@ -158,7 +166,7 @@ describe("MarkdownTrackerAdapter", () => {
       (value: MarkdownTrackerDocument) => {
         const dependency = value.tickets[1]?.dependencies?.[0];
         if (!dependency) throw new Error("fixture dependency missing");
-        dependency.blocking = "markdown:local:elsewhere:ticket:a" as TicketRef;
+        dependency.blocking = ticketRefSchema.parse("markdown:local:elsewhere:ticket:a");
       },
     ],
   ])("rejects %s references", (_name, mutate) => {

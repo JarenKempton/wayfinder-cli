@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtemp, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { checkForUpdate, notifyAboutUpdate } from "../src/update.ts";
+import { checkForUpdate, notifyAboutUpdate } from "../src/distribution/update.ts";
 
 const release = (tag: string, prerelease = false) => ({
   tag_name: tag,
@@ -17,7 +17,7 @@ describe("update notifications", () => {
     const result = await checkForUpdate({
       currentVersion: "1.2.3",
       interactive: true,
-      environment: {},
+      environment: { WAYFINDER_UPDATE_URL: "https://releases.example.test/releases" },
       cachePath,
       now: () => new Date("2026-08-14T00:00:00Z"),
       fetch: async () => Response.json([release("v1.3.0"), release("v2.0.0-beta.1", true)]),
@@ -38,7 +38,7 @@ describe("update notifications", () => {
     const base = {
       currentVersion: "1.2.3",
       interactive: true,
-      environment: {},
+      environment: { WAYFINDER_UPDATE_URL: "https://releases.example.test/releases" },
       cachePath,
       fetch,
     };
@@ -76,7 +76,7 @@ describe("update notifications", () => {
     const result = await checkForUpdate({
       currentVersion: "1.2.0-beta.1",
       interactive: true,
-      environment: {},
+      environment: { WAYFINDER_UPDATE_URL: "https://releases.example.test/releases" },
       cachePath,
       fetch: async () => Response.json([release("v1.3.0-beta.1", true)]),
     });
@@ -88,7 +88,7 @@ describe("update notifications", () => {
     const result = await checkForUpdate({
       currentVersion: "1.2.0-beta.2",
       interactive: true,
-      environment: {},
+      environment: { WAYFINDER_UPDATE_URL: "https://releases.example.test/releases" },
       cachePath,
       fetch: async () =>
         Response.json([
@@ -109,7 +109,7 @@ describe("update notifications", () => {
     const options = {
       currentVersion: "1.2.3",
       interactive: true,
-      environment: {},
+      environment: { WAYFINDER_UPDATE_URL: "https://releases.example.test/releases" },
       cachePath,
       now: () => new Date("2026-08-14T00:00:00Z"),
       fetch: async () => {
@@ -133,7 +133,7 @@ describe("update notifications", () => {
     await notifyAboutUpdate({
       currentVersion: "1.2.3",
       interactive: true,
-      environment: {},
+      environment: { WAYFINDER_UPDATE_URL: "https://releases.example.test/releases" },
       cachePath,
       timeoutSignal: (milliseconds) => {
         timeouts.push(milliseconds);
@@ -165,4 +165,51 @@ describe("update notifications", () => {
     });
     expect(requested).toEqual(["https://updates.example.test/releases"]);
   });
+});
+
+test("an unconfigured source build has no implicit release owner, network access or cache writes", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "wayfinder-no-release-"));
+  let requests = 0;
+  const result = await checkForUpdate({
+    currentVersion: "1.0.0",
+    interactive: true,
+    environment: {},
+    cachePath: join(directory, "cache.json"),
+    fetch: async () => {
+      requests++;
+      return Response.json([]);
+    },
+  });
+  expect(result).toBeUndefined();
+  expect(requests).toBe(0);
+  expect(await readdir(directory)).toEqual([]);
+});
+
+test("explicit release ownership is honored and malformed release records fail closed", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "wayfinder-release-owner-"));
+  const endpoint = "https://releases.example.test/repos/fork/project/releases";
+  let observed: unknown;
+  const result = await checkForUpdate({
+    currentVersion: "1.0.0",
+    interactive: true,
+    environment: { WAYFINDER_UPDATE_URL: endpoint },
+    cachePath: join(directory, "cache.json"),
+    fetch: async (url) => {
+      observed = url;
+      return Response.json([release("v1.1.0")]);
+    },
+  });
+  expect(observed).toBe(endpoint);
+  expect(result?.latestVersion).toBe("1.1.0");
+  const messages: string[] = [];
+  await notifyAboutUpdate({
+    currentVersion: "1.0.0",
+    interactive: true,
+    intervalMs: 0,
+    environment: { WAYFINDER_UPDATE_URL: endpoint },
+    cachePath: join(directory, "cache.json"),
+    fetch: async () => Response.json([{ tag_name: { private: "DO_NOT_ECHO" } }]),
+    writeError: (text) => messages.push(text),
+  });
+  expect(messages).toEqual([]);
 });

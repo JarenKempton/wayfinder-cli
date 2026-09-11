@@ -51,7 +51,7 @@ Source locators (line numbers refer to embedded original source, not the bundle)
 | --- | --- |
 | Installed T3 package | `~/.t3/runtime/versions/0.0.41-nightly.20260909.1426/node_modules/t3/` |
 | Source map | `dist/bin.mjs.map`; SHA-256 `3eca191f249234f5429f63e897ed70d20cf3608691820f2478688af8d1b2dab7` |
-| Discovery and environment identity | `apps/server/src/serverRuntimeState.ts`, `apps/server/src/environment/ServerEnvironment.ts`; `packages/contracts/src/environment.ts` |
+| Discovery and environment identity | `apps/server/src/serverRuntimeState.ts`, `apps/server/src/environment/ServerEnvironment.ts`; `packages/contracts/src/execution/environment.ts` |
 | HTTP routes, scopes, errors | `packages/contracts/src/environmentHttp.ts`; `apps/server/src/orchestration/http.ts` |
 | Commands and response schemas | `packages/contracts/src/orchestration.ts`: `ModelSelection` (67–126), session/turn/thread/read model (512–672), detail snapshot and create/delete (876–941), turn start/interrupt (1069–1141), `DispatchResult` (1909–1912); `packages/contracts/src/model.ts` (`ProviderOptionSelection`, `ProviderOptionSelections`) |
 | Authentication | `apps/server/src/cli/auth.ts` (`sessionIssueCommand`), `cliAuthFormat.ts` (`formatIssuedSession`), `auth/EnvironmentAuth.ts` |

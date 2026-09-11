@@ -1,7 +1,7 @@
 /** Portable configuration validation and resolution; no filesystem or runtime discovery. */
 import { z } from "zod";
 
-const configText = z
+export const configText = z
   .string()
   .refine(
     (value) =>
@@ -171,17 +171,16 @@ export function validateProjectConfiguration(value: unknown): ProjectConfigurati
   return parseConfiguration(projectConfigurationSchema, value, "project");
 }
 function t3Defaults(project: ProjectConfiguration): PersonalSettings {
-  const mapping = {
-    provider: "agent",
-    model: "model",
-    thinking_effort: "effort",
-    context_window: "context_window",
-    runtime_mode: "runtime_mode",
-    interaction_mode: "interaction_mode",
-  } as const;
   const defaults: PersonalSettings = { host: "t3" };
-  for (const [key, setting] of Object.entries(mapping)) {
-    const value = project.t3[key as keyof typeof mapping];
+  const entries = [
+    ["agent", project.t3.provider],
+    ["model", project.t3.model],
+    ["effort", project.t3.thinking_effort],
+    ["context_window", project.t3.context_window],
+    ["runtime_mode", project.t3.runtime_mode],
+    ["interaction_mode", project.t3.interaction_mode],
+  ] as const;
+  for (const [setting, value] of entries) {
     if (value !== undefined) defaults[setting] = value;
   }
   return defaults;

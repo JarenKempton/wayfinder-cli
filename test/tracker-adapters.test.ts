@@ -1,16 +1,25 @@
 import { describe, expect, test } from "bun:test";
-import { builtInAdapters } from "../src/adapters.ts";
+import { builtInAdapters } from "../src/adapters/registry.ts";
+import {
+  GitHubIssuesTrackerAdapter,
+  GitHubWorkspaceBoundaryError,
+} from "../src/adapters/trackers/github.ts";
+import type { HttpResponse, HttpTransport } from "../src/adapters/trackers/http.ts";
+import { LinearTrackerAdapter } from "../src/adapters/trackers/linear.ts";
 import {
   AmbiguousTrackerResultError,
   ClaimCollisionError,
   type ClaimRequest,
   type ReleaseClaimRequest,
-} from "../src/contracts.ts";
-import type { ActorRef, ClaimRef, MapRef, RunRef, TicketRef } from "../src/domain.ts";
-import { evaluateFrontier, reconcileDependencyStatuses } from "../src/frontier.ts";
-import { GitHubIssuesTrackerAdapter, GitHubWorkspaceBoundaryError } from "../src/github-adapter.ts";
-import { LinearTrackerAdapter } from "../src/linear-adapter.ts";
-import type { HttpResponse, HttpTransport } from "../src/tracker-http.ts";
+} from "../src/domain/contracts.ts";
+import {
+  actorRefSchema,
+  claimRefSchema,
+  mapRefSchema,
+  runRefSchema,
+  ticketRefSchema,
+} from "../src/domain/identifiers.ts";
+import { evaluateFrontier, reconcileDependencyStatuses } from "../src/frontier/evaluate.ts";
 
 function response(
   body: unknown,
@@ -130,7 +139,7 @@ describe("Linear tracker adapter", () => {
         requests,
       ),
     });
-    const tickets = await adapter.listMapTickets("linear:api:team:map:map" as MapRef);
+    const tickets = await adapter.listMapTickets(mapRefSchema.parse("linear:api:team:map:map"));
     expect(tickets[0]).toMatchObject({
       title: "Linear 1",
       description: "## Acceptance criteria\nRetain Linear context.",
@@ -149,9 +158,9 @@ describe("Linear tracker adapter", () => {
         response({ data: { issue: linearIssue("1") }, errors: [{ message: "partial failure" }] }),
       ]),
     });
-    await expect(adapter.getTicket("linear:api:team:ticket:1" as TicketRef)).rejects.toThrow(
-      "partial failure",
-    );
+    await expect(
+      adapter.getTicket(ticketRefSchema.parse("linear:api:team:ticket:1")),
+    ).rejects.toThrow("partial failure");
   });
 
   test("uses the issue side of inverse blocks relations and unblocks after closure", async () => {
@@ -174,7 +183,7 @@ describe("Linear tracker adapter", () => {
         }),
       ]),
     });
-    const tickets = await adapter.listMapTickets("linear:api:team:map:map" as MapRef);
+    const tickets = await adapter.listMapTickets(mapRefSchema.parse("linear:api:team:map:map"));
     expect(String(tickets[1]?.dependencies?.[0]?.blocking)).toBe("linear:api:team:ticket:1");
     expect(
       reconcileDependencyStatuses(
@@ -255,7 +264,7 @@ describe("Linear tracker adapter", () => {
         requests,
       ),
     });
-    const ticket = await adapter.getTicket("linear:api:team:ticket:1" as TicketRef);
+    const ticket = await adapter.getTicket(ticketRefSchema.parse("linear:api:team:ticket:1"));
     expect(String(ticket.dependencies?.[0]?.blocking)).toBe("linear:api:team:ticket:blocker");
     expect(requests).toHaveLength(3);
     expect(JSON.parse(requestBody(requests, 1)).variables.after).toBe("next");
@@ -278,7 +287,7 @@ describe("GitHub Issues tracker adapter", () => {
         response([]),
       ]),
     });
-    const tickets = await adapter.listMapTickets("github:github.com:o/r:map:5" as MapRef);
+    const tickets = await adapter.listMapTickets(mapRefSchema.parse("github:github.com:o/r:map:5"));
     expect(tickets[0]).toMatchObject({
       title: "GitHub 1",
       description: "## Acceptance criteria\nRetain GitHub context.",
@@ -309,7 +318,7 @@ describe("GitHub Issues tracker adapter", () => {
       transport: queueTransport([response([githubIssue(7, [], "child/repo")])]),
     });
     await expect(
-      childAdapter.listMapTickets("github:github.com:parent/repo:map:5" as MapRef),
+      childAdapter.listMapTickets(mapRefSchema.parse("github:github.com:parent/repo:map:5")),
     ).rejects.toBeInstanceOf(GitHubWorkspaceBoundaryError);
 
     const blockerAdapter = new GitHubIssuesTrackerAdapter({
@@ -321,7 +330,9 @@ describe("GitHub Issues tracker adapter", () => {
       ]),
     });
     try {
-      await blockerAdapter.listMapTickets("github:github.com:parent/repo:map:5" as MapRef);
+      await blockerAdapter.listMapTickets(
+        mapRefSchema.parse("github:github.com:parent/repo:map:5"),
+      );
       throw new Error("Expected a workspace boundary failure");
     } catch (error) {
       expect(error).toBeInstanceOf(GitHubWorkspaceBoundaryError);
@@ -341,7 +352,7 @@ describe("GitHub Issues tracker adapter", () => {
       apiBase: "https://api.github.test",
       transport: queueTransport([response([githubIssue(7)]), response([])], requests),
     });
-    await adapter.listMapTickets("github:github.com:o/r:map:5" as MapRef);
+    await adapter.listMapTickets(mapRefSchema.parse("github:github.com:o/r:map:5"));
     expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
       "/repos/o/r/issues/5/sub_issues",
       "/repos/o/r/issues/7/dependencies/blocked_by",
@@ -362,9 +373,9 @@ describe("GitHub Issues tracker adapter", () => {
         requests,
       ),
     });
-    await expect(adapter.listMapTickets("github:github.com:o/r:map:5" as MapRef)).rejects.toThrow(
-      "outside the configured API origin",
-    );
+    await expect(
+      adapter.listMapTickets(mapRefSchema.parse("github:github.com:o/r:map:5")),
+    ).rejects.toThrow("outside the configured API origin");
     expect(requests).toHaveLength(1);
     expect(requests[0]?.headers?.Authorization).toBe("Bearer secret");
   });
@@ -383,10 +394,10 @@ describe("GitHub Issues tracker adapter", () => {
       transport: queueTransport([response([issue]), response([])]),
     });
     const directTicket = await direct.getTicket(
-      "github:github.com:child/repo:ticket:7" as TicketRef,
+      ticketRefSchema.parse("github:github.com:child/repo:ticket:7"),
     );
     const listedTickets = await listed.listMapTickets(
-      "github:github.com:child/repo:map:5" as MapRef,
+      mapRefSchema.parse("github:github.com:child/repo:map:5"),
     );
     expect(directTicket).toEqual(required(listedTickets, 0));
   });
@@ -403,12 +414,12 @@ describe("GitHub Issues tracker adapter", () => {
       apiBase: "https://api.github.test",
       transport: queueTransport([response([issue]), response([])]),
     });
-    await expect(direct.getTicket("github:github.com:o/r:ticket:7" as TicketRef)).rejects.toThrow(
-      "multiple assignees",
-    );
-    await expect(listed.listMapTickets("github:github.com:o/r:map:5" as MapRef)).rejects.toThrow(
-      "multiple assignees",
-    );
+    await expect(
+      direct.getTicket(ticketRefSchema.parse("github:github.com:o/r:ticket:7")),
+    ).rejects.toThrow("multiple assignees");
+    await expect(
+      listed.listMapTickets(mapRefSchema.parse("github:github.com:o/r:map:5")),
+    ).rejects.toThrow("multiple assignees");
   });
 
   test("classifies a pre-write assignment race as a collision", async () => {
@@ -518,7 +529,7 @@ describe("GitHub Issues tracker adapter", () => {
       transport: queueTransport([]),
     });
     await expect(
-      unauthorized.releaseClaim({ ...base, authorizedBy: "" as ActorRef }),
+      Reflect.apply(unauthorized.releaseClaim, unauthorized, [{ ...base, authorizedBy: "" }]),
     ).rejects.toThrow("authorizing actor");
 
     const stale = new GitHubIssuesTrackerAdapter({
@@ -556,10 +567,10 @@ test("registry does not advertise uncomposed tracker adapters as available", () 
 
 function claimRequest(): ClaimRequest {
   return {
-    claim: "wayfinder-claim:test" as ClaimRef,
-    run: "wayfinder-run:test" as RunRef,
-    ticket: "github:github.com:o/r:ticket:1" as TicketRef,
-    owner: "human" as ActorRef,
+    claim: claimRefSchema.parse("wayfinder-claim:test"),
+    run: runRefSchema.parse("wayfinder-run:test"),
+    ticket: ticketRefSchema.parse("github:github.com:o/r:ticket:1"),
+    owner: actorRefSchema.parse("human"),
     leaseExpiresAt: "2026-08-11T00:15:00.000Z",
     expectedVersion: "v1",
   };
@@ -567,12 +578,12 @@ function claimRequest(): ClaimRequest {
 
 function releaseRequest(): ReleaseClaimRequest {
   return {
-    claim: "wayfinder-claim:test" as ClaimRef,
-    ticket: "github:github.com:o/r:ticket:1" as TicketRef,
-    claimedOwner: "human" as ActorRef,
+    claim: claimRefSchema.parse("wayfinder-claim:test"),
+    ticket: ticketRefSchema.parse("github:github.com:o/r:ticket:1"),
+    claimedOwner: actorRefSchema.parse("human"),
     originalSnapshot: { version: "v1", payload: { assignee: null } },
     expectedVersion: "v2",
-    authorizedBy: "operator" as ActorRef,
+    authorizedBy: actorRefSchema.parse("operator"),
   };
 }
 

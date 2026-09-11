@@ -1,12 +1,13 @@
 import { configurationVersion, parseProjectToml } from "../../src/configuration/files.ts";
 import { INITIAL_CONFIGURATION } from "../../src/configuration/project-files.ts";
 import { resolveProjectConfiguration } from "../../src/configuration/schema.ts";
-import { planConfiguredLaunch } from "../../src/configuration-plan.ts";
-import type { Ticket } from "../../src/domain.ts";
+import { mapRefSchema, ticketRefSchema } from "../../src/domain/identifiers.ts";
+import type { Ticket } from "../../src/domain/model.ts";
+import { planConfiguredLaunch } from "../../src/execution/configuration-plan.ts";
 
 export const fakePlanningTicket: Ticket = {
-  ref: "jira:example:TEST:ticket:TEST-491" as Ticket["ref"],
-  map: "jira:example:TEST:map:TEST-470" as Ticket["map"],
+  ref: ticketRefSchema.parse("jira:example:TEST:ticket:TEST-491"),
+  map: mapRefSchema.parse("jira:example:TEST:map:TEST-470"),
   kind: "task",
   state: "open",
   status: "To Do",

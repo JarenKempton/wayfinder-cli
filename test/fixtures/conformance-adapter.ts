@@ -1,11 +1,9 @@
 #!/usr/bin/env bun
+import { z } from "zod";
 
-export {};
-
-const request = JSON.parse(await Bun.stdin.text()) as {
-  id: string;
-  method: string;
-};
+const request = z
+  .object({ id: z.string(), method: z.string() })
+  .parse(JSON.parse(await Bun.stdin.text()));
 const scenario = Bun.env.WAYFINDER_CONFORMANCE_SCENARIO ?? "normal";
 
 if (scenario === "hang") {

@@ -148,7 +148,7 @@ Initial conservative assignments:
 
 ## Repository implication
 
-`src/adapters.ts` currently reports the same capability set for every located
+`src/adapters/registry.ts` currently reports the same capability set for every located
 harness executable. The implementation ticket following this research should
 replace that uniform inference with adapter-specific, OS-qualified probes. A
 successful `Bun.which()` may establish only executable availability. It cannot

@@ -8,7 +8,7 @@ Ratified under JWB-387. Amends the configuration precedence chain in ADR 0001 §
 
 ## Context
 
-ADR 0001 §8 defines one linear precedence chain in which every layer overwrites the one below it. The only implemented resolver, `resolveEnvironmentSettings` in `src/environment.ts`, is a naive last-wins fold with no notion of a value that cannot be overridden.
+ADR 0001 §8 defines one linear precedence chain in which every layer overwrites the one below it. The only implemented resolver, `resolveEnvironmentSettings` in `src/execution/environment.ts`, is a naive last-wins fold with no notion of a value that cannot be overridden.
 
 That model is correct for preferences and wrong for policy, and the chain already contradicts a rule ADR 0001 asserts. §8 states that "an explicit requirement for strong isolation must never silently downgrade to host execution", but `invocation overrides` sits at the top of the chain, so any individual invocation can override precisely that. The chain cannot express the rule it claims to enforce.
 

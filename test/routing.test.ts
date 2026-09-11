@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { capabilities, UnsupportedCapabilityError } from "../src/domain.ts";
+import { capabilities, UnsupportedCapabilityError } from "../src/domain/model.ts";
 import {
   CONFIGURATION_LAYER_ORDER,
   resolveExecutionRoute,
   resolveExecutionSettings,
   validateExecutionRoute,
-} from "../src/routing.ts";
+} from "../src/execution/routing.ts";
 
 describe("layered execution routing", () => {
   test("declares the deterministic least-to-most-specific order", () => {

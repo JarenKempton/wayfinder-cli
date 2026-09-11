@@ -1,16 +1,22 @@
 import { describe, expect, test } from "bun:test";
-import type { Ticket, TicketRef } from "../src/domain.ts";
+import {
+  actorRefSchema,
+  groupRefSchema,
+  mapRefSchema,
+  ticketRefSchema,
+  workspaceRefSchema,
+} from "../src/domain/identifiers.ts";
+import type { Ticket } from "../src/domain/model.ts";
 import {
   evaluateFrontier,
-  type FrontierScope,
   normalizeTrackerTickets,
   selectFrontierTicket,
-} from "../src/frontier.ts";
+} from "../src/frontier/evaluate.ts";
 
-const ref = (value: string) => value as TicketRef;
+const ref = (value: string) => ticketRefSchema.parse(value);
 const base = (value: string, order: number): Ticket => ({
   ref: ref(value),
-  map: "jira:x:W:map:M1" as Ticket["map"],
+  map: mapRefSchema.parse("jira:x:W:map:M1"),
   kind: "task",
   state: "open",
   status: "To Do",
@@ -20,7 +26,7 @@ const base = (value: string, order: number): Ticket => ({
 describe("frontier", () => {
   test("supports cross-map blockers and stable ordering", () => {
     const a = base("jira:x:W:ticket:A", 2);
-    const b = { ...base("jira:x:W:ticket:B", 1), map: "jira:x:W:map:M2" as Ticket["map"] };
+    const b = { ...base("jira:x:W:ticket:B", 1), map: mapRefSchema.parse("jira:x:W:map:M2") };
     b.dependencies = [{ blocking: a.ref, blocked: b.ref, kind: "blocks" }];
     const c = base("jira:x:W:ticket:C", 0);
     expect(
@@ -43,15 +49,17 @@ describe("frontier", () => {
   test("honors qualified workspace, group, map, and ticket scopes", () => {
     const a = {
       ...base("jira:x:W:ticket:A", 0),
-      group: "jira:x:W:group:G1" as NonNullable<Ticket["group"]>,
+      group: groupRefSchema.parse("jira:x:W:group:G1"),
     };
     const b = {
       ...base("jira:x:W:ticket:B", 1),
-      map: "jira:x:W:map:M2" as Ticket["map"],
-      group: "jira:x:W:group:G2" as NonNullable<Ticket["group"]>,
+      map: mapRefSchema.parse("jira:x:W:map:M2"),
+      group: groupRefSchema.parse("jira:x:W:group:G2"),
     };
     const options = { availableStatuses: new Set(["To Do"]) };
-    expect(evaluateFrontier([a, b], { workspace: "jira:x:W" as never }, options)).toHaveLength(2);
+    expect(
+      evaluateFrontier([a, b], { workspace: workspaceRefSchema.parse("jira:x:W") }, options),
+    ).toHaveLength(2);
     expect(evaluateFrontier([a, b], { group: a.group }, options)).toEqual([a]);
     expect(evaluateFrontier([a, b], { map: b.map }, options)).toEqual([b]);
     expect(evaluateFrontier([a, b], { ticket: a.ref }, options)).toEqual([a]);
@@ -63,7 +71,7 @@ describe("frontier", () => {
     b.dependencies = [{ blocking: a.ref, blocked: b.ref, kind: "blocks" }];
     const c = {
       ...base("jira:x:W:ticket:C", 2),
-      assignee: "human" as NonNullable<Ticket["assignee"]>,
+      assignee: actorRefSchema.parse("human"),
     };
     expect(evaluateFrontier([a, b, c], {}, { availableStatuses: new Set(["To Do"]) })).toEqual([b]);
   });
@@ -81,7 +89,7 @@ describe("frontier", () => {
   test("normalization rejects partial dependency graphs before scope filtering", () => {
     const assigned = {
       ...base("jira:x:W:ticket:B", 0),
-      assignee: "human" as NonNullable<Ticket["assignee"]>,
+      assignee: actorRefSchema.parse("human"),
     };
     assigned.dependencies = [
       { blocking: ref("jira:x:W:ticket:A"), blocked: assigned.ref, kind: "blocks" },
@@ -99,7 +107,7 @@ describe("frontier", () => {
     const a = base("jira:x:W:ticket:A", 0);
     const other = {
       ...base("jira:x:OTHER:ticket:B", 1),
-      map: "jira:x:OTHER:map:M2" as Ticket["map"],
+      map: mapRefSchema.parse("jira:x:OTHER:map:M2"),
     };
     expect(() => normalizeTrackerTickets([a, other])).toThrow("Cross-workspace frontier");
 
@@ -109,24 +117,24 @@ describe("frontier", () => {
 
     expect(() => normalizeTrackerTickets([a, { ...a }])).toThrow("Duplicate ticket");
 
-    expect(() => normalizeTrackerTickets([{ ...a, state: "Open" as never }])).toThrow(
-      "unsupported state",
-    );
-    expect(() => normalizeTrackerTickets([{ ...a, kind: "bug" as never }])).toThrow(
-      "unsupported kind",
-    );
+    expect(() =>
+      Reflect.apply(normalizeTrackerTickets, undefined, [[{ ...a, state: "Open" }]]),
+    ).toThrow("unsupported state");
+    expect(() =>
+      Reflect.apply(normalizeTrackerTickets, undefined, [[{ ...a, kind: "bug" }]]),
+    ).toThrow("unsupported kind");
     expect(() => normalizeTrackerTickets([{ ...a, status: "" }])).toThrow("invalid status");
   });
 
   test("canonicalizes parseable scope references", () => {
     const ticket = base("jira:x:W:ticket:A", 0);
     const options = { availableStatuses: new Set(["To Do"]) };
-    expect(evaluateFrontier([ticket], { workspace: " jira:x:W " as never }, options)).toEqual([
-      ticket,
-    ]);
-    expect(evaluateFrontier([ticket], { map: ` ${ticket.map} ` as never }, options)).toEqual([
-      ticket,
-    ]);
+    expect(
+      evaluateFrontier([ticket], { workspace: workspaceRefSchema.parse(" jira:x:W ") }, options),
+    ).toEqual([ticket]);
+    expect(
+      evaluateFrontier([ticket], { map: mapRefSchema.parse(` ${ticket.map} `) }, options),
+    ).toEqual([ticket]);
   });
 
   test.each([
@@ -137,9 +145,13 @@ describe("frontier", () => {
   ] as const)("rejects the wrong qualified kind for %s scope", (kind, scope) => {
     const ticket = base("jira:x:W:ticket:A", 0);
     expect(() =>
-      evaluateFrontier([ticket], scope as FrontierScope, {
-        availableStatuses: new Set(["To Do"]),
-      }),
+      Reflect.apply(evaluateFrontier, undefined, [
+        [ticket],
+        scope,
+        {
+          availableStatuses: new Set(["To Do"]),
+        },
+      ]),
     ).toThrow(`Expected ${kind} scope reference`);
   });
 

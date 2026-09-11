@@ -8,15 +8,16 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { z } from "zod";
+import { databasePath } from "../persistence/paths.ts";
+import { StateStore } from "../persistence/state.ts";
+import INITIAL_CONFIGURATION from "./default.toml" with { type: "text" };
+import { configurationVersion, parseProjectToml, projectConfigPath } from "./files.ts";
 import type {
   EditConfigurationInput,
   InitConfigurationInput,
   ShowConfigurationInput,
-} from "../actions/configuration.ts";
-import { databasePath } from "../paths.ts";
-import { StateStore } from "../state.ts";
-import INITIAL_CONFIGURATION from "./default.toml" with { type: "text" };
-import { configurationVersion, parseProjectToml, projectConfigPath } from "./files.ts";
+} from "./inputs.ts";
 import { readPersonalSettings } from "./local-settings.ts";
 import {
   type ResolvedConfiguration,
@@ -45,7 +46,12 @@ export function validateConfigurationOutput(output: unknown): ConfigurationOutpu
   )
     throw new Error("Invalid configuration result");
   validateResolvedConfiguration(output.configuration);
-  return output as ConfigurationOutput;
+  return {
+    version: 1,
+    path: output.path,
+    configuration: validateResolvedConfiguration(output.configuration),
+    action: z.enum(["initialized", "configuration", "edited"]).parse(output.action),
+  };
 }
 export interface ConfigurationPlatformOptions {
   cwd: string;
@@ -54,7 +60,8 @@ export interface ConfigurationPlatformOptions {
   editFile?: (argv: string[]) => Promise<number>;
 }
 export function configurationOperations(options: ConfigurationPlatformOptions) {
-  const pathFor = (input: { path?: string }) => projectConfigPath(options.cwd, input.path);
+  const pathFor = (input: { path?: string | undefined }) =>
+    projectConfigPath(options.cwd, input.path);
   const storePath = () => options.statePath ?? databasePath();
   const resolved = (
     path: string,

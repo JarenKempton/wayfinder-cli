@@ -1,16 +1,19 @@
 import { describe, expect, test } from "bun:test";
-import type { ReclaimRequest, ReleaseClaimRequest } from "../src/contracts.ts";
+import type { ReclaimRequest, ReleaseClaimRequest } from "../src/domain/contracts.ts";
 import {
-  type ActorRef,
+  actorRefSchema,
+  adapterRefSchema,
+  runRefSchema,
+  ticketRefSchema,
+} from "../src/domain/identifiers.ts";
+import {
   type Claim,
   claimEventRequiresComment,
   claimStatusAt,
   type Run,
-  type RunRef,
   stopRun,
-  type TicketRef,
   type TrackerSnapshot,
-} from "../src/domain.ts";
+} from "../src/domain/model.ts";
 
 const originalSnapshot: TrackerSnapshot = {
   version: "before-claim",
@@ -19,8 +22,8 @@ const originalSnapshot: TrackerSnapshot = {
 
 const claim: Claim = {
   ref: "wayfinder-claim:first",
-  ticket: "jira:x:W:ticket:A" as TicketRef,
-  humanOwner: "jaren" as ActorRef,
+  ticket: ticketRefSchema.parse("jira:x:W:ticket:A"),
+  humanOwner: actorRefSchema.parse("jaren"),
   run: "wayfinder-run:first",
   previousState: originalSnapshot,
   claimedAt: "2026-08-10T12:00:00.000Z",
@@ -42,8 +45,8 @@ describe("claim semantics", () => {
       claim: "wayfinder-claim:second",
       run: "wayfinder-run:second",
       ticket: claim.ticket,
-      owner: "new-owner" as ActorRef,
-      authorizedBy: "operator" as ActorRef,
+      owner: actorRefSchema.parse("new-owner"),
+      authorizedBy: actorRefSchema.parse("operator"),
       leaseExpiresAt: "2026-08-10T12:30:00.000Z",
       expectedVersion: "stale-version",
       originalSnapshot: claim.previousState,
@@ -60,7 +63,7 @@ describe("claim semantics", () => {
       claimedOwner: claim.humanOwner,
       originalSnapshot: claim.previousState,
       expectedVersion: "claimed-version",
-      authorizedBy: "operator" as ActorRef,
+      authorizedBy: actorRefSchema.parse("operator"),
     };
     expect(request.originalSnapshot.payload).toEqual({
       assignee: null,
@@ -71,9 +74,9 @@ describe("claim semantics", () => {
 
   test("stop changes only run execution fields", () => {
     const run: Run = {
-      ref: "wayfinder-run:first" as RunRef,
+      ref: runRefSchema.parse("wayfinder-run:first"),
       ticket: claim.ticket,
-      harness: "codex" as Run["harness"],
+      harness: adapterRefSchema.parse("codex"),
       workspace: { path: "/work", branch: "decision/A" },
       capabilities: {},
       status: "active",

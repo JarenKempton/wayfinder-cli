@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
-import { type PersonalSettings, validatePersonalSettings } from "./schema.ts";
+import { configurationStore } from "../persistence/configuration.ts";
+import type { PersonalSettings } from "./schema.ts";
 export function readPersonalSettings(statePath: string, projectPath: string): PersonalSettings {
   if (!existsSync(statePath)) return {};
   const database = new Database(statePath, { readonly: true, strict: true });
@@ -13,17 +14,7 @@ export function readPersonalSettings(statePath: string, projectPath: string): Pe
         .get()
     )
       return {};
-    const row = database
-      .query("SELECT settings_json FROM configuration_overrides WHERE project_path=?")
-      .get(projectPath) as { settings_json: string } | null;
-    if (!row) return {};
-    let settings: unknown;
-    try {
-      settings = JSON.parse(row.settings_json);
-    } catch {
-      throw new Error("Invalid local configuration record");
-    }
-    return validatePersonalSettings(settings);
+    return configurationStore(database).readPersonal(projectPath);
   } finally {
     database.close();
   }

@@ -2,16 +2,17 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { availableActions, composeActions, registeredActions } from "../src/actions/catalog.ts";
-import { actionHelp, dispatch } from "../src/actions/command-line.ts";
-import { defineAction, dependency } from "../src/actions/definition.ts";
-import { optional, positional, text } from "../src/actions/input.ts";
 import { createApplication } from "../src/application.ts";
-import { completionCandidates } from "../src/completions.ts";
-import { manPage } from "../src/manpage.ts";
+import { availableActions, composeActions, registeredActions } from "../src/cli/catalog.ts";
+import { actionHelp, dispatch } from "../src/cli/command-line.ts";
+import { completionCandidates } from "../src/cli/completions.ts";
+import { defineAction, dependency } from "../src/cli/definition.ts";
+import { manPage } from "../src/cli/manpage.ts";
+import { optional, positional, text } from "../src/cli/schema.ts";
 import type { RuntimeServices } from "../src/runtime-services.ts";
 
 function example(service?: (name: string) => string) {
+  const greet = dependency(service, "greeting service");
   return {
     sample: {
       greet: defineAction({
@@ -20,8 +21,8 @@ function example(service?: (name: string) => string) {
           name: positional(text("Person to greet.", "NAME")),
           punctuation: optional(text("Ending punctuation.", "TEXT")),
         },
-        dependencies: { greet: dependency(service, "greeting service") },
-        handler: ({ greet }, input) => greet(input.name) + (input.punctuation ?? "!"),
+        dependencies: [greet],
+        handler: (input) => greet.get()(input.name) + (input.punctuation ?? "!"),
       }),
     },
   };
@@ -35,7 +36,8 @@ test("one added action supplies typed calls, CLI dispatch, help, manual and comp
     output.push(line),
   );
   expect(output).toEqual(["Hello Jaren."]);
-  expect(actionHelp(app)).toContain("sample greet NAME [--punctuation TEXT]");
+  expect(actionHelp(app, ["sample", "greet"])).toContain("sample greet");
+  expect(actionHelp(app, ["sample", "greet"])).toContain("--punctuation TEXT");
   expect(manPage("test", app)).toContain("Greet through the actually supplied service.");
   expect(completionCandidates(app, [])).toEqual(["sample"]);
   expect(completionCandidates(app, ["sample"])).toEqual(["greet"]);
@@ -68,7 +70,7 @@ test("runtime dependencies govern actual application help, manual, completion an
       configuration: { cwd: directory, statePath: join(directory, "state.db") },
     };
     const unavailable = createApplication(services);
-    expect(actionHelp(unavailable)).not.toContain("wayfinder stop");
+    expect(actionHelp(unavailable)).not.toContain("Stop a recorded run");
     expect(completionCandidates(unavailable, [])).not.toContain("stop");
     expect(completionCandidates(unavailable, ["claim"])).toEqual(["show"]);
     expect(completionCandidates(unavailable, ["supervisor"])).toEqual(["status"]);
@@ -82,8 +84,8 @@ test("runtime dependencies govern actual application help, manual, completion an
       throw new Error("Per-run preflight has not been requested");
     };
     const available = createApplication(services);
-    expect(actionHelp(available)).toContain("wayfinder stop");
-    expect(manPage("test", available)).toContain(".B stop");
+    expect(actionHelp(available)).toContain("Stop a recorded run");
+    expect(manPage("test", available)).toContain("Stop a recorded run");
     expect(completionCandidates(available, [])).toContain("stop");
     expect(lifecycleCalls).toBe(0);
     expect(readdirSync(directory)).toEqual([]);
@@ -158,4 +160,40 @@ test("duplicate registrations cannot silently overwrite an action", () => {
     // @ts-expect-error Duplicate registration is rejected by typecheck and at the untyped boundary.
     composeActions(app, app);
   }).toThrow("Duplicate action registration");
+});
+
+test("Optique completes schema enum values through the real shell transport without invoking actions", async () => {
+  const app = createApplication({
+    configuration: { cwd: "/unused", statePath: "/unused/state.db" },
+  });
+  const output: string[] = [];
+  await dispatch(app, ["--complete", "bash", "config", "edit", "--follow", ""], (text) =>
+    output.push(text),
+  );
+  expect(output.join("").split("\n").filter(Boolean)).toEqual([
+    "host",
+    "agent",
+    "model",
+    "effort",
+    "context_window",
+    "runtime_mode",
+    "interaction_mode",
+  ]);
+  expect(actionHelp(app, ["config", "edit"])).toContain("--set SETTING VALUE");
+});
+
+test("library parsing preserves spaces and equals syntax while diagnostics redact values", async () => {
+  const app = example((name) => name);
+  const output: string[] = [];
+  await dispatch(app, ["sample", "greet", "two words", "--punctuation=?"], (text) =>
+    output.push(text),
+  );
+  expect(output).toEqual(["two words?"]);
+  try {
+    await dispatch(app, ["sample", "greet", "DO_NOT_ECHO", "--secret=DO_NOT_ECHO"], () => {});
+    throw new Error("Expected rejection");
+  } catch (error) {
+    expect(String(error)).toContain("Invalid arguments");
+    expect(String(error)).not.toContain("DO_NOT_ECHO");
+  }
 });

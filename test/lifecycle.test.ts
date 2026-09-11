@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ProcessLifecycleAdapter } from "../src/adapters/harnesses/process-lifecycle.ts";
 import { run as runCli } from "../src/cli.ts";
 import type {
   ClaimRequest,
@@ -11,16 +12,16 @@ import type {
   RestoreClaimRequest,
   RunLifecycleAdapter,
   TrackerAdapter,
-} from "../src/contracts.ts";
-import type { Claim, Run, Ticket, TicketRef, TrackerSnapshot } from "../src/domain.ts";
-import { capabilities } from "../src/domain.ts";
+} from "../src/domain/contracts.ts";
+import { actorRefSchema, adapterRefSchema, ticketRefSchema } from "../src/domain/identifiers.ts";
+import type { Claim, Run, Ticket, TicketRef, TrackerSnapshot } from "../src/domain/model.ts";
+import { capabilities } from "../src/domain/model.ts";
 import {
   LifecycleCoordinator,
   Supervisor,
   type SupervisorHeartbeatScheduler,
-} from "../src/lifecycle.ts";
-import { ProcessLifecycleAdapter } from "../src/platform/process-lifecycle.ts";
-import { StateStore } from "../src/state.ts";
+} from "../src/execution/lifecycle.ts";
+import { StateStore } from "../src/persistence/state.ts";
 
 class Tracker implements TrackerAdapter {
   renewError?: Error;
@@ -66,8 +67,8 @@ function fixture() {
   const store = new StateStore(join(directory, "state.db"));
   const makeRun = (id: string): Run => ({
     ref: `wayfinder-run:${id}`,
-    ticket: `jira:x:W:ticket:${id}` as Run["ticket"],
-    harness: "fake" as Run["harness"],
+    ticket: ticketRefSchema.parse(`jira:x:W:ticket:${id}`),
+    harness: adapterRefSchema.parse("fake"),
     workspace: { path: `/kept/${id}` },
     capabilities: capabilities("session_status", "session_interrupt"),
     status: "active",
@@ -80,7 +81,7 @@ function fixture() {
     const claim: Claim = {
       ref: `wayfinder-claim:${id}`,
       ticket: run.ticket,
-      humanOwner: "human" as Claim["humanOwner"],
+      humanOwner: actorRefSchema.parse("human"),
       run: run.ref,
       previousState: { version: "1", payload: { status: "To Do" } },
       claimedAt: run.createdAt,
@@ -611,8 +612,8 @@ describe("lifecycle coordinator", () => {
     const store = new StateStore(statePath);
     const run: Run = {
       ref: "wayfinder-run:cli",
-      ticket: "jira:x:W:ticket:CLI" as Run["ticket"],
-      harness: "fake" as Run["harness"],
+      ticket: ticketRefSchema.parse("jira:x:W:ticket:CLI"),
+      harness: adapterRefSchema.parse("fake"),
       workspace: { path: "/kept" },
       capabilities: capabilities(),
       status: "recovery_required",

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
-import { connectT3, type T3Platform } from "../src/platform/t3.ts";
+import { connectT3, type T3Platform } from "../src/adapters/session-hosts/t3/connection.ts";
 
 function fixture() {
   const commands: string[][] = [];

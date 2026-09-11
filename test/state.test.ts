@@ -3,8 +3,9 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type Claim, capabilities, type Run } from "../src/domain.ts";
-import { StateStore } from "../src/state.ts";
+import { actorRefSchema, adapterRefSchema, ticketRefSchema } from "../src/domain/identifiers.ts";
+import { type Claim, capabilities, type Run } from "../src/domain/model.ts";
+import { StateStore } from "../src/persistence/state.ts";
 
 test("SQLite store round-trips runs", () => {
   const directory = mkdtempSync(join(tmpdir(), "wayfinder-test-"));
@@ -12,8 +13,8 @@ test("SQLite store round-trips runs", () => {
   const now = new Date().toISOString();
   const run: Run = {
     ref: "wayfinder-run:test",
-    ticket: "jira:x:W:ticket:A" as Run["ticket"],
-    harness: "codex" as Run["harness"],
+    ticket: ticketRefSchema.parse("jira:x:W:ticket:A"),
+    harness: adapterRefSchema.parse("codex"),
     model: "gpt",
     effort: "high",
     context: "repository",
@@ -31,7 +32,7 @@ test("SQLite store round-trips runs", () => {
     const claim: Claim = {
       ref: "wayfinder-claim:test",
       ticket: run.ticket,
-      humanOwner: "human" as Claim["humanOwner"],
+      humanOwner: actorRefSchema.parse("human"),
       run: run.ref,
       previousState: { version: "1", payload: { status: "To Do" } },
       claimedAt: now,
@@ -79,8 +80,8 @@ test("SQLite store additively migrates legacy run routing columns", () => {
   const now = new Date().toISOString();
   const run: Run = {
     ref: "wayfinder-run:migrated",
-    ticket: "jira:x:W:ticket:A" as Run["ticket"],
-    harness: "codex" as Run["harness"],
+    ticket: ticketRefSchema.parse("jira:x:W:ticket:A"),
+    harness: adapterRefSchema.parse("codex"),
     model: "gpt",
     effort: "high",
     context: "repository",
@@ -107,8 +108,8 @@ test("SQLite store atomically records recovery-required run, step, and evidence"
   const now = new Date().toISOString();
   const run: Run = {
     ref: "wayfinder-run:recovery",
-    ticket: "jira:x:W:ticket:A" as Run["ticket"],
-    harness: "codex" as Run["harness"],
+    ticket: ticketRefSchema.parse("jira:x:W:ticket:A"),
+    harness: adapterRefSchema.parse("codex"),
     workspace: { path: "/tmp/work" },
     capabilities: capabilities("process_launch"),
     status: "planning",
@@ -147,8 +148,8 @@ test("SQLite recovery-required transaction rolls back every row on a mid-transac
   const now = new Date().toISOString();
   const run: Run = {
     ref: "wayfinder-run:rollback",
-    ticket: "jira:x:W:ticket:A" as Run["ticket"],
-    harness: "codex" as Run["harness"],
+    ticket: ticketRefSchema.parse("jira:x:W:ticket:A"),
+    harness: adapterRefSchema.parse("codex"),
     workspace: { path: "/tmp/work" },
     capabilities: capabilities("process_launch"),
     status: "planning",

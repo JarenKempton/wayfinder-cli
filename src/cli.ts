@@ -1,12 +1,12 @@
 #!/usr/bin/env bun
-import { dispatch } from "./actions/command-line.ts";
 import { createApplication } from "./application.ts";
+import { dispatch } from "./cli/command-line.ts";
+import { notifyAboutUpdate } from "./distribution/update.ts";
+import { VERSION } from "./distribution/version.ts";
 import type { RuntimeServices } from "./runtime-services.ts";
-import { notifyAboutUpdate } from "./update.ts";
-import { VERSION } from "./version.ts";
 
+export { VERSION } from "./distribution/version.ts";
 export type { RuntimeServices } from "./runtime-services.ts";
-export { VERSION } from "./version.ts";
 
 export async function run(
   args: string[],
