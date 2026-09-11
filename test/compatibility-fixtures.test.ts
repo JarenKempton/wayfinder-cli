@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { z } from "zod";
 import {
   AmbiguousTrackerResultError,
   ClaimCollisionError,
@@ -14,55 +15,245 @@ import {
   type RestoreClaimRequest,
   type TrackerAdapter,
   type WorkspaceAdapter,
-} from "../src/contracts.ts";
+} from "../src/domain/contracts.ts";
 import {
-  type ActorRef,
-  type AdapterRef,
+  actorRefSchema,
+  adapterRefSchema,
+  claimRefSchema,
+  mapRefSchema,
+  runRefSchema,
+  ticketRefSchema,
+} from "../src/domain/identifiers.ts";
+import {
   type Claim,
-  type ClaimRef,
   capabilities,
-  type MapRef,
   type Run,
   type RunRef,
   type Ticket,
-  type TicketKind,
   type TicketRef,
   type TrackerSnapshot,
-} from "../src/domain.ts";
-import { evaluateFrontier } from "../src/frontier.ts";
-import { PickupCoordinator, PickupResultError, type PickupState } from "../src/pickup.ts";
+} from "../src/domain/model.ts";
+import { PickupCoordinator, PickupResultError } from "../src/execution/pickup.ts";
+import { evaluateFrontier } from "../src/frontier/evaluate.ts";
 
 const fixtureRoot = join(import.meta.dir, "fixtures", "compatibility");
 
-function fixture<T>(name: string): T {
-  return JSON.parse(readFileSync(join(fixtureRoot, name), "utf8")) as T;
+const legacyWfFixtureSchema = z.object({
+  formatVersion: z.number(),
+  commands: z.array(
+    z.object({
+      argv: z.array(z.string()),
+      expectedParse: z.object({
+        operation: z.union([z.literal("frontier"), z.literal("pickup")]),
+        reference: z.string(),
+        frontier: z.boolean(),
+        harnessLaunch: z.boolean(),
+        resumeOnly: z.boolean(),
+        dryRun: z.boolean(),
+        json: z.boolean(),
+      }),
+    }),
+  ),
+  offlineGolden: z.object({
+    map: z.object({ key: z.string(), title: z.string() }),
+    tickets: z.array(
+      z.object({
+        key: z.string(),
+        title: z.string(),
+        role: z.union([
+          z.literal("task"),
+          z.literal("research"),
+          z.literal("prototype"),
+          z.literal("decision"),
+        ]),
+        status: z.string(),
+        order: z.number(),
+      }),
+    ),
+    frontierReceipt: z.object({
+      ok: z.boolean(),
+      action: z.string(),
+      map: z.object({ key: z.string(), title: z.string() }),
+      tickets: z.array(
+        z.object({
+          key: z.string(),
+          title: z.string(),
+          role: z.union([
+            z.literal("task"),
+            z.literal("research"),
+            z.literal("prototype"),
+            z.literal("decision"),
+          ]),
+          status: z.string(),
+        }),
+      ),
+    }),
+    pickupPlanReceipt: z.object({
+      ok: z.boolean(),
+      action: z.string(),
+      state: z.string(),
+      transactionId: z.string(),
+      ticket: z.object({
+        key: z.string(),
+        title: z.string(),
+        role: z.union([
+          z.literal("task"),
+          z.literal("research"),
+          z.literal("prototype"),
+          z.literal("decision"),
+        ]),
+      }),
+      map: z.object({ key: z.string(), title: z.string() }),
+      repository: z.object({
+        github: z.string(),
+        baseBranch: z.string(),
+        baseCommit: z.string(),
+      }),
+      workspace: z.object({ path: z.string(), branch: z.string(), policy: z.string() }),
+      claim: z.null(),
+      t3: z.object({ threadId: z.null(), title: z.string(), worktreePath: z.string() }),
+    }),
+    frontierPickupSelects: z.string(),
+  }),
+  liveFrontierCapture: z.object({
+    capturedAt: z.string(),
+    argv: z.array(z.string()),
+    result: z.object({
+      ok: z.boolean(),
+      code: z.string(),
+      message: z.string(),
+      transactionId: z.null(),
+      stage: z.string(),
+      recoverable: z.boolean(),
+      details: z.object({ map: z.string() }),
+    }),
+  }),
+});
+
+const pickupFixtureSchema = z.object({
+  ticket: z.object({
+    ref: z.string(),
+    map: z.string(),
+    kind: z.union([
+      z.literal("task"),
+      z.literal("research"),
+      z.literal("prototype"),
+      z.literal("decision"),
+    ]),
+    state: z.enum(["open", "closed"]),
+    status: z.string(),
+    assignee: z.string().optional(),
+    order: z.number(),
+    blockedBy: z.string().optional(),
+  }),
+  request: z.object({ owner: z.string(), harness: z.string() }),
+  snapshot: z.object({ version: z.string(), payload: z.unknown() }),
+  workspacePlan: z.object({ path: z.string(), branch: z.string() }),
+  clock: z.string(),
+  expected: z.object({
+    state: z.union([
+      z.literal("planning"),
+      z.literal("claiming"),
+      z.literal("claimed"),
+      z.literal("workspace_prepared"),
+      z.literal("launched"),
+      z.literal("committed"),
+      z.literal("compensating"),
+      z.literal("compensated"),
+      z.literal("collision"),
+      z.literal("recovery_required"),
+    ]),
+    humanOwner: z.string(),
+    expectedVersion: z.string(),
+    leaseExpiresAt: z.string(),
+    workspace: z.object({ path: z.string(), branch: z.string() }),
+    steps: z.array(z.string()),
+  }),
+});
+
+const frontierFixtureSchema = z.object({
+  scope: z.string(),
+  availableStatuses: z.array(z.string()),
+  tickets: z.array(
+    z.object({
+      ref: z.string(),
+      map: z.string(),
+      kind: z.union([
+        z.literal("task"),
+        z.literal("research"),
+        z.literal("prototype"),
+        z.literal("decision"),
+      ]),
+      state: z.enum(["open", "closed"]),
+      status: z.string(),
+      assignee: z.string().optional(),
+      order: z.number(),
+      blockedBy: z.string().optional(),
+    }),
+  ),
+  expectedRefs: z.array(z.string()),
+});
+
+const errorsFixtureSchema = z.object({
+  cases: z.array(
+    z.object({
+      name: z.string(),
+      failure: z.object({
+        phase: z.union([
+          z.literal("claim"),
+          z.literal("workspace_prepare"),
+          z.literal("harness_launch"),
+        ]),
+        error: z.union([
+          z.literal("claim_collision"),
+          z.literal("ambiguous_tracker_result"),
+          z.literal("error"),
+        ]),
+        restorationError: z.literal("ambiguous_tracker_result").optional(),
+      }),
+      expected: z.object({
+        state: z.union([
+          z.literal("planning"),
+          z.literal("claiming"),
+          z.literal("claimed"),
+          z.literal("workspace_prepared"),
+          z.literal("launched"),
+          z.literal("committed"),
+          z.literal("compensating"),
+          z.literal("compensated"),
+          z.literal("collision"),
+          z.literal("recovery_required"),
+        ]),
+        restoreCalls: z.number(),
+        restoresOriginalSnapshot: z.boolean().optional(),
+        workspacePrepareCalls: z.number().optional(),
+        harnessLaunchCalls: z.number().optional(),
+        recoveryRequiredSaves: z.number(),
+      }),
+    }),
+  ),
+});
+
+function fixture<T>(name: string, schema: z.ZodType<T>): T {
+  return schema.parse(JSON.parse(readFileSync(join(fixtureRoot, name), "utf8")));
 }
 
-interface TicketFixture {
-  ref: string;
-  map: string;
-  kind: TicketKind;
-  state: Ticket["state"];
-  status: string;
-  assignee?: string;
-  order: number;
-  blockedBy?: string;
-}
+type TicketFixture = z.infer<typeof pickupFixtureSchema.shape.ticket>;
 
 function ticketFromFixture(value: TicketFixture): Ticket {
-  const ref = value.ref as TicketRef;
+  const ref = ticketRefSchema.parse(value.ref);
   return {
     ref,
-    map: value.map as MapRef,
+    map: mapRefSchema.parse(value.map),
     kind: value.kind,
     state: value.state,
     status: value.status,
-    ...(value.assignee ? { assignee: value.assignee as ActorRef } : {}),
+    ...(value.assignee ? { assignee: actorRefSchema.parse(value.assignee) } : {}),
     ...(value.blockedBy
       ? {
           dependencies: [
             {
-              blocking: value.blockedBy as TicketRef,
+              blocking: ticketRefSchema.parse(value.blockedBy),
               blocked: ref,
               kind: "blocks" as const,
             },
@@ -73,31 +264,9 @@ function ticketFromFixture(value: TicketFixture): Ticket {
   };
 }
 
-interface PickupFixture {
-  ticket: TicketFixture;
-  request: { owner: string; harness: string };
-  snapshot: TrackerSnapshot;
-  workspacePlan: { path: string; branch: string };
-  clock: string;
-  expected: {
-    state: PickupState;
-    humanOwner: string;
-    expectedVersion: string;
-    leaseExpiresAt: string;
-    workspace: { path: string; branch: string };
-    steps: string[];
-  };
-}
+type PickupFixture = z.infer<typeof pickupFixtureSchema>;
 
-interface LegacyParse {
-  operation: "frontier" | "pickup";
-  reference: string;
-  frontier: boolean;
-  harnessLaunch: boolean;
-  resumeOnly: boolean;
-  dryRun: boolean;
-  json: boolean;
-}
+type LegacyParse = z.infer<typeof legacyWfFixtureSchema.shape.commands.element.shape.expectedParse>;
 
 function parseLegacyFlags(argv: string[]): LegacyParse {
   const [operation, reference, ...flags] = argv;
@@ -261,15 +430,15 @@ function pickupSubject(value: PickupFixture) {
     harness,
     ledger,
     ids: {
-      run: () => "wayfinder-run:fixture" as RunRef,
-      claim: () => "wayfinder-claim:fixture" as ClaimRef,
+      run: () => runRefSchema.parse("wayfinder-run:fixture"),
+      claim: () => claimRefSchema.parse("wayfinder-claim:fixture"),
     },
     clock: { now: () => new Date(value.clock) },
   });
   const request = {
     ticket: ticket.ref,
-    owner: value.request.owner as ActorRef,
-    harness: value.request.harness as AdapterRef,
+    owner: actorRefSchema.parse(value.request.owner),
+    harness: adapterRefSchema.parse(value.request.harness),
   };
   return { coordinator, tracker, workspace, harness, ledger, request };
 }
@@ -282,63 +451,13 @@ async function pickupFailure(
     throw new Error("Expected pickup fixture to fail");
   } catch (error) {
     expect(error).toBeInstanceOf(PickupResultError);
-    return error as PickupResultError;
+    return z.instanceof(PickupResultError).parse(error);
   }
 }
 
 describe("compatibility fixtures exercise production behavior", () => {
   test("legacy command forms, receipts, and TypeScript frontier parity stay golden", () => {
-    const value = fixture<{
-      formatVersion: number;
-      commands: Array<{ argv: string[]; expectedParse: LegacyParse }>;
-      offlineGolden: {
-        map: { key: string; title: string };
-        tickets: Array<{
-          key: string;
-          title: string;
-          role: TicketKind;
-          status: string;
-          order: number;
-        }>;
-        frontierReceipt: {
-          ok: boolean;
-          action: string;
-          map: { key: string; title: string };
-          tickets: Array<{
-            key: string;
-            title: string;
-            role: TicketKind;
-            status: string;
-          }>;
-        };
-        pickupPlanReceipt: {
-          ok: boolean;
-          action: string;
-          state: string;
-          transactionId: string;
-          ticket: { key: string; title: string; role: TicketKind };
-          map: { key: string; title: string };
-          repository: { github: string; baseBranch: string; baseCommit: string };
-          workspace: { path: string; branch: string; policy: string };
-          claim: null;
-          t3: { threadId: null; title: string; worktreePath: string };
-        };
-        frontierPickupSelects: string;
-      };
-      liveFrontierCapture: {
-        capturedAt: string;
-        argv: string[];
-        result: {
-          ok: boolean;
-          code: string;
-          message: string;
-          transactionId: null;
-          stage: string;
-          recoverable: boolean;
-          details: { map: string };
-        };
-      };
-    }>("legacy-wf.json");
+    const value = fixture("legacy-wf.json", legacyWfFixtureSchema);
 
     expect(value.formatVersion).toBe(1);
     for (const command of value.commands) {
@@ -364,9 +483,11 @@ describe("compatibility fixtures exercise production behavior", () => {
       "workspace",
     ]);
 
-    const mapRef = `tracker:fixture:workspace:map:${value.offlineGolden.map.key}` as MapRef;
+    const mapRef = mapRefSchema.parse(
+      `tracker:fixture:workspace:map:${value.offlineGolden.map.key}`,
+    );
     const portableTickets = value.offlineGolden.tickets.map<Ticket>((ticket) => ({
-      ref: `tracker:fixture:workspace:ticket:${ticket.key}` as TicketRef,
+      ref: ticketRefSchema.parse(`tracker:fixture:workspace:ticket:${ticket.key}`),
       map: mapRef,
       kind: ticket.role,
       state: "open",
@@ -391,9 +512,9 @@ describe("compatibility fixtures exercise production behavior", () => {
       tickets: value.offlineGolden.tickets.map(({ order: _order, ...ticket }) => ticket),
     });
     expect(nativeIds.length).toBeGreaterThan(0);
-    expect(value.offlineGolden.frontierPickupSelects).toBe(nativeIds[0] as string);
+    expect(value.offlineGolden.frontierPickupSelects).toBe(z.string().parse(nativeIds[0]));
 
-    const pickup = fixture<PickupFixture>("pickup.json");
+    const pickup = fixture("pickup.json", pickupFixtureSchema);
     expect(value.offlineGolden.pickupPlanReceipt.workspace).toEqual({
       ...pickup.workspacePlan,
       policy: "ticket-key-v1",
@@ -423,17 +544,12 @@ describe("compatibility fixtures exercise production behavior", () => {
   });
 
   test("frontier fixture is evaluated and ordered by evaluateFrontier", () => {
-    const value = fixture<{
-      scope: string;
-      availableStatuses: string[];
-      tickets: TicketFixture[];
-      expectedRefs: string[];
-    }>("frontier.json");
+    const value = fixture("frontier.json", frontierFixtureSchema);
     const tickets = value.tickets.map(ticketFromFixture);
 
     const result = evaluateFrontier(
       tickets,
-      { map: value.scope as MapRef },
+      { map: mapRefSchema.parse(value.scope) },
       {
         availableStatuses: new Set(value.availableStatuses),
       },
@@ -443,7 +559,7 @@ describe("compatibility fixtures exercise production behavior", () => {
   });
 
   test("pickup fixture drives PickupCoordinator and asserts every expected field", async () => {
-    const value = fixture<PickupFixture>("pickup.json");
+    const value = fixture("pickup.json", pickupFixtureSchema);
     const subject = pickupSubject(value);
 
     const result = await subject.coordinator.execute(subject.request);
@@ -457,7 +573,7 @@ describe("compatibility fixtures exercise production behavior", () => {
     });
     expect(subject.workspace.preflightTicket).toEqual(ticketFromFixture(value.ticket));
     expect(subject.workspace.planResult).toEqual({
-      ticket: value.ticket.ref as TicketRef,
+      ticket: ticketRefSchema.parse(value.ticket.ref),
       path: value.workspacePlan.path,
       branch: value.workspacePlan.branch,
     });
@@ -479,25 +595,8 @@ describe("compatibility fixtures exercise production behavior", () => {
   });
 
   test("failure fixtures drive coordinator compensation paths", async () => {
-    const pickup = fixture<PickupFixture>("pickup.json");
-    const value = fixture<{
-      cases: Array<{
-        name: string;
-        failure: {
-          phase: "claim" | "workspace_prepare" | "harness_launch";
-          error: "claim_collision" | "ambiguous_tracker_result" | "error";
-          restorationError?: "ambiguous_tracker_result";
-        };
-        expected: {
-          state: PickupState;
-          restoreCalls: number;
-          restoresOriginalSnapshot?: boolean;
-          workspacePrepareCalls?: number;
-          harnessLaunchCalls?: number;
-          recoveryRequiredSaves: number;
-        };
-      }>;
-    }>("errors.json");
+    const pickup = fixture("pickup.json", pickupFixtureSchema);
+    const value = fixture("errors.json", errorsFixtureSchema);
 
     for (const scenario of value.cases) {
       const subject = pickupSubject(pickup);

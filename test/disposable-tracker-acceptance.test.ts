@@ -2,41 +2,45 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type {
-  Clock,
-  PickupRequest,
-  RunLifecycleAdapter,
-  WorkspaceAdapter,
-} from "../src/contracts.ts";
-import { AmbiguousTrackerResultError, ClaimCollisionError } from "../src/contracts.ts";
-import {
-  type ActorRef,
-  type AdapterRef,
-  type ClaimRef,
-  capabilities,
-  claimStatusAt,
-  type MapRef,
-  type ObservedSessionState,
-  type RunRef,
-  type Ticket,
-  type TicketRef,
-  type WorkspaceRef,
-} from "../src/domain.ts";
-import { evaluateFrontier } from "../src/frontier.ts";
+import { z } from "zod";
 import {
   CommandHarnessAdapter,
   type HarnessPlatform,
   type HarnessProcess,
-} from "../src/harness-adapters.ts";
-import { LifecycleCoordinator, Supervisor } from "../src/lifecycle.ts";
+} from "../src/adapters/harnesses/command.ts";
 import {
   formatMarkdownTracker,
   MarkdownTrackerAdapter,
   type MarkdownTrackerClock,
   type MarkdownTrackerDocument,
-} from "../src/markdown-tracker.ts";
-import { PickupCoordinator, PickupResultError } from "../src/pickup.ts";
-import { StateStore } from "../src/state.ts";
+} from "../src/adapters/trackers/markdown.ts";
+import type {
+  Clock,
+  PickupRequest,
+  RunLifecycleAdapter,
+  WorkspaceAdapter,
+} from "../src/domain/contracts.ts";
+import { AmbiguousTrackerResultError, ClaimCollisionError } from "../src/domain/contracts.ts";
+import {
+  actorRefSchema,
+  adapterRefSchema,
+  claimRefSchema,
+  mapRefSchema,
+  runRefSchema,
+  ticketRefSchema,
+  workspaceRefSchema,
+} from "../src/domain/identifiers.ts";
+import {
+  capabilities,
+  claimStatusAt,
+  type ObservedSessionState,
+  type Ticket,
+  type TicketRef,
+} from "../src/domain/model.ts";
+import { LifecycleCoordinator, Supervisor } from "../src/execution/lifecycle.ts";
+import { PickupCoordinator, PickupResultError } from "../src/execution/pickup.ts";
+import { evaluateFrontier } from "../src/frontier/evaluate.ts";
+import { StateStore } from "../src/persistence/state.ts";
 
 // JWB-295 — disposable-tracker and cross-platform acceptance testing.
 //
@@ -48,13 +52,13 @@ import { StateStore } from "../src/state.ts";
 // (JWB-290) — the disposable tracker — and a deterministic, injected harness
 // platform, so every behavior is proven end to end without external services.
 
-const workspace = "markdown:local:accept" as WorkspaceRef;
-const map1 = "markdown:local:accept:map:m1" as MapRef;
-const map2 = "markdown:local:accept:map:m2" as MapRef;
-const ta = "markdown:local:accept:ticket:a" as TicketRef; // map1, order 0, frontier head
-const tb = "markdown:local:accept:ticket:b" as TicketRef; // map2, order 1, cross-map blocked by ta
-const tc = "markdown:local:accept:ticket:c" as TicketRef; // map1, order 2
-const owner = "jaren" as ActorRef;
+const workspace = workspaceRefSchema.parse("markdown:local:accept");
+const map1 = mapRefSchema.parse("markdown:local:accept:map:m1");
+const map2 = mapRefSchema.parse("markdown:local:accept:map:m2");
+const ta = ticketRefSchema.parse("markdown:local:accept:ticket:a"); // map1, order 0, frontier head
+const tb = ticketRefSchema.parse("markdown:local:accept:ticket:b"); // map2, order 1, cross-map blocked by ta
+const tc = ticketRefSchema.parse("markdown:local:accept:ticket:c"); // map1, order 2
+const owner = actorRefSchema.parse("jaren");
 
 const CLAIM_TIME = "2026-08-11T12:00:00.000Z";
 const LEASE_TIME = "2026-08-11T12:15:00.000Z"; // CLAIM_TIME + default 15 minute lease
@@ -227,15 +231,15 @@ function makePickup(options: {
     harness,
     ledger: options.store,
     ids: {
-      run: () => options.runRef as RunRef,
-      claim: () => options.claimRef as ClaimRef,
+      run: () => runRefSchema.parse(options.runRef),
+      claim: () => claimRefSchema.parse(options.claimRef),
     },
     clock: fixedClock,
   });
   const request: PickupRequest = {
     ticket: options.ticket ?? ta,
     owner,
-    harness: "command" as AdapterRef,
+    harness: adapterRefSchema.parse("command"),
   };
   return { coordinator, request, spawned: platform.spawned };
 }
@@ -320,10 +324,8 @@ describe("JWB-295 disposable-tracker acceptance", () => {
     const rejected = outcomes.filter((result) => result.status === "rejected");
     expect(fulfilled).toHaveLength(1);
     expect(rejected).toHaveLength(1);
-    expect(
-      (fulfilled[0] as PromiseFulfilledResult<{ ok: boolean; state: string }>).value,
-    ).toMatchObject({ ok: true, state: "committed" });
-    expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(Error);
+    expect(fulfilled[0]?.value).toMatchObject({ ok: true, state: "committed" });
+    expect(rejected[0]?.reason).toBeInstanceOf(Error);
 
     // The source of truth records exactly one active claim.
     const raced = (await tracker.read()).tickets.find((ticket) => ticket.ref === ta);
@@ -335,8 +337,8 @@ describe("JWB-295 disposable-tracker acceptance", () => {
     const clean = await fixtureTracker();
     const before = await clean.snapshotClaimState(ta);
     const claimRequest = (claim: string, run: string) => ({
-      claim: claim as ClaimRef,
-      run: run as RunRef,
+      claim: claimRefSchema.parse(claim),
+      run: runRefSchema.parse(run),
       ticket: ta,
       owner,
       leaseExpiresAt: LEASE_TIME,
@@ -389,8 +391,8 @@ describe("JWB-295 disposable-tracker acceptance", () => {
     const tracker = await fixtureTracker({ now: () => new Date(current) });
     const before = await tracker.snapshotClaimState(ta);
     const firstClaim = {
-      claim: "wayfinder-claim:first" as ClaimRef,
-      run: "wayfinder-run:first" as RunRef,
+      claim: claimRefSchema.parse("wayfinder-claim:first"),
+      run: runRefSchema.parse("wayfinder-run:first"),
       ticket: ta,
       owner,
       leaseExpiresAt: LEASE_TIME,
@@ -404,8 +406,8 @@ describe("JWB-295 disposable-tracker acceptance", () => {
     await expect(
       tracker.reclaim({
         staleClaim: firstClaim.claim,
-        claim: "wayfinder-claim:second" as ClaimRef,
-        run: "wayfinder-run:second" as RunRef,
+        claim: claimRefSchema.parse("wayfinder-claim:second"),
+        run: runRefSchema.parse("wayfinder-run:second"),
         ticket: ta,
         owner,
         authorizedBy: owner,
@@ -420,8 +422,8 @@ describe("JWB-295 disposable-tracker acceptance", () => {
     const stale = await tracker.snapshotClaimState(ta);
     const reclaim = {
       staleClaim: firstClaim.claim,
-      claim: "wayfinder-claim:second" as ClaimRef,
-      run: "wayfinder-run:second" as RunRef,
+      claim: claimRefSchema.parse("wayfinder-claim:second"),
+      run: runRefSchema.parse("wayfinder-run:second"),
       ticket: ta,
       owner,
       authorizedBy: owner,
@@ -461,7 +463,10 @@ describe("JWB-295 disposable-tracker acceptance", () => {
       .then(() => undefined)
       .catch((caught) => caught);
     expect(error).toBeInstanceOf(PickupResultError);
-    expect((error as PickupResultError).receipt).toMatchObject({ ok: false, state: "compensated" });
+    expect(z.instanceof(PickupResultError).parse(error).receipt).toMatchObject({
+      ok: false,
+      state: "compensated",
+    });
 
     // The claim payload is restored exactly; the ticket is fully released.
     const restored = await tracker.snapshotClaimState(ta);
@@ -495,10 +500,10 @@ describe("JWB-295 disposable-tracker acceptance", () => {
       .then(() => undefined)
       .catch((caught) => caught);
     expect(error).toBeInstanceOf(PickupResultError);
-    const receipt = (error as PickupResultError).receipt;
+    const receipt = z.instanceof(PickupResultError).parse(error).receipt;
     expect(receipt.state).toBe("recovery_required");
     expect(receipt.recoveryCommand).toContain("wayfinder recover wayfinder-run:rec");
-    expect(store.run("wayfinder-run:rec" as RunRef).status).toBe("recovery_required");
+    expect(store.run(runRefSchema.parse("wayfinder-run:rec")).status).toBe("recovery_required");
   });
 
   test("stop tears down execution while release separately returns the claim", async () => {
@@ -584,7 +589,9 @@ describe("JWB-295 disposable-tracker acceptance", () => {
     ]);
 
     // The persisted ledger records the ordered transaction and a parity copy.
-    const steps = store.steps(receipt.run) as Array<{ state: string; receipt_json: string }>;
+    const steps = z
+      .array(z.object({ state: z.string(), receipt_json: z.string().nullable() }))
+      .parse(store.steps(receipt.run));
     expect(steps.map((step) => step.state)).toEqual([
       "planning",
       "claiming",
@@ -595,7 +602,9 @@ describe("JWB-295 disposable-tracker acceptance", () => {
     ]);
     const committed = steps.find((step) => step.state === "committed");
     expect(committed).toBeDefined();
-    expect(JSON.parse((committed as { receipt_json: string }).receipt_json)).toEqual(receipt);
+    expect(
+      JSON.parse(z.object({ receipt_json: z.string() }).parse(committed).receipt_json),
+    ).toEqual(receipt);
   });
 
   test("the generic harness renders identical argv and capabilities across platforms", async () => {
@@ -614,13 +623,13 @@ describe("JWB-295 disposable-tracker acceptance", () => {
         prompt_generation: true,
       });
       const launch = await harness.launch({
-        run: "wayfinder-run:xp" as RunRef,
+        run: runRefSchema.parse("wayfinder-run:xp"),
         ticket,
         workspace: { path: wsPath },
       });
       expect(launch.tier).toBe("launch");
       expect(spawned[0]?.slice(0, 2)).toEqual(["fake-harness", wsPath]);
-      expect(spawned[0]?.[2]).toContain(`Work on ${ta}`);
+      expect(spawned[0]?.[2]).toContain(`Ticket:\n${ta}`);
     }
   });
 

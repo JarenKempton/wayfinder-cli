@@ -2,15 +2,17 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { builtInAdapters } from "../src/adapters.ts";
-import type { LaunchRequest } from "../src/contracts.ts";
-import type { HarnessPlatform, HarnessProcess } from "../src/harness-adapters.ts";
+import type { HarnessPlatform, HarnessProcess } from "../src/adapters/harnesses/command.ts";
 import {
   CommandHarnessAdapter,
   type NamedHarnessName,
   namedHarnessAdapter,
   namedHarnessCapabilities,
-} from "../src/harness-adapters.ts";
+} from "../src/adapters/harnesses/command.ts";
+import { namedHarnessNameSchema } from "../src/adapters/harnesses/profiles.ts";
+import { builtInAdapters } from "../src/adapters/registry.ts";
+import type { LaunchRequest } from "../src/domain/contracts.ts";
+import { mapRefSchema, ticketRefSchema } from "../src/domain/identifiers.ts";
 
 class FakePlatform implements HarnessPlatform {
   platform: NodeJS.Platform = "darwin";
@@ -44,8 +46,8 @@ function fixture() {
   const request: LaunchRequest = {
     run: "wayfinder-run:test",
     ticket: {
-      ref: "jira:example:W:ticket:T-1" as LaunchRequest["ticket"]["ref"],
-      map: "jira:example:W:map:M-1" as LaunchRequest["ticket"]["map"],
+      ref: ticketRefSchema.parse("jira:example:W:ticket:T-1"),
+      map: mapRefSchema.parse("jira:example:W:map:M-1"),
       kind: "task",
       state: "open",
       status: "In Progress",
@@ -122,10 +124,16 @@ describe("generic command harness", () => {
     platform.found.add("agent");
     const adapter = new CommandHarnessAdapter({ argv: ["agent", "{prompt}"], platform });
     try {
+      item.request.ticket.title = "Task title";
+      item.request.ticket.description = "## Acceptance criteria\nVerify argv context delivery.";
       const receipt = await adapter.launch(item.request);
+      const prompt = platform.calls[0]?.argv[1];
+      expect(prompt).toContain("Task title");
+      expect(prompt).toContain("Acceptance criteria:\nVerify argv context delivery.");
+      expect(prompt).toContain("Keep the change narrow.");
       expect(platform.calls).toEqual([
         {
-          argv: ["agent", "Work on jira:example:W:ticket:T-1.\n\nKeep the change narrow."],
+          argv: ["agent", expect.stringContaining("Ticket:\njira:example:W:ticket:T-1")],
           cwd: item.path,
         },
       ]);
@@ -184,13 +192,13 @@ describe("named harnesses", () => {
       for (const [name, profile] of Object.entries(profiles)) {
         const platform = new FakePlatform();
         platform.found.add(profile.executable);
-        const adapter = namedHarnessAdapter(name as NamedHarnessName, platform);
+        const adapter = namedHarnessAdapter(namedHarnessNameSchema.parse(name), platform);
         const receipt = await adapter.launch(item.request);
         expect(platform.calls).toEqual([
           {
             argv: profile.argv.map((token) =>
               token === "{prompt}"
-                ? "Work on jira:example:W:ticket:T-1.\n\nKeep the change narrow."
+                ? expect.stringContaining("Ticket:\njira:example:W:ticket:T-1")
                 : token,
             ),
             cwd: item.path,
@@ -206,15 +214,17 @@ describe("named harnesses", () => {
   test("detection adds only process launch to the implemented prepare tier", async () => {
     for (const [name, profile] of Object.entries(profiles)) {
       const platform = new FakePlatform();
-      const adapter = namedHarnessAdapter(name as NamedHarnessName, platform);
+      const adapter = namedHarnessAdapter(namedHarnessNameSchema.parse(name), platform);
       expect(await adapter.describe()).toEqual({ prompt_generation: true });
-      expect(namedHarnessCapabilities(name as NamedHarnessName, platform)).toEqual({
+      expect(namedHarnessCapabilities(namedHarnessNameSchema.parse(name), platform)).toEqual({
         prompt_generation: true,
       });
       platform.found.add(profile.executable);
       const expected = { prompt_generation: true, process_launch: true } as const;
       expect(await adapter.describe()).toEqual(expected);
-      expect(namedHarnessCapabilities(name as NamedHarnessName, platform)).toEqual(expected);
+      expect(namedHarnessCapabilities(namedHarnessNameSchema.parse(name), platform)).toEqual(
+        expected,
+      );
     }
   });
 
@@ -225,7 +235,9 @@ describe("named harnesses", () => {
         platform.platform = os;
         platform.found.add(profile.executable);
         const launchSupported = os !== "win32" || profile.nativeWindows;
-        expect(await namedHarnessAdapter(name as NamedHarnessName, platform).describe()).toEqual({
+        expect(
+          await namedHarnessAdapter(namedHarnessNameSchema.parse(name), platform).describe(),
+        ).toEqual({
           prompt_generation: true,
           ...(launchSupported ? { process_launch: true } : {}),
         });
@@ -283,7 +295,7 @@ describe("named harnesses", () => {
     for (const [name, profile] of Object.entries(profiles)) {
       const platform = new FakePlatform();
       platform.found.add(profile.executable);
-      const adapter = namedHarnessAdapter(name as NamedHarnessName, platform);
+      const adapter = namedHarnessAdapter(namedHarnessNameSchema.parse(name), platform);
       const described = await adapter.describe();
       for (const capability of forbidden) expect(described[capability]).toBeUndefined();
     }

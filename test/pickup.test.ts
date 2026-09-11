@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 import {
   AmbiguousTrackerResultError,
   ClaimCollisionError,
@@ -16,19 +17,25 @@ import {
   type RestoreClaimRequest,
   type TrackerAdapter,
   type WorkspaceAdapter,
-} from "../src/contracts.ts";
+} from "../src/domain/contracts.ts";
 import {
-  type ActorRef,
-  type ClaimRef,
+  actorRefSchema,
+  adapterRefSchema,
+  claimRefSchema,
+  mapRefSchema,
+  runRefSchema,
+  ticketRefSchema,
+} from "../src/domain/identifiers.ts";
+import {
   capabilities,
   type Run,
   type RunRef,
   type Ticket,
   type TicketRef,
   type TrackerSnapshot,
-} from "../src/domain.ts";
-import { PickupCoordinator, PickupResultError } from "../src/pickup.ts";
-import { StateStore } from "../src/state.ts";
+} from "../src/domain/model.ts";
+import { PickupCoordinator, PickupResultError } from "../src/execution/pickup.ts";
+import { StateStore } from "../src/persistence/state.ts";
 
 class FailingCompensatedStateStore extends StateStore {
   readonly compensatedStepError = new Error("cannot persist compensated step");
@@ -44,8 +51,8 @@ class FakeLedger implements Ledger {
   recordStepError?: Error;
   recordStepErrorState?: string;
   saveRecoveryRequiredError?: Error;
-  saveClaim(_claim: import("../src/domain.ts").Claim): void {}
-  commitClaim(_claim: import("../src/domain.ts").Claim): void {
+  saveClaim(_claim: import("../src/domain/model.ts").Claim): void {}
+  commitClaim(_claim: import("../src/domain/model.ts").Claim): void {
     this.steps.push("claimed");
   }
   recoveryRun?: Run;
@@ -98,7 +105,7 @@ class FakeTracker implements TrackerAdapter {
   async getTicket(ticket: TicketRef): Promise<Ticket> {
     return {
       ref: ticket,
-      map: "jira:x:W:map:M" as Ticket["map"],
+      map: mapRefSchema.parse("jira:x:W:map:M"),
       kind: "task",
       state: "open",
       status: "To Do",
@@ -170,9 +177,9 @@ class FakeHarness implements HarnessAdapter {
 }
 
 const request = {
-  ticket: "jira:x:W:ticket:A" as TicketRef,
-  owner: "human" as ActorRef,
-  harness: "codex" as Run["harness"],
+  ticket: ticketRefSchema.parse("jira:x:W:ticket:A"),
+  owner: actorRefSchema.parse("human"),
+  harness: adapterRefSchema.parse("codex"),
 };
 
 function coordinator(
@@ -192,8 +199,8 @@ function coordinator(
       harness,
       ledger,
       ids: {
-        run: () => "wayfinder-run:test" as RunRef,
-        claim: () => "wayfinder-claim:test" as ClaimRef,
+        run: () => runRefSchema.parse("wayfinder-run:test"),
+        claim: () => claimRefSchema.parse("wayfinder-claim:test"),
       },
       clock: { now: () => new Date("2026-08-10T12:00:00Z") },
     }),
@@ -206,7 +213,7 @@ async function failure(subject: PickupCoordinator): Promise<PickupResultError> {
     throw new Error("Expected pickup to fail");
   } catch (error) {
     expect(error).toBeInstanceOf(PickupResultError);
-    return error as PickupResultError;
+    return z.instanceof(PickupResultError).parse(error);
   }
 }
 
@@ -371,8 +378,8 @@ describe("pickup coordinator", () => {
       harness: new FakeHarness(),
       ledger: store,
       ids: {
-        run: () => "wayfinder-run:test" as RunRef,
-        claim: () => "wayfinder-claim:test" as ClaimRef,
+        run: () => runRefSchema.parse("wayfinder-run:test"),
+        claim: () => claimRefSchema.parse("wayfinder-claim:test"),
       },
       clock: { now: () => new Date("2026-08-10T12:00:00Z") },
     });
@@ -386,16 +393,16 @@ describe("pickup coordinator", () => {
         recoveryCommand: `wayfinder recover wayfinder-run:test --evidence '{"tracker":"verify","session":"verify"}'`,
       });
       expect(result.cause).toBeInstanceOf(AggregateError);
-      const error = result.cause as AggregateError;
+      const error = z.instanceof(AggregateError).parse(result.cause);
       expect(error.message).toBe("Pickup compensation could not be fully verified");
       expect(error.errors).toEqual([workspace.prepareError, store.compensatedStepError]);
-      expect(store.run("wayfinder-run:test" as RunRef).status).toBe("recovery_required");
-      expect(store.claim("wayfinder-claim:test" as ClaimRef).status).toBe("active");
-      expect(store.steps("wayfinder-run:test" as RunRef).at(-1)).toMatchObject({
+      expect(store.run(runRefSchema.parse("wayfinder-run:test")).status).toBe("recovery_required");
+      expect(store.claim(claimRefSchema.parse("wayfinder-claim:test")).status).toBe("active");
+      expect(store.steps(runRefSchema.parse("wayfinder-run:test")).at(-1)).toMatchObject({
         state: "recovery_required",
         error_text: "Pickup compensation could not be fully verified",
       });
-      expect(store.recoveryEvidence("wayfinder-run:test" as RunRef)).toEqual([
+      expect(store.recoveryEvidence(runRefSchema.parse("wayfinder-run:test"))).toEqual([
         expect.objectContaining({
           outcome: "verification_required",
           evidence_json: JSON.stringify({
@@ -440,16 +447,16 @@ describe("pickup coordinator", () => {
     expect(item.tracker.restoreCalls).toBe(1);
     expect(result.receipt.state).toBe("recovery_required");
     expect(result.cause).toBeInstanceOf(AggregateError);
-    const outer = result.cause as AggregateError;
+    const outer = z.instanceof(AggregateError).parse(result.cause);
     expect(outer.message).toBe(
       "Pickup requires recovery and its recovery ledger could not be persisted",
     );
     expect(outer.errors).toHaveLength(2);
     expect(outer.errors[0]).toBeInstanceOf(AggregateError);
-    expect((outer.errors[0] as AggregateError).message).toBe(
+    expect(z.instanceof(AggregateError).parse(outer.errors[0]).message).toBe(
       "Pickup compensation could not be fully verified",
     );
-    expect((outer.errors[0] as AggregateError).errors).toEqual([
+    expect(z.instanceof(AggregateError).parse(outer.errors[0]).errors).toEqual([
       workspace.prepareError,
       tracker.verifyRestoreError,
     ]);

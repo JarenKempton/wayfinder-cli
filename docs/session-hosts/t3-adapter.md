@@ -7,10 +7,10 @@ first-release acceptance records: reconnect reads the recorded session without
 sending a message; missing/unreachable sessions require explicit recovery;
 stop verifies the provider outcome and preserves workspace and claim.
 
-`src/t3-adapter.ts` implements structured project registration, bootstrap,
+`src/adapters/session-hosts/t3/adapter.ts` implements structured project registration, bootstrap,
 snapshot inspection, reconnect, explicit follow-up, a low-level session-stop request,
 and an observation-only `RunLifecycleAdapter` bridge. Verified termination is blocked
-by T3's currently known evidence limits, documented below. `src/platform/t3.ts` owns local runtime
+by T3's currently known evidence limits, documented below. `src/adapters/session-hosts/t3/connection.ts` owns local runtime
 discovery, HTTP, and Bun credential subprocesses. No public protocol or generic
 runtime abstraction changes, lane store, daemon, or tracker mutations are added.
 The copied handler MOVE rules and absent `docs/action-layer-plan.md` do not apply

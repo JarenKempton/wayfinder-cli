@@ -1,6 +1,5 @@
 import { describe, expect, test } from "bun:test";
 import { resolve } from "node:path";
-import type { RepositorySpec, Ticket, TicketRef } from "../src/domain.ts";
 import {
   DirtyWorkspaceError,
   type GitCommandExecutor,
@@ -11,7 +10,9 @@ import {
   ticketIdentity,
   WorkspaceConflictError,
   type WorkspaceFileSystem,
-} from "../src/git-workspace.ts";
+} from "../src/adapters/workspaces/git.ts";
+import { mapRefSchema, ticketRefSchema } from "../src/domain/identifiers.ts";
+import type { RepositorySpec, Ticket } from "../src/domain/model.ts";
 
 class FakeGit implements GitCommandExecutor {
   readonly calls: { argv: readonly string[]; cwd: string }[] = [];
@@ -65,8 +66,8 @@ const repository: RepositorySpec = {
 };
 const repositoryPath = resolve(repository.path);
 const ticket: Ticket = {
-  ref: "jira:example:TEAM:ticket:ABC-123" as TicketRef,
-  map: "jira:example:TEAM:map:ABC-1" as Ticket["map"],
+  ref: ticketRefSchema.parse("jira:example:TEAM:ticket:ABC-123"),
+  map: mapRefSchema.parse("jira:example:TEAM:map:ABC-1"),
   kind: "task",
   state: "open",
   status: "To Do",
@@ -106,11 +107,11 @@ describe("Git workspace adapter", () => {
     const { workspace } = subject();
     const otherInstance = {
       ...ticket,
-      ref: "jira:other:TEAM:ticket:ABC-123" as TicketRef,
+      ref: ticketRefSchema.parse("jira:other:TEAM:ticket:ABC-123"),
     };
     const otherWorkspace = {
       ...ticket,
-      ref: "jira:example:OTHER:ticket:ABC-123" as TicketRef,
+      ref: ticketRefSchema.parse("jira:example:OTHER:ticket:ABC-123"),
     };
     const plans = await Promise.all([
       workspace.plan(ticket),

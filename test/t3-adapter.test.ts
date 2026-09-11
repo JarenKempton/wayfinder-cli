@@ -2,12 +2,14 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
+import { T3Adapter, type T3Receipt, t3Receipt } from "../src/adapters/session-hosts/t3/adapter.ts";
+import type { T3Connection } from "../src/adapters/session-hosts/t3/connection.ts";
 import { run as runCli } from "../src/cli.ts";
-import type { Claim, Run } from "../src/domain.ts";
-import { LifecycleCoordinator } from "../src/lifecycle.ts";
-import type { T3Connection } from "../src/platform/t3.ts";
-import { StateStore } from "../src/state.ts";
-import { T3Adapter, type T3Receipt } from "../src/t3-adapter.ts";
+import { actorRefSchema, adapterRefSchema, ticketRefSchema } from "../src/domain/identifiers.ts";
+import type { Claim, Run } from "../src/domain/model.ts";
+import { LifecycleCoordinator } from "../src/execution/lifecycle.ts";
+import { StateStore } from "../src/persistence/state.ts";
 import recorded from "./fixtures/t3-snapshot.json";
 
 function present<T>(value: T | undefined): T {
@@ -52,10 +54,10 @@ function fixture(cleanupOutcome: "pending" | "failed" | "completed" = "pending")
     async request(method, path, body) {
       calls.push({ method, path, ...(body ? { body } : {}) });
       if (method === "GET") return structuredClone(snapshot);
-      const command = body as Record<string, unknown>;
+      const command = z.record(z.string(), z.unknown()).parse(body);
       if (settle && command.type === "thread.turn.start") {
         const thread = snapshot.threads[0] ?? structuredClone(present(recorded.threads[0]));
-        thread.id = command.threadId as string;
+        thread.id = z.string().parse(command.threadId);
         thread.session.threadId = thread.id;
         thread.latestTurn.turnId = "turn-next";
         snapshot.threads = [thread];
@@ -314,9 +316,9 @@ describe("T3 recorded observation and conformance", () => {
     await expect(
       f.adapter.bootstrap({ ...receipt.t3, title: "Fixture", prompt: "Work" }),
     ).rejects.toThrow("dispatch_unknown");
-    const saved = JSON.parse(JSON.stringify(present(f.events[0]).evidence)) as {
-      receipt: T3Receipt;
-    };
+    const saved = z
+      .object({ receipt: z.unknown().transform(t3Receipt) })
+      .parse(JSON.parse(JSON.stringify(present(f.events[0]).evidence)));
     const restarted = new T3Adapter({ connect: async () => f.connection, journal: async () => {} });
     const observed = await restarted.reconnect(saved.receipt);
     expect(observed.turnId).toBe("turn-next");
@@ -339,7 +341,7 @@ describe("T3 recorded observation and conformance", () => {
     f.snapshot.threads = [];
     const request = f.connection.request;
     f.connection.request = async (method, path, body) => {
-      if ((body as Record<string, unknown> | undefined)?.type === "project.create") {
+      if (z.record(z.string(), z.unknown()).optional().parse(body)?.type === "project.create") {
         f.snapshot.projects = structuredClone(recorded.projects);
       }
       return request(method, path, body);
@@ -420,9 +422,8 @@ describe("T3 recorded observation and conformance", () => {
   ])("contradictory/incomplete %s evidence never verifies stop", async (kind) => {
     const f = fixture();
     const thread = present(f.snapshot.threads[0]);
-    const raw = thread as unknown as Record<string, unknown>;
-    if (kind === "null-session") raw.session = null;
-    if (kind === "null-turn") raw.latestTurn = null;
+    if (kind === "null-session") Object.assign(thread, { session: null });
+    if (kind === "null-turn") Object.assign(thread, { latestTurn: null });
     if (kind === "unknown-enum") thread.session.status = "future-status";
     if (kind === "active-turn") Object.assign(thread.session, { activeTurnId: "wrong-turn" });
     if (kind === "last-error") Object.assign(thread.session, { lastError: "private failure" });
@@ -480,7 +481,9 @@ describe("T3 recorded observation and conformance", () => {
 
   test("reconnect journals only validated receipt fields", async () => {
     const f = fixture();
-    await f.adapter.reconnect({ ...receipt, unrelatedConversation: "private-data" } as T3Receipt);
+    await f.adapter.reconnect(
+      Object.assign({}, receipt, { unrelatedConversation: "private-data" }),
+    );
     expect(JSON.stringify(f.events)).not.toContain("private-data");
   });
 
@@ -506,8 +509,8 @@ test.each(["projected-stopped", "unverified", "missing", "unavailable"])(
       present(f.snapshot.threads[0]).worktreePath = directory;
       const run: Run = {
         ref: "wayfinder-run:t3",
-        ticket: "jira:fixture" as Run["ticket"],
-        harness: "t3" as Run["harness"],
+        ticket: ticketRefSchema.parse("jira:fixture"),
+        harness: adapterRefSchema.parse("t3"),
         workspace: { path: directory, branch: receipt.t3.branch },
         capabilities: f.adapter.capabilities,
         status: "active",
@@ -518,7 +521,7 @@ test.each(["projected-stopped", "unverified", "missing", "unavailable"])(
       const claim: Claim = {
         ref: "wayfinder-claim:t3",
         ticket: run.ticket,
-        humanOwner: "jaren" as Claim["humanOwner"],
+        humanOwner: actorRefSchema.parse("jaren"),
         run: run.ref,
         previousState: { version: "1", payload: {} },
         claimedAt: run.createdAt,
@@ -567,7 +570,9 @@ test.each([{ options: [] }, { options: ["--live"] }, { options: ["--read-only", 
   "CLI T3 refuses lifecycle or ambiguous options %j",
   async ({ options }) => {
     await expect(runCli(["adapter", "test", "t3", ...options], () => {})).rejects.toThrow(
-      "pending a disposable-session approval packet",
+      options.length
+        ? "Invalid arguments"
+        : "For T3, this command supports read-only discovery only",
     );
   },
 );

@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
 import { chmodSync } from "node:fs";
 import { join } from "node:path";
+import { z } from "zod";
+import { runAdapterConformance } from "../src/adapters/conformance.ts";
+import { AdapterClient } from "../src/adapters/protocol.ts";
 import { run } from "../src/cli.ts";
-import { runAdapterConformance } from "../src/conformance.ts";
-import type { AdapterDescription } from "../src/protocol.ts";
 
 const fixture = join(import.meta.dir, "fixtures", "conformance-adapter.ts");
 chmodSync(fixture, 0o755);
@@ -31,7 +32,7 @@ test("adapter test remains a non-destructive initialization smoke test", async (
   const output: string[] = [];
   await run(["adapter", "test", fixture], (line) => output.push(line));
 
-  const result = JSON.parse(output[0] ?? "") as { ok: boolean; adapter: AdapterDescription };
+  const result = JSON.parse(output[0] ?? "");
   expect(result).toEqual({
     ok: true,
     adapter: {
@@ -47,7 +48,16 @@ test("adapter conformance is an explicit fixture-only command", async () => {
   const output: string[] = [];
   await run(["adapter", "conformance", fixture], (line) => output.push(line));
 
-  const result = JSON.parse(output[0] ?? "") as { ok: boolean; checks: unknown[] };
+  const result = z
+    .object({ ok: z.boolean(), checks: z.array(z.unknown()) })
+    .parse(JSON.parse(output[0] ?? ""));
   expect(result.ok).toBe(true);
   expect(result.checks).toHaveLength(9);
+});
+
+test("typed RPC results must satisfy the caller schema before use", async () => {
+  const client = new AdapterClient([process.execPath, fixture]);
+  await expect(
+    client.call("adapter.initialize", {}, {}, z.object({ requiredResult: z.string() })),
+  ).rejects.toThrow("Invalid adapter result");
 });

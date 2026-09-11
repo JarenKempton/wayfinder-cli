@@ -1,9 +1,19 @@
 import { describe, expect, test } from "bun:test";
-import type { Ticket, TicketRef } from "../src/domain.ts";
-import { deriveCloseoutFrontierHandoff, reconcileDependencyStatuses } from "../src/frontier.ts";
+import {
+  actorRefSchema,
+  groupRefSchema,
+  mapRefSchema,
+  ticketRefSchema,
+} from "../src/domain/identifiers.ts";
+import type { Ticket } from "../src/domain/model.ts";
+import { ticketSchema } from "../src/domain/tickets.ts";
+import {
+  deriveCloseoutFrontierHandoff,
+  reconcileDependencyStatuses,
+} from "../src/frontier/evaluate.ts";
 
-const ref = (value: string) => value as TicketRef;
-const map = "jira:x:W:map:M" as Ticket["map"];
+const ref = (value: string) => ticketRefSchema.parse(value);
+const map = mapRefSchema.parse("jira:x:W:map:M");
 const policy = {
   ready: "To Do",
   blocked: "Blocked",
@@ -54,12 +64,12 @@ describe("dependency status reconciliation", () => {
 
   test("does not overwrite assigned, closed, or unmanaged workflow states", () => {
     const blocker = ticket("A", 0);
-    const assigned = { ...ticket("B", 1), assignee: "human" as NonNullable<Ticket["assignee"]> };
+    const assigned = { ...ticket("B", 1), assignee: actorRefSchema.parse("human") };
     const active = ticket("C", 2, "In Progress");
     const closed = { ...ticket("D", 3, "Done"), state: "closed" as const };
     const unmanaged = {
       ...ticket("E", 4, "Backlog"),
-      assignee: "human" as NonNullable<Ticket["assignee"]>,
+      assignee: actorRefSchema.parse("human"),
     };
     for (const item of [assigned, active, closed, unmanaged]) {
       item.dependencies = [{ blocking: blocker.ref, blocked: item.ref, kind: "blocks" }];
@@ -101,7 +111,7 @@ describe("dependency status reconciliation", () => {
   });
 
   test("uses cross-map blockers from the full graph but reports only scoped tickets", () => {
-    const otherMap = "jira:x:W:map:OTHER" as Ticket["map"];
+    const otherMap = mapRefSchema.parse("jira:x:W:map:OTHER");
     const blocker = { ...ticket("A", 0), map: otherMap };
     const inside = ticket("B", 1);
     inside.dependencies = [{ blocking: blocker.ref, blocked: inside.ref, kind: "blocks" }];
@@ -117,7 +127,7 @@ describe("dependency status reconciliation", () => {
   test("validates scope against the complete workspace graph", () => {
     const input = [ticket("A", 0)];
     expect(() =>
-      reconcileDependencyStatuses(input, { map: "jira:x:OTHER:map:M" as Ticket["map"] }, policy),
+      reconcileDependencyStatuses(input, { map: mapRefSchema.parse("jira:x:OTHER:map:M") }, policy),
     ).toThrow("outside workspace");
   });
 });
@@ -125,18 +135,18 @@ describe("dependency status reconciliation", () => {
 describe("closeout frontier handoff", () => {
   test("waits for verified close, reconciles dependents, and reports newly eligible in order", () => {
     const closing = ticket("A", 0, "In Progress");
-    closing.assignee = "human" as NonNullable<Ticket["assignee"]>;
+    closing.assignee = actorRefSchema.parse("human");
     const later = ticket("B", 2, "Blocked");
     const first = ticket("C", 1, "Blocked");
     for (const item of [later, first]) {
       item.dependencies = [{ blocking: closing.ref, blocked: item.ref, kind: "blocks" }];
     }
-    const afterClosing = {
+    const afterClosing = ticketSchema.parse({
       ...closing,
       state: "closed" as const,
       status: "Done",
       metadata: { version: "v-A-closed" },
-    };
+    });
 
     const result = deriveCloseoutFrontierHandoff(
       [closing, later, first],
@@ -191,11 +201,11 @@ describe("closeout frontier handoff", () => {
     ["changed edge", (item: Ticket) => ({ ...item, dependencies: [] })],
     [
       "changed map ownership",
-      (item: Ticket) => ({ ...item, map: "jira:x:W:map:OTHER" as Ticket["map"] }),
+      (item: Ticket) => ({ ...item, map: mapRefSchema.parse("jira:x:W:map:OTHER") }),
     ],
     [
       "changed group ownership",
-      (item: Ticket) => ({ ...item, group: "jira:x:W:group:G" as NonNullable<Ticket["group"]> }),
+      (item: Ticket) => ({ ...item, group: groupRefSchema.parse("jira:x:W:group:G") }),
     ],
     ["changed kind", (item: Ticket) => ({ ...item, kind: "research" as const })],
     ["changed order", (item: Ticket) => ({ ...item, order: item.order + 1 })],
@@ -206,7 +216,7 @@ describe("closeout frontier handoff", () => {
     ],
     [
       "unrelated assignee",
-      (item: Ticket) => ({ ...item, assignee: "human" as NonNullable<Ticket["assignee"]> }),
+      (item: Ticket) => ({ ...item, assignee: actorRefSchema.parse("human") }),
     ],
   ])("rejects %s between closeout snapshots", (_label, change) => {
     const closing = ticket("A", 0, "In Progress");
@@ -234,12 +244,12 @@ describe("closeout frontier handoff", () => {
 
   test("rejects malformed and duplicate closeout graphs", () => {
     const closing = ticket("A", 0, "In Progress");
-    const closed = {
+    const closed = ticketSchema.parse({
       ...closing,
       state: "closed" as const,
       status: "Done",
       metadata: { version: "v-A-closed" },
-    };
+    });
     expect(() =>
       deriveCloseoutFrontierHandoff(
         [closing, closing],
@@ -273,14 +283,14 @@ describe("closeout frontier handoff", () => {
     ["unevidenced version", { metadata: { version: "different" } }],
   ])("rejects closing-ticket %s", (_label, change) => {
     const closing = ticket("A", 0, "In Progress");
-    closing.assignee = "human" as NonNullable<Ticket["assignee"]>;
-    const closed = {
+    closing.assignee = actorRefSchema.parse("human");
+    const closed = ticketSchema.parse({
       ...closing,
       state: "closed" as const,
       status: "Done",
       metadata: { version: "v-A-closed" },
       ...change,
-    } as Ticket;
+    });
     expect(() =>
       deriveCloseoutFrontierHandoff(
         [closing],

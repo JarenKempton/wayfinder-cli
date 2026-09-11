@@ -1,0 +1,31 @@
+# Project-owned defaults and requirements. No credentials belong here.
+version = 1
+
+[repositories]
+# [repositories.example]
+# github = "owner/repository"
+# path = "."
+# worktree_root = "../worktrees"
+# base_branch = "main"
+
+[maps]
+# [maps.EXAMPLE-1]
+# repository = "example"
+# claim_status = "In Progress"
+# available_statuses = ["To Do"]
+
+[tracker.jira]
+site = "https://example.atlassian.net"
+cli = "acli"
+
+[t3]
+provider = "codex"
+runtime_mode = "approval-required"
+interaction_mode = "default"
+open = "none"
+
+[defaults]
+host = "t3"
+
+[required]
+# Required settings reject conflicting personal choices.
