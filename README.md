@@ -112,6 +112,8 @@ changed defaults. Required project settings reject conflicting personal choices.
 Resolved execution snapshots retain their configuration schema version and source
 content hash. [Drizzle](src/persistence/configuration.ts) uses the existing SQLite
 connection and tables; reads preserve read-only handles and do not run migrations.
+Drizzle generates queries; a small Bun execution helper finalizes each statement
+explicitly, avoiding the pinned driver's deferred cleanup on Bun 1.3 and Windows.
 The editor operates on a staged file, validates it and checks for concurrent edits
 before replacement. Failed edits preserve the original file.
 

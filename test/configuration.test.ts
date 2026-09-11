@@ -479,3 +479,33 @@ test("persisted configuration JSON is validated before it can become a personal 
     db.close();
   }
 });
+
+test.each(["success", "constraint failure"])(
+  "configuration statements are finalized after %s without waiting for garbage collection",
+  (scenario) => {
+    const db = new Database(":memory:");
+    try {
+      db.exec(
+        "CREATE TABLE configuration_overrides (project_path TEXT PRIMARY KEY, settings_json TEXT NOT NULL)",
+      );
+      db.exec(
+        "CREATE TABLE execution_configurations (run_ref TEXT PRIMARY KEY, snapshot_json TEXT NOT NULL)",
+      );
+      const store = configurationStore(db);
+      store.savePersonal("project", { model: "chosen" });
+      expect(store.readPersonal("project")).toEqual({ model: "chosen" });
+      store.savePersonal("project", {});
+      expect(store.readPersonal("project")).toEqual({});
+      const snapshot = resolve(INITIAL_CONFIGURATION);
+      store.saveSnapshot("run", snapshot);
+      expect(store.readSnapshot("run")).toEqual(snapshot);
+      if (scenario === "constraint failure")
+        expect(() => store.saveSnapshot("run", snapshot)).toThrow();
+      // Bun 1.3 strict close exposes unfinalized statements on every platform.
+      // Windows additionally keeps the database file locked after a deferred close.
+      expect(() => db.close(true)).not.toThrow();
+    } finally {
+      db.close();
+    }
+  },
+);

@@ -1,8 +1,9 @@
 import type { Database } from "bun:sqlite";
-import { eq } from "drizzle-orm";
+import { eq, type Query } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { createSelectSchema } from "drizzle-zod";
+import { z } from "zod";
 import {
   validatePersonalSettings,
   validateResolvedConfiguration,
@@ -35,27 +36,33 @@ export function configurationStore(database: Database) {
   const db = drizzle(database);
   return {
     readPersonal(projectPath: string) {
-      const row = databaseOperation(() =>
+      const row = databaseOperation(
+        database,
+        "get",
         db
           .select()
           .from(configurationOverrides)
           .where(eq(configurationOverrides.project_path, projectPath))
-          .get(),
+          .toSQL(),
       );
       return row ? settingsRow.parse(row) : {};
     },
     savePersonal(projectPath: string, input: unknown) {
       const settings = validatePersonalSettings(input);
       if (!Object.keys(settings).length) {
-        databaseOperation(() =>
+        databaseOperation(
+          database,
+          "run",
           db
             .delete(configurationOverrides)
             .where(eq(configurationOverrides.project_path, projectPath))
-            .run(),
+            .toSQL(),
         );
       } else {
         const values = { project_path: projectPath, settings_json: JSON.stringify(settings) };
-        databaseOperation(() =>
+        databaseOperation(
+          database,
+          "run",
           db
             .insert(configurationOverrides)
             .values(values)
@@ -63,38 +70,52 @@ export function configurationStore(database: Database) {
               target: configurationOverrides.project_path,
               set: { settings_json: values.settings_json },
             })
-            .run(),
+            .toSQL(),
         );
       }
       return settings;
     },
     saveSnapshot(run: string, input: unknown) {
       const snapshot = validateResolvedConfiguration(input);
-      databaseOperation(() =>
+      databaseOperation(
+        database,
+        "run",
         db
           .insert(executionConfigurations)
           .values({ run_ref: run, snapshot_json: JSON.stringify(snapshot) })
-          .run(),
+          .toSQL(),
       );
     },
     readSnapshot(run: string) {
-      const row = databaseOperation(() =>
+      const row = databaseOperation(
+        database,
+        "get",
         db
           .select()
           .from(executionConfigurations)
           .where(eq(executionConfigurations.run_ref, run))
-          .get(),
+          .toSQL(),
       );
       return row ? snapshotRow.parse(row) : undefined;
     },
   };
 }
 
-// Driver errors can include bound values. Keep SQL and parameters out of CLI diagnostics.
-function databaseOperation<T>(operation: () => T): T {
+// Drizzle 0.45's Bun driver leaves one-shot prepared statements to GC. On Bun
+// 1.3 that keeps Windows database files locked after close. Generate SQL with
+// Drizzle, execute on the caller's connection, and always finalize explicitly.
+function databaseOperation(database: Database, method: "get" | "run", query: Query): unknown {
   try {
-    return operation();
+    // These configuration tables bind only text; row JSON is validated separately.
+    const params = z.array(z.string()).parse(query.params);
+    const statement = database.prepare<unknown, string[]>(query.sql);
+    try {
+      return statement[method](...params);
+    } finally {
+      statement.finalize();
+    }
   } catch {
+    // Driver errors can include SQL and bound values.
     throw new Error("Local configuration database operation failed");
   }
 }
