@@ -42,15 +42,8 @@ import { PickupCoordinator, PickupResultError } from "../src/execution/pickup.ts
 import { evaluateFrontier } from "../src/frontier/evaluate.ts";
 import { StateStore } from "../src/persistence/state.ts";
 
-// JWB-295 — disposable-tracker and cross-platform acceptance testing.
-//
-// JWB-293 froze frontier/pickup behavior as offline goldens but explicitly left
-// live mutation parity unproven "until an explicitly configured disposable
-// tracker/repository is provided". This suite closes that live boundary: it
-// drives the real PickupCoordinator, Supervisor, LifecycleCoordinator, and
-// CommandHarnessAdapter against the credential-free Markdown reference tracker
-// (JWB-290) — the disposable tracker — and a deterministic, injected harness
-// platform, so every behavior is proven end to end without external services.
+// Exercises production coordination against a temporary Markdown tracker and an
+// injected harness platform. This does not qualify hosted writes or live agents.
 
 const workspace = workspaceRefSchema.parse("markdown:local:accept");
 const map1 = mapRefSchema.parse("markdown:local:accept:map:m1");

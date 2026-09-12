@@ -46,7 +46,8 @@ configuration or initializing the database.
 | Change configuration | [Schemas](src/configuration/schema.ts) and [starter TOML](src/configuration/default.toml) |
 | Add a tracker, harness or host | [Adapters](src/adapters/) — implementations are grouped by responsibility and named by provider |
 | Understand execution | [Execution](src/execution/) and [portable contracts](src/domain/contracts.ts) |
-| Find design decisions and protocol evidence | [Docs](docs/) |
+| Understand boundaries and contracts | [Architecture](docs/architecture.md) |
+| Install releases or configure shell integration | [Distribution](docs/distribution.md) |
 
 ```sh
 bun test

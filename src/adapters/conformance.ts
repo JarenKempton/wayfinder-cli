@@ -21,7 +21,7 @@ export interface ConformanceReport {
 const CREDENTIAL_HANDLE = "credential-provider:conformance";
 
 /**
- * PROTOTYPE (JWB-280): exercise the subprocess safety contract against an adapter
+ * Exercise the subprocess safety contract against an adapter
  * fixture that selects deliberate failure behavior with WAYFINDER_CONFORMANCE_SCENARIO.
  */
 export async function runAdapterConformance(
