@@ -36,11 +36,11 @@ The adapter responds with its identity and exact capabilities:
 - Credential-provider handles may be passed in scoped environment variables.
 - Core applies per-call deadlines and treats process exit as an adapter failure.
 
-## Prototype conformance runner
+## Conformance runner
 
-`wayfinder adapter test <executable>` remains a non-destructive initialization
+`wayfinder adapter test <executable>` is a non-destructive initialization
 smoke test for ordinary adapters. `wayfinder adapter conformance <fixture>` runs
-the JWB-280 subprocess proof against a purpose-built fixture; it must not be
+the subprocess checks against a purpose-built fixture; it must not be
 used against an ordinary adapter. The fixture selects its deliberate behavior from the scoped
 `WAYFINDER_CONFORMANCE_SCENARIO` environment variable. The runner verifies 1.x
 negotiation, the standard unknown-method error, deadline and explicit
@@ -76,7 +76,11 @@ keeps the superseded claim record, including its `supersededBy` link, in per-tic
 while the new active claim points back with `supersedes`.
 
 Persistence writes and syncs a complete temporary file before asking Node/libuv to replace the
-destination, then syncs the parent directory where directory handles support it. CI exercises the
-same replacement path on Windows, macOS, and Linux. The adapter claims only the replacement
+destination, then syncs the parent directory where directory handles support it.
+The adapter claims only the replacement
 semantics supplied by Node/libuv and the host filesystem—not universal power-loss atomicity;
 replacement failure leaves the prior destination intact and removes the temporary file.
+
+The [protocol client](../src/adapters/protocol.ts),
+[transport conformance](../test/protocol.test.ts), and
+[Markdown tracker tests](../test/markdown-tracker.test.ts) define executable checks.

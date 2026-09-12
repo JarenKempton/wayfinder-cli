@@ -28,3 +28,15 @@ transaction logic should remain ordinary TypeScript.
 - Run `bun test`, `bun run typecheck`, and `bun run check` before handoff.
 - Do not add a live tracker mutation until its fake/conformance adapter proves
   collision, verification, compensation, and ambiguous-failure behavior.
+
+## Documentation
+
+- Keep repository docs to usage, maintained contracts, and concise decision rationale.
+- Keep work status and acceptance criteria in the tracker; review findings and
+  validation output belong with the change under review. Do not commit progress
+  reports, handoffs, release queues, investigation transcripts, or machine-local
+  acceptance packets, including on documentation branches.
+- Link to schemas, action definitions, tests, and workflows instead of copying
+  their inventories or output. Generated help is the command reference.
+- Update the existing authoritative document when behavior changes. Delete
+  superseded text; Git history preserves it. Do not add reconciliation documents.

@@ -1,98 +1,42 @@
 # Development environment boundary
 
-Status: accepted design for JWB-296, amended 2026-08-22 under JWB-324 (workspace
-handles resolve in the environment's frame of reference; see ADR 0001 §15).
+An environment adapter owns application readiness and execution context.
+Core coordinates its lifecycle without interpreting product-specific service
+topology, ports, routing, or hosted dependencies.
 
-A prepared Git worktree is not necessarily ready for agent work. An application
-may still need processes, credentials, hosted dependencies, routing, and health
-checks. Wayfinder CLI coordinates that lifecycle through an environment adapter,
-but the adapter—not Wayfinder CLI core—owns what the application environment means.
+The [EnvironmentAdapter contract](../src/domain/contracts.ts) and
+[environment coordinator](../src/execution/environment.ts) define the executable
+interface and authorization checks.
 
-Wayfinder CLI resolves an adapter and an opaque profile reference, requests a
-side-effect-free plan, obtains authorization, and coordinates start, readiness,
-logs, resume, and stop. It records the adapter's summary, warnings, opaque
-environment ID, credential handles, readiness evidence, and log references
-without interpreting application topology.
+## Lifecycle
 
-## Portable contract and capabilities
+Preflight and planning are side-effect free. Plans carry an opaque profile,
+summary, warnings, and credential-provider handles; they contain no secrets.
+Starting requires recorded human confirmation or an explicit automation policy.
+Readiness must be verified before the environment is treated as usable.
 
-The portable `EnvironmentAdapter` contract is `preflight`, `plan`, `start`,
-`verifyReady`, `logs`, `resume`, and `stop`. Operations are gated by the
-fine-grained capabilities `environment_plan`, `environment_start`,
-`environment_readiness`, `environment_logs`, `environment_resume`, and
-`environment_stop`. Missing capabilities are explicit unsupported errors.
+Resume verifies the recorded environment rather than silently recreating it.
+Stop is idempotent and receipt-scoped: it affects only resources whose ownership
+the adapter can prove. It never deletes a prepared Git workspace or implies
+claim release or ticket completion. Unknown outcomes retain recovery evidence.
 
-`preflight` and `plan` are side-effect free. A plan contains an opaque ID and
-profile, a human-readable summary and warnings, and credential-provider handles;
-it contains no secret values. `start` requires either recorded human confirmation
-or a named explicit automation policy. Interactive runs confirm by default.
+## Workspace and profile ownership
 
-`start` returns an opaque environment ID, adapter-defined readiness evidence,
-and log references. `resume` must verify actual state and never silently recreate
-a stale environment. `stop` is idempotent and receipt-scoped: it may stop only
-resources the adapter can prove it owns, and it never deletes a prepared Git
-workspace or mutates unrelated hosted resources.
+Workspace handles resolve in the environment's frame of reference: a host path,
+container mount point, or remote path. Core must not validate all handles as
+local filesystem paths or assume sibling repository layouts.
 
-## Opaque profiles and named workspaces
+Profiles and their application topology are adapter-owned. Protocol 1.x does
+not define a universal component catalog or local-versus-hosted routing schema.
+Embedded and external adapters obey the same lifecycle semantics.
 
-Wayfinder CLI configuration selects only an adapter and an adapter-defined profile. It
-does not merge component choices. Precedence is deterministic, from lowest to
-highest:
+Project configuration can describe ordered setup commands and instruction
+references; the [configuration schema](../src/configuration/schema.ts) defines
+their format. Describing a recipe does not execute it. Setup authorization is
+bound to the recipe and referenced script versions. Failed preparation blocks
+launch and retains the workspace; explicit retry begins at the failed step.
+An environment implementation must enforce these rules when executing setup.
 
-1. workspace or repository defaults;
-2. developer-local configuration;
-3. map or ticket structured hints;
-4. explicit invocation.
-
-The plan request includes a map of opaque workspace names to prepared workspace
-handles. A handle is a path in the environment's own frame of reference, not
-necessarily a path on the host filesystem. For `local-host` it is the host path;
-for a container environment it is the mount point inside the container; for a
-remote environment it is a path on the remote machine that the adapter
-materializes. This keeps local, containerized, and remote execution peer
-implementations of the same contract rather than structurally different cases.
-
-This also permits an adapter to consume more than one worktree without Wayfinder
-CLI defining repository relationships or assuming sibling directory layouts. How a
-profile relates those workspaces is entirely adapter-owned.
-
-Application component catalogs, dependency expansion, local/hosted/off routing,
-ports, containers, commands, gateways, health checks, production guards, and
-detailed selection interfaces remain outside Wayfinder CLI core. Protocol 1.x does not
-standardize those concepts. A later protocol may add a portable model only after
-independent prototypes demonstrate that it generalizes without application
-coupling.
-
-## Secrets and lifecycle evidence
-
-- Versioned configuration and plans contain credential-provider handles, never
-  secret values.
-- Secret values use scoped secure channels and never appear in arguments, logs,
-  receipts, or ordinary SQLite fields.
-- Wayfinder CLI displays and persists bounded plan summaries, warnings, readiness evidence,
-  and log references without requiring an application-specific schema.
-- A failed readiness check does not become success. Ambiguous or stale state is
-  attention-required and retains its evidence.
-- Stop and failure cleanup use the exact persisted environment receipt and do not
-  imply tracker resolution, claim release, or workspace deletion.
-
-## Embedded and external implementations
-
-Embedded and executable adapters implement the same semantic contract. Bundled,
-generally portable behavior may run in process. A separate executable is
-appropriate when an environment is independently versioned, organization
-specific, implemented in another runtime, or already has a developer-facing
-CLI. External adapters use the versioned Wayfinder Adapter Protocol and are discovered
-as `wayfinder-adapter-<name>`.
-
-This lets a product-specific tool compose with Wayfinder CLI without compiling its topology
-or lifecycle into the portable runtime.
-
-## ResponsiBid ownership
-
-JWB-10, not JWB-296, owns ResponsiBid's concrete local and hybrid developer lane:
-PHP and Next.js applications, Docker microservices, gateway configuration,
-hosted authentication, developer isolation, production prohibition, deterministic
-reset/seed behavior, and concrete profiles. Its prototypes provide the evidence
-for those decisions. Wayfinder CLI treats the resulting integration and profile names as
-opaque and coordinates only the portable lifecycle described here.
+Secrets use scoped secure channels. Plans, receipts, logs, and ordinary database
+fields contain only safe references and bounded evidence. Required isolation
+must never silently fall back to host execution.

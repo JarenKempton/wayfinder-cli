@@ -6,7 +6,7 @@ import {
 import type { Ticket } from "../domain/model.ts";
 import { buildLaunchPrompt } from "./launch-prompt.ts";
 
-/** Pure input-only seam for JWB-492. No claims, IDs, SQLite, workspaces, discovery, or host calls. */
+/** Pure configuration planning; performs no tracker, workspace, storage, or host operations. */
 export interface InstructionInput {
   path: string;
   resolvedPath: string;

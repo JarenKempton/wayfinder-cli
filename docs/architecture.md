@@ -1,112 +1,61 @@
 # Architecture
 
-Wayfinder CLI separates policy from vendor mechanics.
+Wayfinder separates portable coordination from tracker, workspace, environment,
+and agent mechanics. TypeScript domain logic lives behind adapters; Bun-specific
+filesystem, SQLite, subprocess, and executable behavior stays at platform boundaries.
 
-The ownership boundary between the shared Wayfinder MCP/skill experience and
-this portable runtime is normative and documented in
-[`ownership-boundary.md`](ownership-boundary.md).
+## Code navigation
 
-```text
-CLI
- ├── resolver and configuration
- ├── frontier engine
- ├── pickup transaction coordinator
- ├── local SQLite ledger and supervisor
- └── adapter registry
-      ├── tracker adapters
-      ├── workspace adapters
-      ├── environment adapters
-      └── harness adapters
-```
+| Responsibility | Source |
+| --- | --- |
+| Action registration and service availability | [Application](../src/application.ts), [runtime services](../src/runtime-services.ts) |
+| Input validation, invocation, help, completion | [CLI](../src/cli/) |
+| Project requirements and personal choices | [Configuration](../src/configuration/), [starter TOML](../src/configuration/default.toml) |
+| Entities, references, capabilities, adapter interfaces | [Domain](../src/domain/) |
+| Read-only eligibility and stable selection | [Frontier](../src/frontier/) |
+| Pickup, routing, supervision, lifecycle | [Execution](../src/execution/) |
+| Run history, receipts, recovery evidence | [Persistence](../src/persistence/), [reconciliation](../src/reconciliation/) |
+| Provider implementations | [Adapters](../src/adapters/) |
 
-## Qualified references
+Actions declare their inputs, description, handler, and availability together.
+Invocation, help, completion, and the manual derive from those registrations.
+Use `--help` for the available command surface. An adapter class or configuration
+field alone does not establish an executable user workflow.
 
-The accepted entity and identifier contract is documented in
-[Portable domain model and capability vocabulary](domain-model.md).
-The claim transaction and recovery contract is documented in
-[Claim, lease, reclaim, and compensation semantics](claim-semantics.md).
+## Coordination
 
-```text
-tracker   <adapter>:<instance>
-workspace <tracker-ref>:<workspace-id>
-group     <workspace-ref>:group:<native-id>
-map       <workspace-ref>:map:<native-id>
-ticket    <workspace-ref>:ticket:<native-id>
-run       wayfinder-run:<uuid>
-claim     wayfinder-claim:<uuid>
-```
+The tracker supplies durable ownership and dependency facts. The local SQLite
+ledger records execution identity, snapshots, transaction steps, and recovery
+evidence. JSON exports support inspection; they are not coordination stores.
 
-References are globally qualified now so a later protocol can represent
-cross-tracker links without changing identifiers. V1 rejects evaluation when
-the two tickets do not share a workspace.
+Frontier evaluation consumes a complete normalized workspace graph and preserves
+tracker order. Scope filters select results without dropping external blocker
+facts. Reads do not claim tickets or advance workflow state.
 
-## Frontier
+Pickup completes capability and workspace preflights before claiming. Each
+transition is recorded before the next side effect. See [claim semantics](claim-semantics.md)
+for collision, compensation, and recovery behavior. A finished agent turn does
+not establish ticket completion.
 
-The tracker adapter returns normalized ticket and dependency inputs. Core owns
-eligibility: a frontier ticket is open, in an available state, unassigned,
-inside the requested scope, and has no unresolved blocker. Core preserves the
-adapter's stable order. The normalized input is one complete workspace graph:
-every dependency is owned by its blocked ticket and every referenced blocker
-must be present, even when the requested frontier scope would filter that ticket
-out of the result.
+Git workspaces use qualified ticket identity for deterministic paths and branches.
+Preparation verifies the exact repository/path/branch mapping before reuse and
+preserves dirty work. Deletion separately verifies ownership, canonical location,
+registration, and a clean workspace. See the [Git adapter](../src/adapters/workspaces/git.ts).
 
-## Pickup transaction
+## Contracts and decisions
 
-Pickup progresses through `planning`, `claiming`, `claimed`, `workspace_prepared`,
-`launched`, and `committed`. A post-claim failure enters `compensating`, then
-either `compensated` after verified restoration or `recovery_required` when the
-result is ambiguous. Local steps and receipts are persisted before moving to
-the next state.
+- [Domain vocabulary](domain-model.md) and [external adapter protocol](adapter-protocol.md).
+- [Client/core ownership](ownership-boundary.md) and [environment lifecycle](environment-boundary.md).
+- [Command harnesses](harness-adapters.md) and [T3 integration](session-hosts/t3-adapter.md).
+- Design rationale: [execution boundaries](adr/0001-lanes-environments-and-session-hosts.md),
+  [tracker writes](adr/0002-tracker-write-minimalism.md), and
+  [organization policy](adr/0003-organization-policy-and-enforced-configuration.md).
 
-## Configuration and execution routing
+## Verification
 
-Core resolves execution configuration in a fixed least-to-most-specific order:
-harness defaults, user, repository, workspace, group, map, ticket, then CLI. Scalar
-settings (`harness`, `model`, `effort`, and `context`) use the most specific non-empty
-value and retain source provenance. Required capabilities accumulate across layers so a
-more specific scope cannot silently weaken a lower-level requirement.
-
-The selected harness must advertise every explicitly required capability. Model, effort,
-and context requests additionally require `model_selection`, `reasoning_selection`, and
-`context_selection`, respectively. These checks and adapter preflight complete before
-the tracker snapshot or claim mutation.
-
-## Persistence
-
-The per-user SQLite database enables WAL and foreign keys. It records runs,
-claims, transaction steps, tracker snapshots, workspaces, adapter capabilities,
-receipts, and errors. JSON export is an inspection format, not a coordination
-store.
-
-## Runtime boundary
-
-Portable entities, frontier rules, routing, and transaction coordination are
-ordinary TypeScript. Bun-specific filesystem, subprocess, SQLite, executable
-build, and update behavior remains isolated in platform-facing modules. Release
-binaries embed Bun, so consumers install a single executable without a runtime.
-
-Application development lifecycle behavior crosses the separate environment
-adapter boundary defined in [Development environment boundary](environment-boundary.md).
-
-## Git workspaces
-
-The Git adapter consumes one explicit repository mapping. It injectively base64url-encodes
-the ticket's tracker, instance, workspace, and native ID components into a qualified
-identity, then derives the canonical `<worktreeRoot>/<qualified-identity>` path and
-`wayfinder/<qualified-identity>` branch. Preparation recomputes this mapping from the
-ticket reference and rejects caller-altered plans before any Git operation.
-
-Preparation resumes only an already-registered exact path/branch pair. An occupied path,
-branch checked out elsewhere, detached or ambiguous worktree, or mismatched repository
-mapping fails closed. SSH URL, HTTPS URL, and scp-style remotes normalize to a shared
-host/path identity; other URL schemes are unsupported. Resume preserves dirty work.
-Deletion requires the exact prepared-workspace record, verifies the canonical real path
-under the configured root and unambiguous Git registration, and refuses dirty work. Git
-is always invoked with an argument array so native paths, including paths containing
-spaces, are not shell-interpreted.
-
-## Capability honesty
-
-Adapters advertise fine-grained capabilities. Core derives presentation tiers
-but checks individual capabilities before every operation. A missing feature is
-an explicit unsupported error, never an inferred success.
+Run the checks in [AGENTS.md](../AGENTS.md). Behavioral evidence lives in
+[tests](../test/), including [compatibility fixtures](../test/fixtures/compatibility/)
+and [disposable tracker acceptance](../test/disposable-tracker-acceptance.test.ts).
+That acceptance suite uses a temporary Markdown tracker and an injected harness;
+it does not qualify hosted tracker writes or a live agent. Platform and release
+checks are defined in the [workflows](../.github/workflows/).
